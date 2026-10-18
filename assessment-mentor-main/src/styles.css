@@ -1,0 +1,286 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Design system definition.
+ *
+ * The @theme inline block maps CSS custom properties to Tailwind utility
+ * classes (e.g. --color-primary -> bg-primary, text-primary).
+ *
+ * The :root and .dark blocks define the actual color values using oklch.
+ * All colors MUST use oklch format.
+ *
+ * Palette: "Circuit Desk" — matched to the VERISM logo. Deep midnight navy
+ * linework (#081D33), electric aqua glow (#00F2FE / #1AE5D9), ice-blue core
+ * (#E0FFFF) and deep circuit teal (#0C6E77). Surfaces stay light: pale ice
+ * paper, near-white cards, navy text.
+ *
+ * Token names are legacy: `lav` is the lead brand accent (now aqua-teal) and
+ * `blue` is the brighter secondary aqua. Names are kept so component markup
+ * stays untouched.
+ *
+ * To add a new semantic color:
+ * 1. Add the variable to :root (light value) and .dark (dark value)
+ * 2. Register it in @theme inline as --color-<name>: var(--<name>)
+ */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ring-offset-background: var(--background);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-paper: var(--paper);
+  --color-card: var(--card);
+  --color-ink: var(--ink);
+  --color-muted-ink: var(--muted-ink);
+  --color-faint: var(--faint);
+  --color-line: var(--line);
+  --color-lav: var(--lav);
+  --color-lav-soft: var(--lav-soft);
+  --color-amber: var(--amber);
+  --color-amber-ink: var(--amber-ink);
+  --color-sage: var(--sage);
+  --color-sage-soft: var(--sage-soft);
+  --color-clay: var(--clay);
+  --color-clay-soft: var(--clay-soft);
+  --color-blue: var(--blue);
+  --color-blue-soft: var(--blue-soft);
+  --color-blue-ink: var(--blue-ink);
+  --color-amber-soft: var(--amber-soft);
+  --color-lav-ink: var(--lav-ink);
+  --color-sage-ink: var(--sage-ink);
+  --color-clay-ink: var(--clay-ink);
+  --font-display: "Fraunces", Georgia, serif;
+  --font-sans: "Inter", system-ui, sans-serif;
+}
+
+:root {
+  --radius: 0.625rem;
+  --paper: oklch(0.975 0.014 205);
+  --card: oklch(0.995 0.006 200);
+  --ink: oklch(0.227 0.051 252);
+  --muted-ink: oklch(0.46 0.045 240);
+  --faint: oklch(0.55 0.04 228);
+  --line: oklch(0.915 0.022 205);
+  --lav: oklch(0.579 0.097 206);
+  --lav-soft: oklch(0.925 0.06 198);
+  --lav-ink: oklch(0.446 0.074 210);
+  --blue: oklch(0.78 0.15 190);
+  --blue-soft: oklch(0.965 0.03 195);
+  --blue-ink: oklch(0.45 0.09 200);
+  --amber: oklch(0.76 0.11 72);
+  --amber-ink: oklch(0.47 0.1 70);
+  --amber-soft: oklch(0.945 0.055 85);
+  --sage: oklch(0.65 0.12 165);
+  --sage-soft: oklch(0.92 0.055 165);
+  --sage-ink: oklch(0.44 0.1 168);
+  --clay: oklch(0.60 0.16 27);
+  --clay-soft: oklch(0.93 0.048 27);
+  --clay-ink: oklch(0.47 0.15 27);
+  --background: oklch(0.985 0.01 205);
+  --foreground: oklch(0.227 0.051 252);
+  --card: oklch(0.995 0.006 200);
+  --card-foreground: oklch(0.227 0.051 252);
+  --popover: oklch(0.995 0.006 200);
+  --popover-foreground: oklch(0.227 0.051 252);
+  --primary: oklch(0.492 0.081 205);
+  --primary-foreground: oklch(0.98 0.012 200);
+  --secondary: oklch(0.945 0.022 205);
+  --secondary-foreground: oklch(0.28 0.05 240);
+  --muted: oklch(0.945 0.022 205);
+  --muted-foreground: oklch(0.48 0.04 235);
+  --accent: oklch(0.94 0.035 200);
+  --accent-foreground: oklch(0.28 0.05 240);
+  --destructive: oklch(0.58 0.19 25);
+  --destructive-foreground: oklch(0.98 0.012 200);
+  --border: oklch(0.905 0.022 205);
+  --input: oklch(0.905 0.022 205);
+  --ring: oklch(0.579 0.097 206);
+  --chart-1: oklch(0.52 0.09 205);
+  --chart-2: oklch(0.75 0.13 190);
+  --chart-3: oklch(0.72 0.14 80);
+  --chart-4: oklch(0.65 0.12 165);
+  --chart-5: oklch(0.62 0.16 25);
+  --sidebar: oklch(0.978 0.014 205);
+  --sidebar-foreground: oklch(0.227 0.051 252);
+  --sidebar-primary: oklch(0.492 0.081 205);
+  --sidebar-primary-foreground: oklch(0.98 0.012 200);
+  --sidebar-accent: oklch(0.94 0.035 200);
+  --sidebar-accent-foreground: oklch(0.28 0.05 240);
+  --sidebar-border: oklch(0.905 0.022 205);
+  --sidebar-ring: oklch(0.579 0.097 206);
+}
+
+.dark {
+  --paper: oklch(0.20 0.045 252);
+  --card: oklch(0.25 0.05 252);
+  --ink: oklch(0.95 0.02 200);
+  --muted-ink: oklch(0.76 0.03 210);
+  --faint: oklch(0.62 0.03 215);
+  --line: oklch(0.36 0.05 240);
+  --lav: oklch(0.80 0.12 200);
+  --lav-soft: oklch(0.30 0.06 205);
+  --lav-ink: oklch(0.85 0.09 200);
+  --blue: oklch(0.78 0.13 195);
+  --blue-soft: oklch(0.30 0.06 195);
+  --blue-ink: oklch(0.85 0.10 195);
+  --amber: oklch(0.78 0.13 80);
+  --amber-ink: oklch(0.85 0.09 82);
+  --amber-soft: oklch(0.30 0.06 82);
+  --sage: oklch(0.75 0.12 165);
+  --sage-soft: oklch(0.30 0.06 165);
+  --sage-ink: oklch(0.85 0.09 165);
+  --clay: oklch(0.70 0.15 27);
+  --clay-soft: oklch(0.32 0.07 27);
+  --clay-ink: oklch(0.85 0.09 27);
+  --background: oklch(0.20 0.045 252);
+  --foreground: oklch(0.95 0.02 200);
+  --card: oklch(0.25 0.05 252);
+  --card-foreground: oklch(0.95 0.02 200);
+  --popover: oklch(0.25 0.05 252);
+  --popover-foreground: oklch(0.95 0.02 200);
+  --primary: oklch(0.80 0.12 200);
+  --primary-foreground: oklch(0.20 0.045 252);
+  --secondary: oklch(0.32 0.05 250);
+  --secondary-foreground: oklch(0.95 0.02 200);
+  --muted: oklch(0.32 0.05 250);
+  --muted-foreground: oklch(0.76 0.03 210);
+  --accent: oklch(0.32 0.06 205);
+  --accent-foreground: oklch(0.95 0.02 200);
+  --destructive: oklch(0.70 0.17 25);
+  --destructive-foreground: oklch(0.95 0.02 200);
+  --border: oklch(0.95 0.02 200 / 14%);
+  --input: oklch(0.95 0.02 200 / 20%);
+  --ring: oklch(0.80 0.12 200);
+  --chart-1: oklch(0.80 0.12 200);
+  --chart-2: oklch(0.78 0.13 195);
+  --chart-3: oklch(0.80 0.13 82);
+  --chart-4: oklch(0.75 0.12 165);
+  --chart-5: oklch(0.72 0.15 27);
+  --sidebar: oklch(0.22 0.048 252);
+  --sidebar-foreground: oklch(0.95 0.02 200);
+  --sidebar-primary: oklch(0.80 0.12 200);
+  --sidebar-primary-foreground: oklch(0.20 0.045 252);
+  --sidebar-accent: oklch(0.32 0.06 205);
+  --sidebar-accent-foreground: oklch(0.95 0.02 200);
+  --sidebar-border: oklch(0.95 0.02 200 / 14%);
+  --sidebar-ring: oklch(0.80 0.12 200);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  body {
+    background-color: var(--color-paper);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    letter-spacing: 0;
+  }
+
+  button, input, textarea, select { font: inherit; }
+
+  /* Matched phrases in submissions and comparisons: brand aqua, not browser yellow. */
+  mark {
+    background-color: color-mix(in oklab, var(--blue) 26%, white);
+    color: var(--ink);
+    border-radius: 3px;
+    padding: 0.08em 0.22em;
+    box-shadow: inset 0 -1px 0 var(--lav);
+  }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes progress-draw {
+  from { width: 0; }
+}
+
+@utility animate-fade-up {
+  animation: fade-up 420ms ease both;
+}
+
+@utility progress-draw {
+  animation: progress-draw 700ms ease both;
+}
+
+/*
+ * Tone classes are assembled at runtime (e.g. `soft-${tone}`), so Tailwind's
+ * scanner never sees them. Define them by hand to keep tinted wells, status
+ * pills, chart bars, and metric dots on-palette.
+ */
+@layer components {
+  .soft-lav { background-color: var(--lav-soft); }
+  .soft-blue { background-color: var(--blue-soft); }
+  .soft-amber { background-color: var(--amber-soft); }
+  .soft-sage { background-color: var(--sage-soft); }
+  .soft-clay { background-color: var(--clay-soft); }
+
+  .icon-lav { color: var(--lav-ink); }
+  .icon-blue { color: var(--blue-ink); }
+  .icon-amber { color: var(--amber-ink); }
+  .icon-sage { color: var(--sage-ink); }
+  .icon-clay { color: var(--clay-ink); }
+
+  .tone-neutral { background-color: var(--line); color: var(--muted-ink); }
+  .tone-lav { background-color: var(--lav-soft); color: var(--lav-ink); }
+  .tone-blue { background-color: var(--blue-soft); color: var(--blue-ink); }
+  .tone-amber { background-color: var(--amber-soft); color: var(--amber-ink); }
+  .tone-sage { background-color: var(--sage-soft); color: var(--sage-ink); }
+  .tone-clay { background-color: var(--clay-soft); color: var(--clay-ink); }
+
+  .chart-lav, .bar-lav { background-color: var(--lav); }
+  .chart-blue, .bar-blue { background-color: var(--blue); }
+  .chart-amber, .bar-amber { background-color: var(--amber); }
+  .chart-sage, .bar-sage { background-color: var(--sage); }
+  .chart-clay, .bar-clay { background-color: var(--clay); }
+
+  .dot-lav { background-color: var(--lav); }
+  .dot-blue { background-color: var(--blue); }
+  .dot-amber { background-color: var(--amber); }
+  .dot-sage { background-color: var(--sage); }
+  .dot-clay { background-color: var(--clay); }
+}

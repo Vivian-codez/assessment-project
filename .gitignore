@@ -1,0 +1,66 @@
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+backend/.venv/
+
+# Python cache & artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+backend/__pycache__/
+backend/*/__pycache__/
+backend/*/*/__pycache__/
+backend/*/*/*/__pycache__/
+backend/.pytest_cache/
+
+# Environment variables & secrets (CRITICAL)
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+*.local
+
+# Database files
+*.db
+*.sqlite3
+educheck.db
+verism.db
+backend/educheck.db
+backend/verism.db
+
+# Uploads & local storage
+backend/uploads/
+uploads/
+
+# Node / Frontend build artifacts
+node_modules/
+assessment-mentor-main/node_modules/
+dist/
+assessment-mentor-main/dist/
+.output/
+assessment-mentor-main/.output/
+.nitro/
+assessment-mentor-main/.nitro/
+.tanstack/
+assessment-mentor-main/.tanstack/
+.wrangler/
+assessment-mentor-main/.wrangler/
+
+# Junction link
+frontend
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
