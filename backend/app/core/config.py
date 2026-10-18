@@ -4,7 +4,7 @@ Manages all environment variables for PostgreSQL, Redis, Celery, Qdrant,
 Gemini GenAI, FERPA/GDPR encryption, and CORS settings.
 """
 
-from typing import List, Union
+from typing import List, Union, Optional
 import json
 import os
 from pydantic import AnyHttpUrl, field_validator
@@ -31,8 +31,17 @@ class Settings(BaseSettings):
 
     # Security & FERPA/GDPR Encryption
     SECRET_KEY: str = "verism_super_secret_jwt_key_change_in_production_1234567890"
+    JWT_SECRET: Optional[str] = None
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 1 day
     FERPA_ENCRYPTION_KEY: str = "MbGUys4qem_FHtZy_5zx8bBSrxkTI2UWrjnhrFAHcyY="
+
+    @field_validator("SECRET_KEY", mode="before")
+    @classmethod
+    def assemble_secret_key(cls, v: str) -> str:
+        jwt_sec = os.getenv("JWT_SECRET")
+        if jwt_sec:
+            return jwt_sec
+        return v
 
     # CORS Origins
     BACKEND_CORS_ORIGINS: Union[List[str], str] = [
