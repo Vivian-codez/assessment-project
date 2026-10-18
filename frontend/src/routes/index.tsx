@@ -199,14 +199,17 @@ function VerismApp() {
     setLoadingCourses(true);
     try {
       const list = await api.courses.list();
-      setCourses(list);
-      if (list.length > 0 && list[0]) {
+      setCourses(list || []);
+      if (list && list.length > 0 && list[0]) {
         const initialCourse = list[0];
         setSelectedCourseId(initialCourse.id);
         loadAssignments(initialCourse.id);
       }
     } catch (e: any) {
-      showToast(`Notice: ${e.message}`);
+      console.warn("Could not load initial courses:", e?.message);
+      if (getAuthToken()) {
+        showToast(`Notice: ${e.message}`);
+      }
     } finally {
       setLoadingCourses(false);
     }

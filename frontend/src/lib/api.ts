@@ -3,7 +3,22 @@
  * Connects the TanStack Start frontend to the FastAPI + PostgreSQL + Supabase backend.
  */
 
-const API_BASE_URL = (import.meta.env as any)["VITE_API_BASE_URL"] || "http://localhost:8000/api/v1";
+function resolveApiBaseUrl(): string {
+  const envUrl = (import.meta.env as any)["VITE_API_BASE_URL"];
+  if (envUrl && typeof envUrl === "string" && envUrl.trim().length > 0) {
+    const trimmed = envUrl.trim().replace(/\/+$/, "");
+    if (trimmed.endsWith("/api/v1")) {
+      return trimmed;
+    }
+    if (trimmed.endsWith("/api")) {
+      return `${trimmed}/v1`;
+    }
+    return `${trimmed}/api/v1`;
+  }
+  return "http://localhost:8000/api/v1";
+}
+
+const API_BASE_URL = resolveApiBaseUrl();
 
 export interface UserProfile {
   id: string;
@@ -183,14 +198,16 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   });
 
   if (!response.ok) {
-    let errorMsg = `HTTP Error ${response.status}: ${response.statusText}`;
+    let errorMsg = `HTTP Error ${response.status}${response.statusText ? `: ${response.statusText}` : ""}`;
     try {
       const errorJson = await response.json();
       if (errorJson.detail) {
         errorMsg = typeof errorJson.detail === "string" ? errorJson.detail : JSON.stringify(errorJson.detail);
       }
     } catch {
-      // ignore
+      if (response.status === 404) {
+        errorMsg = `Endpoint not found (404) at ${url}. Verify backend URL configuration.`;
+      }
     }
     throw new Error(errorMsg);
   }

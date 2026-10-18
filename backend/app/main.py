@@ -71,8 +71,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register API v1 Router
+# Register API v1 Router under both /api/v1 and root /
+# This ensures that frontend requests succeed regardless of whether VITE_API_BASE_URL includes /api/v1 or not!
 app.include_router(api_v1_router, prefix=settings.API_V1_STR)
+app.include_router(api_v1_router)
 
 
 @app.get("/", tags=["Health"])
