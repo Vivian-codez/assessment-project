@@ -44,7 +44,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Configure CORS Middleware for Next.js / Vite React frontend
+# Configure CORS Middleware for React frontend (Local + Vercel)
+origins = [
+    "http://localhost:5173",
+    "http://localhost:8080",
+    "http://localhost:3000",
+    "https://assessment-project-o64i.vercel.app",  # Your specific Vercel URL
+]
+
 cors_origins = settings.BACKEND_CORS_ORIGINS
 if isinstance(cors_origins, str):
     import json
@@ -53,9 +60,12 @@ if isinstance(cors_origins, str):
     except Exception:
         cors_origins = [cors_origins]
 
+combined_origins = list(dict.fromkeys(origins + (cors_origins or [])))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins if cors_origins else ["*"],
+    allow_origins=combined_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",  # Matches any preview or production Vercel deployment
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
