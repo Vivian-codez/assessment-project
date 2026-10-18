@@ -26,6 +26,9 @@ backend/.pytest_cache/
 backend/.env
 backend/.env.*
 !backend/.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
 *.local
 
 # Database files
@@ -42,20 +45,20 @@ uploads/
 
 # Node / Frontend build artifacts
 node_modules/
-assessment-mentor-main/node_modules/
+frontend/node_modules/
 dist/
-assessment-mentor-main/dist/
+frontend/dist/
 .output/
-assessment-mentor-main/.output/
+frontend/.output/
 .nitro/
-assessment-mentor-main/.nitro/
+frontend/.nitro/
 .tanstack/
-assessment-mentor-main/.tanstack/
+frontend/.tanstack/
 .wrangler/
-assessment-mentor-main/.wrangler/
+frontend/.wrangler/
 
-# Junction link
-frontend
+# Deprecated/Duplicate directory
+assessment-mentor-main/
 
 # OS & Editor files
 .DS_Store

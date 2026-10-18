@@ -107,7 +107,7 @@ services:
 
   frontend:
     build:
-      context: ./assessment-mentor-main
+      context: ./frontend
       dockerfile: Dockerfile
     container_name: verism_frontend
     restart: unless-stopped

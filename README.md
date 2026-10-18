@@ -26,7 +26,7 @@ An enterprise-grade, FERPA-compliant assessment, grading, and plagiarism verific
        └───────────────────┘    └──────────────────┘    └──────────────────┘    └───────────────────┘
 ```
 
-### 1. Frontend (`/assessment-mentor-main`)
+### 1. Frontend (`/frontend`)
 * **Framework**: React 19, Vite, TanStack Router / TanStack Start
 * **Styling**: TailwindCSS, Radix UI primitives, Lucide icons
 * **Features**:
@@ -73,7 +73,7 @@ cp .env.example .env
 python scripts/seed_data.py
 
 # Run FastAPI server
-python run.py
+python app.py  # or python run.py
 # Backend runs at: http://localhost:8000
 # OpenAPI Docs: http://localhost:8000/docs
 ```
@@ -81,7 +81,7 @@ python run.py
 ### 2. Start Frontend
 
 ```bash
-cd assessment-mentor-main
+cd frontend
 
 # Install dependencies
 npm install
@@ -111,7 +111,7 @@ pytest
 
 Run frontend type check & build:
 ```bash
-cd assessment-mentor-main
+cd frontend
 npx tsc --noEmit
 npm run build
 ```
