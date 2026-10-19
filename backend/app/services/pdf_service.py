@@ -54,18 +54,40 @@ class PDFService:
         # Word Document (.docx)
         if extension == "docx":
             try:
+                import docx
+                doc = docx.Document(BytesIO(file_bytes))
+                extracted_sections = []
+                # 1. Extract all paragraphs
+                for p in doc.paragraphs:
+                    t = p.text.strip()
+                    if t:
+                        extracted_sections.append(t)
+                # 2. Extract tables (data grids, submission tables, rubrics)
+                for table in doc.tables:
+                    for row in table.rows:
+                        row_cells = [cell.text.strip() for cell in row.cells if cell.text.strip()]
+                        if row_cells:
+                            extracted_sections.append(" | ".join(row_cells))
+
+                full_doc_text = "\n\n".join(extracted_sections).strip()
+                if full_doc_text:
+                    return full_doc_text
+            except Exception as docx_err:
+                logger.warning(f"python-docx extraction failed for {filename}: {docx_err}. Attempting direct XML fallback.")
+
+            # Fallback to direct XML unzip extraction if docx encounters unusual formatting
+            try:
                 import zipfile
                 import xml.etree.ElementTree as ET
                 with zipfile.ZipFile(BytesIO(file_bytes)) as docx_zip:
                     if "word/document.xml" in docx_zip.namelist():
                         xml_content = docx_zip.read("word/document.xml")
                         root = ET.fromstring(xml_content)
-                        # Extract all text inside w:t tags
                         texts = [elem.text for elem in root.iter() if elem.text and elem.tag.endswith("}t")]
                         if texts:
                             return " ".join(texts).strip()
-            except Exception as e:
-                logger.warning(f"Error extracting docx file {filename}: {e}")
+            except Exception as xml_err:
+                logger.warning(f"XML docx extraction fallback failed for {filename}: {xml_err}")
 
         if extension == "pdf":
             if _PYPDF_AVAILABLE:

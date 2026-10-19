@@ -208,3 +208,13 @@ def delete_course(
 
     return None
 
+
+@router.get("/{course_id}/rubrics")
+def get_course_rubrics_alias(
+    course_id: str,
+    db: Session = Depends(get_db),
+):
+    """Retrieve all rubrics for a given course (alias for /rubrics/courses/{course_id}/rubrics)."""
+    from app.api.v1.rubrics import get_course_rubrics
+    return get_course_rubrics(course_id=course_id, db=db)
+

@@ -71,6 +71,38 @@ def get_submission_review_detail(
     """
     sub = db.query(Submission).filter(Submission.id == submission_id).first()
     if not sub:
+        # Check Supabase
+        try:
+            from app.core.supabase import supabase
+            res = supabase.table("submissions").select("*").eq("id", submission_id).execute()
+            if res.data:
+                row = res.data[0]
+                sub = Submission(
+                    id=row["id"],
+                    assignment_id=row["assignment_id"],
+                    student_name_encrypted=row["student_name_encrypted"],
+                    student_roll_encrypted=row["student_roll_encrypted"],
+                    student_email_encrypted=row.get("student_email_encrypted"),
+                    file_name=row["file_name"],
+                    file_path=row.get("file_path", ""),
+                    file_url=row.get("file_url"),
+                    file_type=row.get("file_type", "pdf"),
+                    extracted_text=row.get("extracted_text"),
+                    content=row.get("content") or row.get("extracted_text") or "",
+                    file_content=row.get("file_content"),
+                    similarity_score=float(row.get("similarity_score") or 0.0),
+                    ai_content_probability=float(row.get("ai_content_probability") or 0.0),
+                    web_plagiarism_score=float(row.get("web_plagiarism_score") or 0.0),
+                    web_sources=row.get("web_sources") or [],
+                    status=row.get("status", "pending"),
+                )
+                db.add(sub)
+                db.commit()
+                db.refresh(sub)
+        except Exception as e:
+            logger.warning(f"Supabase lookup fallback notice: {e}")
+
+    if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
 
     draft = sub.draft_grade
@@ -102,8 +134,10 @@ def get_submission_review_detail(
         similarity=sub.similarity_score or 0.0,
         ai_content=sub.ai_content_probability or 0.0,
         web_plagiarism=sub.web_plagiarism_score or 0.0,
+        file_url=sub.file_url,
         created_at=sub.created_at,
         extracted_text=sub.extracted_text,
+        content=sub.content or sub.extracted_text,
         matching_phrase=matching_phrase,
         criteria_scores=criteria_scores,
         ai_feedback=ai_feedback,
@@ -111,6 +145,116 @@ def get_submission_review_detail(
         web_sources=sub.web_sources or [],
         plagiarised_words=plagiarised_words,
     )
+
+
+@router.post("/submissions/{submission_id}/evaluate", response_model=SubmissionDetailResponse)
+def evaluate_single_submission(
+    submission_id: str,
+    db: Session = Depends(get_db),
+    instructor: Instructor = Depends(get_current_instructor),
+):
+    """Trigger on-demand 3-way plagiarism and autograding evaluation for a single submission."""
+    sub = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    from app.services.gemini_service import gemini_service
+    from app.services.supabase_service import supabase_service
+    from app.services.ferpa_service import ferpa_service
+    from app.models.assignment import Assignment
+
+    assignment = db.query(Assignment).filter(Assignment.id == sub.assignment_id).first()
+    rubric_criteria = [
+        {"name": "Understanding", "description": "Conceptual clarity and depth", "weight": 30.0, "max_score": 30.0},
+        {"name": "Accuracy", "description": "Correctness of algorithmic solution", "weight": 40.0, "max_score": 40.0},
+        {"name": "Presentation", "description": "Structure and clarity", "weight": 30.0, "max_score": 30.0},
+    ]
+
+    # Fetch peer submissions for peer-to-peer corpus
+    peer_subs = supabase_service.get_peer_submissions(sub.assignment_id, exclude_submission_id=sub.id)
+    peer_corpus = "\n---\n".join([
+        f"Peer Submission {p['id']} ({p.get('student_name', 'Student')}):\n{p.get('extracted_text', '')[:2000]}"
+        for p in peer_subs[:8]
+    ]) if peer_subs else "No other peer submissions available."
+
+    pseudo_id, sanitized_text = ferpa_service.prepare_for_ai_evaluation(
+        submission_id=sub.id,
+        student_name=sub.student_name,
+        student_roll=sub.student_roll,
+        student_email=sub.student_email,
+        text_content=sub.extracted_text or sub.content or "",
+    )
+
+    ai_result = gemini_service.evaluate_submission(
+        submission_text=sanitized_text,
+        rubric_criteria=rubric_criteria,
+        assignment_title=assignment.title if assignment else "Assignment",
+        reference_assignment_text=assignment.reference_assignment_text if assignment else None,
+        peer_submissions_context=peer_corpus,
+    )
+
+    sub.ai_content_probability = ai_result.ai_generated_probability or 0.0
+    if ai_result.web_plagiarism_pct is not None:
+        sub.web_plagiarism_score = ai_result.web_plagiarism_pct
+    if ai_result.web_sources:
+        sub.web_sources = ai_result.web_sources
+    if ai_result.peer_to_peer_plagiarism_pct and ai_result.peer_to_peer_plagiarism_pct > (sub.similarity_score or 0.0):
+        sub.similarity_score = ai_result.peer_to_peer_plagiarism_pct
+
+    is_flagged = (
+        (sub.similarity_score >= 90.0)
+        or (sub.ai_content_probability >= 65.0)
+        or (sub.web_plagiarism_score >= 25.0)
+    )
+    sub.status = "flagged" if is_flagged else "graded"
+
+    criteria_payload = [
+        {
+            "criterion_name": c.criterion_name,
+            "score": c.awarded_score,
+            "max": c.max_score,
+            "rationale": c.rationale,
+        }
+        for c in ai_result.criteria_evaluations
+    ]
+
+    draft = sub.draft_grade
+    if not draft:
+        draft = DraftGrade(
+            id=f"draft_{uuid.uuid4().hex[:12]}",
+            submission_id=sub.id,
+            suggested_score=ai_result.overall_score,
+            criteria_scores=criteria_payload,
+            ai_feedback=ai_result.feedback_summary,
+            status="flagged" if is_flagged else "pending",
+            ai_model=settings.GEMINI_MODEL,
+        )
+        db.add(draft)
+    else:
+        draft.suggested_score = ai_result.overall_score
+        draft.criteria_scores = criteria_payload
+        draft.ai_feedback = ai_result.feedback_summary
+        draft.status = "flagged" if is_flagged else "pending"
+
+    db.commit()
+
+    # Sync to Supabase
+    try:
+        supabase_service.save_evaluation_results(
+            submission_id=sub.id,
+            overall_score=ai_result.overall_score,
+            similarity_score=sub.similarity_score,
+            ai_content_probability=sub.ai_content_probability,
+            web_plagiarism_score=sub.web_plagiarism_score,
+            web_sources=sub.web_sources or [],
+            criteria_scores=criteria_payload,
+            ai_feedback=ai_result.feedback_summary,
+            is_flagged=is_flagged,
+        )
+    except Exception as e:
+        logger.warning(f"Supabase evaluation save error: {e}")
+
+    return get_submission_review_detail(submission_id=sub.id, db=db)
 
 
 @router.put("/submissions/{submission_id}/stamp-grade", response_model=DraftGradeResponse)

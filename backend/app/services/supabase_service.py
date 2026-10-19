@@ -6,6 +6,7 @@ Interacts directly with Supabase via `supabase-py` and PostgREST client:
 - Provides graceful local fallback when Supabase connection is offline
 """
 
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -204,6 +205,54 @@ class SupabaseService:
         finally:
             db.close()
 
+    # ==========================================
+    # Supabase Storage Integration
+    # ==========================================
+    def upload_file_to_storage(
+        self,
+        file_bytes: bytes,
+        file_name: str,
+        assignment_id: str,
+        content_type: Optional[str] = None,
+    ) -> Optional[str]:
+        """Uploads raw student submission file (.docx, .pdf, .txt, etc.) directly
+
+        into Supabase Storage bucket 'submissions', generating and returning its public URL.
+        """
+        if not self.client:
+            logger.warning("Supabase client offline; skipping storage upload.")
+            return None
+
+        try:
+            import mimetypes
+            clean_name = os.path.basename(file_name)
+            ext = clean_name.lower().split(".")[-1] if "." in clean_name else ""
+            if not content_type:
+                content_type, _ = mimetypes.guess_type(clean_name)
+                if not content_type:
+                    if ext == "docx":
+                        content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    elif ext == "pdf":
+                        content_type = "application/pdf"
+                    elif ext in {"txt", "py", "js", "ts", "html", "css", "md"}:
+                        content_type = "text/plain"
+                    else:
+                        content_type = "application/octet-stream"
+
+            storage_path = f"{assignment_id}/{uuid.uuid4().hex[:8]}_{clean_name}"
+            # Ensure bucket exists or proceed with upload
+            self.client.storage.from_("submissions").upload(
+                path=storage_path,
+                file=file_bytes,
+                file_options={"content-type": content_type, "upsert": "true"},
+            )
+            public_url = self.client.storage.from_("submissions").get_public_url(storage_path)
+            logger.info(f"Uploaded file {file_name} to Supabase Storage at {storage_path}. Public URL: {public_url}")
+            return public_url
+        except Exception as e:
+            logger.warning(f"Supabase Storage upload warning for {file_name}: {e}")
+            return None
+
     def create_submission(
         self,
         assignment_id: str,
@@ -213,6 +262,8 @@ class SupabaseService:
         file_path: Optional[str] = None,
         extracted_text: Optional[str] = None,
         student_email: Optional[str] = None,
+        file_url: Optional[str] = None,
+        content: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Creates a student submission encrypting student PII before writing."""
         sub_id = f"sub_{uuid.uuid4().hex[:12]}"
@@ -220,6 +271,7 @@ class SupabaseService:
         enc_roll = ferpa_cipher.encrypt(student_roll)
         enc_email = ferpa_cipher.encrypt(student_email) if student_email else None
 
+        stored_content = content or extracted_text or ""
         payload = {
             "id": sub_id,
             "assignment_id": assignment_id,
@@ -228,10 +280,14 @@ class SupabaseService:
             "student_email_encrypted": enc_email,
             "file_name": file_name,
             "file_path": file_path,
+            "file_url": file_url,
             "extracted_text": extracted_text,
+            "content": stored_content,
             "status": "pending",
             "similarity_score": 0.0,
             "ai_content_probability": 0.0,
+            "web_plagiarism_score": 0.0,
+            "web_sources": [],
         }
 
         try:
@@ -254,10 +310,15 @@ class SupabaseService:
                 student_email_encrypted=enc_email,
                 file_name=file_name,
                 file_path=file_path,
+                file_url=file_url,
                 extracted_text=extracted_text,
+                content=stored_content,
+                file_content=stored_content,
                 status="pending",
                 similarity_score=0.0,
                 ai_content_probability=0.0,
+                web_plagiarism_score=0.0,
+                web_sources=[],
             )
             db.add(sub)
             db.commit()
@@ -265,8 +326,125 @@ class SupabaseService:
         finally:
             db.close()
 
-    # ==========================================
-    # Rubrics
+    def get_peer_submissions(
+        self,
+        assignment_id: str,
+        exclude_submission_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Fetch all peer submissions for cross-similarity auditing from Supabase."""
+        try:
+            query = self.client.table("submissions").select("*").eq("assignment_id", assignment_id)
+            if exclude_submission_id:
+                query = query.neq("id", exclude_submission_id)
+            res = query.execute()
+            if res.data:
+                peers = []
+                for row in res.data:
+                    row["student_name"] = ferpa_cipher.decrypt(row.get("student_name_encrypted", "")) or "Peer"
+                    row["student_roll"] = ferpa_cipher.decrypt(row.get("student_roll_encrypted", "")) or ""
+                    peers.append(row)
+                return peers
+        except Exception as e:
+            logger.warning(f"Supabase peer submissions query error: {e}")
+
+        # Local fallback
+        db = SessionLocal()
+        try:
+            q = db.query(Submission).filter(Submission.assignment_id == assignment_id)
+            if exclude_submission_id:
+                q = q.filter(Submission.id != exclude_submission_id)
+            subs = q.all()
+            return [
+                {
+                    "id": s.id,
+                    "assignment_id": s.assignment_id,
+                    "student_name": s.student_name,
+                    "student_roll": s.student_roll,
+                    "extracted_text": s.extracted_text or s.file_content or "",
+                    "file_name": s.file_name,
+                }
+                for s in subs
+            ]
+        finally:
+            db.close()
+
+    def get_assignment_details(self, assignment_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch assignment along with rubric criteria and reference exemplar."""
+        try:
+            res = self.client.table("assignments").select("*").eq("id", assignment_id).execute()
+            if res.data:
+                assignment = res.data[0]
+                rubric_id = assignment.get("rubric_id")
+                if rubric_id:
+                    rubric = self.get_rubric(rubric_id)
+                    assignment["rubric"] = rubric
+                return assignment
+        except Exception as e:
+            logger.warning(f"Supabase assignment lookup notice: {e}")
+
+        db = SessionLocal()
+        try:
+            a = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+            if a:
+                return {
+                    "id": a.id,
+                    "course_id": a.course_id,
+                    "title": a.title,
+                    "description": a.description,
+                    "max_score": a.max_score,
+                    "rubric_id": a.rubric_id,
+                    "reference_assignment_text": a.reference_assignment_text,
+                }
+            return None
+        finally:
+            db.close()
+
+    def save_evaluation_results(
+        self,
+        submission_id: str,
+        overall_score: float,
+        similarity_score: float,
+        ai_content_probability: float,
+        web_plagiarism_score: float,
+        web_sources: List[Dict[str, Any]],
+        criteria_scores: List[Dict[str, Any]],
+        ai_feedback: str,
+        is_flagged: bool,
+    ) -> bool:
+        """Update submission record in Supabase with parsed scores, feedback, flags, and audit payload."""
+        status = "flagged" if is_flagged else "graded"
+        # 1. Update submissions table
+        try:
+            sub_update = {
+                "similarity_score": similarity_score,
+                "ai_content_probability": ai_content_probability,
+                "web_plagiarism_score": web_plagiarism_score,
+                "web_sources": web_sources,
+                "status": status,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self.client.table("submissions").update(sub_update).eq("id", submission_id).execute()
+        except Exception as e:
+            logger.error(f"Failed to update submission {submission_id} in Supabase: {e}")
+
+        # 2. Upsert draft_grades table
+        try:
+            draft_id = f"draft_{submission_id}"
+            draft_payload = {
+                "id": draft_id,
+                "submission_id": submission_id,
+                "suggested_score": overall_score,
+                "criteria_scores": criteria_scores,
+                "ai_feedback": ai_feedback,
+                "status": "flagged" if is_flagged else "pending",
+                "ai_model": settings.GEMINI_MODEL,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            }
+            self.client.table("draft_grades").upsert(draft_payload).execute()
+        except Exception as e:
+            logger.error(f"Failed to upsert draft grade for {submission_id} in Supabase: {e}")
+
+        return True
     # ==========================================
     def get_rubric(self, rubric_id: str) -> Optional[Dict[str, Any]]:
         """Query rubrics table via PostgREST: supabase.table("rubrics")."""

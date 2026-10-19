@@ -22,8 +22,10 @@ class Submission(Base):
     # File and Submission Metadata
     file_name = Column(String(255), nullable=False)
     file_path = Column(String(512), nullable=True)
+    file_url = Column(String(1024), nullable=True)  # Supabase Storage public/signed URL
     file_type = Column(String(64), default="pdf")
     extracted_text = Column(Text, nullable=True)
+    content = Column(Text, nullable=True)  # Raw text or extracted text alias for database
     file_content = Column(Text, nullable=True)  # Raw file content (text or base64) stored directly in database
 
     # Plagiarism / Similarity & AI Indicators

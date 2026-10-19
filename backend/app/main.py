@@ -35,6 +35,8 @@ async def lifespan(app: FastAPI):
             for col_sql in [
                 "ALTER TABLE assignments ADD COLUMN reference_assignment_text TEXT;",
                 "ALTER TABLE submissions ADD COLUMN file_content TEXT;",
+                "ALTER TABLE submissions ADD COLUMN file_url TEXT;",
+                "ALTER TABLE submissions ADD COLUMN content TEXT;",
                 "ALTER TABLE submissions ADD COLUMN web_plagiarism_score REAL DEFAULT 0.0;",
                 "ALTER TABLE submissions ADD COLUMN web_sources JSON DEFAULT '[]';",
             ]:
@@ -72,6 +74,7 @@ app = FastAPI(
     redoc_url="/redoc",
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     lifespan=lifespan,
+    redirect_slashes=False,
 )
 
 # Configure CORS Middleware for React frontend (Local + Vercel)

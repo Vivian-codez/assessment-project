@@ -286,4 +286,167 @@ def test_file_upload_database_persistence_and_retrieval():
         db.close()
 
 
+def test_docx_text_extraction_paragraphs_and_tables():
+    """Verify python-docx correctly extracts both paragraphs and table cells."""
+    import io
+    import docx
+    from app.services.pdf_service import pdf_service
+
+    doc = docx.Document()
+    doc.add_heading("Research Report: Distributed Consensus", level=1)
+    doc.add_paragraph("This paper analyzes Paxos and Raft consensus protocols under high network latency.")
+    doc.add_paragraph("Section 2: Comparative Throughput Analysis.")
+
+    table = doc.add_table(rows=2, cols=3)
+    hdr_cells = table.rows[0].cells
+    hdr_cells[0].text = "Protocol"
+    hdr_cells[1].text = "Leader Election (ms)"
+    hdr_cells[2].text = "Message Complexity"
+
+    row_cells = table.rows[1].cells
+    row_cells[0].text = "Raft"
+    row_cells[1].text = "150ms"
+    row_cells[2].text = "O(n)"
+
+    bio = io.BytesIO()
+    doc.save(bio)
+    docx_bytes = bio.getvalue()
+
+    extracted_text = pdf_service.extract_text_from_bytes(docx_bytes, "distributed_consensus.docx")
+    assert extracted_text is not None
+    assert "Distributed Consensus" in extracted_text
+    assert "Paxos and Raft consensus" in extracted_text
+    assert "Comparative Throughput Analysis" in extracted_text
+    assert "Protocol | Leader Election (ms) | Message Complexity" in extracted_text
+    assert "Raft | 150ms | O(n)" in extracted_text
+
+
+def test_docx_submission_upload_endpoint():
+    """Verify multipart .docx submission uploads parse text and save to DB."""
+    import io
+    import docx
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.core.database import SessionLocal
+    from app.models.assignment import Assignment
+    from app.models.course import Course
+    from app.models.submission import Submission
+
+    client = TestClient(app)
+    db = SessionLocal()
+    try:
+        course = db.query(Course).first()
+        if not course:
+            course = Course(id="c_docx_test", name="Docx Course", code="DC101")
+            db.add(course)
+            db.commit()
+
+        assignment = db.query(Assignment).filter(Assignment.course_id == course.id).first()
+        if not assignment:
+            assignment = Assignment(id="assign_docx_test", course_id=course.id, title="Docx Assignment")
+            db.add(assignment)
+            db.commit()
+
+        # Build in-memory docx
+        doc = docx.Document()
+        doc.add_paragraph("Student analysis on deep learning transformers and attention mechanisms.")
+        bio = io.BytesIO()
+        doc.save(bio)
+        docx_bytes = bio.getvalue()
+
+        # Upload via /api/v1/assignments/{assignment_id}/submissions
+        res = client.post(
+            f"/api/v1/assignments/{assignment.id}/submissions",
+            files={"file": ("deep_learning_essay.docx", docx_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+            data={"student_name": "Maya Patel", "student_roll": "2024-555"},
+        )
+        assert res.status_code == 200, res.text
+        data = res.json()
+        assert data["student"] == "Maya Patel"
+        assert data["file_name"] == "deep_learning_essay.docx"
+        assert data["status"] == "pending"
+
+        sub_id = data["id"]
+        saved = db.query(Submission).filter(Submission.id == sub_id).first()
+        assert saved is not None
+        assert saved.student_name == "Maya Patel"
+        assert saved.extracted_text is not None
+        assert "deep learning transformers" in saved.extracted_text
+        assert saved.content is not None
+        assert "deep learning transformers" in saved.content
+    finally:
+        db.close()
+
+
+def test_gemini_schema_bidirectional_mapping():
+    """Verify StructuredGradingOutput models validate all required audit keys."""
+    from app.schemas.grading import (
+        StructuredGradingOutput,
+        GradingSummary,
+        RubricBreakdownItem,
+        IntegrityAudit,
+        PeerPlagiarismAudit,
+        WebPlagiarismAudit,
+        WebSourceItem,
+        AIContentAssessment,
+        FeedbackDetails,
+    )
+
+    data = {
+        "grading_summary": {
+            "score": 88.0,
+            "max_points": 100.0,
+            "percentage": 88.0,
+            "grade": "B+",
+        },
+        "rubric_breakdown": [
+            {
+                "criterion_name": "Technical Depth",
+                "awarded_points": 28.0,
+                "max_points": 30.0,
+                "rationale": "Clear algorithmic analysis with rigorous asymptotic bounds.",
+            }
+        ],
+        "integrity_audit": {
+            "peer_plagiarism": {
+                "similarity_percentage": 5.2,
+                "matched_peer_id": "STUDENT_A",
+                "matching_excerpts": ["standard library initialization"],
+            },
+            "web_plagiarism": {
+                "similarity_percentage": 12.0,
+                "matched_sources": [
+                    {
+                        "url": "https://en.wikipedia.org/wiki/Quicksort",
+                        "title": "Quicksort - Wikipedia",
+                        "snippet": "Quicksort is an efficient divide-and-conquer sorting algorithm.",
+                        "match_pct": 12.0,
+                    }
+                ],
+            },
+            "ai_content_assessment": {
+                "likelihood_rating": "low",
+                "ai_probability": 8.5,
+                "stylistic_indicators": ["Varied sentence structure and idiosyncratic code formatting."],
+            },
+        },
+        "feedback": {
+            "strengths": ["Strong theoretical foundation", "Clear diagrams"],
+            "actionable_corrections": ["Add empirical benchmarks for non-uniform data."],
+            "summary": "Solid submission demonstrating good domain grasp.",
+        },
+    }
+
+    output = StructuredGradingOutput(**data)
+    assert output.overall_score == 88.0
+    assert output.grading_summary.percentage == 88.0
+    assert output.integrity_audit.peer_plagiarism.similarity_percentage == 5.2
+    assert output.integrity_audit.web_plagiarism.similarity_percentage == 12.0
+    assert len(output.integrity_audit.web_plagiarism.matched_sources) == 1
+    assert output.integrity_audit.web_plagiarism.matched_sources[0].url == "https://en.wikipedia.org/wiki/Quicksort"
+    assert output.integrity_audit.ai_content_assessment.ai_probability == 8.5
+    assert len(output.feedback.strengths) == 2
+
+
+
 

@@ -26,11 +26,13 @@ class SubmissionResponse(BaseModel):
     similarity: float = 0.0
     ai_content: float = Field(default=0.0, alias="aiContent")
     web_plagiarism: float = Field(default=0.0, alias="webPlagiarism")
+    file_url: Optional[str] = None
     created_at: datetime
 
 
 class SubmissionDetailResponse(SubmissionResponse):
     extracted_text: Optional[str] = None
+    content: Optional[str] = None
     matching_phrase: Optional[str] = None
     criteria_scores: List[dict] = Field(default_factory=list)
     ai_feedback: Optional[str] = None

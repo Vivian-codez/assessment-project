@@ -62,6 +62,8 @@ def init_db():
         for col_sql in [
             "ALTER TABLE assignments ADD COLUMN reference_assignment_text TEXT;",
             "ALTER TABLE submissions ADD COLUMN file_content TEXT;",
+            "ALTER TABLE submissions ADD COLUMN file_url TEXT;",
+            "ALTER TABLE submissions ADD COLUMN content TEXT;",
             "ALTER TABLE submissions ADD COLUMN web_plagiarism_score REAL DEFAULT 0.0;",
             "ALTER TABLE submissions ADD COLUMN web_sources JSON DEFAULT '[]';",
         ]:
