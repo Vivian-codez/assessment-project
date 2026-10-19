@@ -226,3 +226,64 @@ def test_evaluation_with_reference_assignment_and_web_plagiarism():
     assert isinstance(result.web_sources, list)
 
 
+def test_file_upload_database_persistence_and_retrieval():
+    """Verify uploaded files are saved in the database with file_content and extracted_text."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.core.database import SessionLocal
+    from app.models.submission import Submission
+    from app.models.assignment import Assignment
+    from app.models.course import Course
+
+    client = TestClient(app)
+    db = SessionLocal()
+
+    # Ensure a test course and assignment exist
+    try:
+        course = db.query(Course).first()
+        if not course:
+            course = Course(id="c_test_upload", name="Test Course", code="TC101", section="A")
+            db.add(course)
+            db.commit()
+
+        assignment = db.query(Assignment).filter(Assignment.course_id == course.id).first()
+        if not assignment:
+            assignment = Assignment(id="assign_test_upload", course_id=course.id, title="Test Assignment")
+            db.add(assignment)
+            db.commit()
+            db.refresh(assignment)
+
+        # Upload a code file
+        code_content = b"def bubble_sort(arr):\n    for i in range(len(arr)):\n        for j in range(len(arr)-i-1):\n            if arr[j] > arr[j+1]: arr[j], arr[j+1] = arr[j+1], arr[j]\n    return arr\n"
+        upload_res = client.post(
+            f"/api/v1/assignments/{assignment.id}/submissions/batch-upload",
+            files=[("files", ("sharma_rahul_sort.py", code_content, "text/x-python"))],
+        )
+        assert upload_res.status_code == 200, upload_res.text
+        upload_data = upload_res.json()
+        assert upload_data["total_files"] == 1
+        sub_id = upload_data["submissions"][0]["id"]
+
+        # Verify database record
+        saved_sub = db.query(Submission).filter(Submission.id == sub_id).first()
+        assert saved_sub is not None
+        assert saved_sub.student_name == "Rahul Sharma"
+        assert saved_sub.file_name == "sharma_rahul_sort.py"
+        assert saved_sub.extracted_text is not None
+        assert "bubble_sort" in saved_sub.extracted_text
+        assert saved_sub.file_content is not None
+        assert "bubble_sort" in saved_sub.file_content
+
+        # Verify API list returns decrypted student and file info
+        list_res = client.get(f"/api/v1/assignments/{assignment.id}/submissions")
+        assert list_res.status_code == 200
+        items = list_res.json()
+        matching = [item for item in items if item["id"] == sub_id]
+        assert len(matching) == 1
+        assert matching[0]["student"] == "Rahul Sharma"
+        assert matching[0]["file_name"] == "sharma_rahul_sort.py"
+    finally:
+        db.close()
+
+
+

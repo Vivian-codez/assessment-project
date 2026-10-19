@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS public.submissions (
     file_path VARCHAR(512),
     file_type VARCHAR(64) DEFAULT 'pdf',
     extracted_text TEXT,
+    file_content TEXT,
     similarity_score NUMERIC(5,2) DEFAULT 0.0,
     ai_content_probability NUMERIC(5,2) DEFAULT 0.0,
     status VARCHAR(32) DEFAULT 'pending', -- pending, flagged, graded, approved
@@ -167,12 +168,14 @@ ALTER TABLE public.draft_grades ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.similarity_matches ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.batch_jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_sessions ENABLE ROW LEVEL SECURITY;
 
 -- Allow service role / anon full access for this prototype API layer
 DO $$
 DECLARE
     tbl text;
-    tbls text[] := ARRAY['courses', 'instructors', 'submissions', 'rubrics', 'rubric_criteria', 'assignments', 'draft_grades', 'audit_logs', 'similarity_matches', 'batch_jobs'];
+    tbls text[] := ARRAY['courses', 'instructors', 'submissions', 'rubrics', 'rubric_criteria', 'assignments', 'draft_grades', 'audit_logs', 'similarity_matches', 'batch_jobs', 'users', 'user_sessions'];
 BEGIN
     FOREACH tbl IN ARRAY tbls
     LOOP
@@ -183,3 +186,4 @@ BEGIN
         END IF;
     END LOOP;
 END $$;
+

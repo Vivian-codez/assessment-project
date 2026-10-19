@@ -35,6 +35,28 @@ def get_courses(
         )
     courses = query.all()
     if not courses and not search:
+        # Fallback to Supabase courses
+        try:
+            from app.core.supabase import supabase
+            res = supabase.table("courses").select("*").execute()
+            if res.data:
+                for c_data in res.data:
+                    if not db.query(Course).filter(Course.id == c_data["id"]).first():
+                        db.add(Course(
+                            id=c_data["id"],
+                            name=c_data["name"],
+                            code=c_data["code"],
+                            section=c_data.get("section", "A"),
+                            tone=c_data.get("tone", "lav"),
+                            students_count=c_data.get("students_count", 0),
+                            instructor_id=c_data.get("instructor_id"),
+                        ))
+                db.commit()
+                courses = query.all() or db.query(Course).all()
+        except Exception as e:
+            logger.warning(f"Supabase courses sync notice: {e}")
+
+    if not courses and not search:
         # Fallback to seeded demo courses for prototype display
         courses = db.query(Course).all()
 

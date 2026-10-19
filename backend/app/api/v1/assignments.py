@@ -21,7 +21,28 @@ def get_course_assignments(
     db: Session = Depends(get_db),
 ):
     """Retrieve all assignments for a specified course."""
-    return db.query(Assignment).filter(Assignment.course_id == course_id).all()
+    assignments = db.query(Assignment).filter(Assignment.course_id == course_id).all()
+    if not assignments:
+        try:
+            from app.core.supabase import supabase
+            res = supabase.table("assignments").select("*").eq("course_id", course_id).execute()
+            if res.data:
+                for a_data in res.data:
+                    if not db.query(Assignment).filter(Assignment.id == a_data["id"]).first():
+                        db.add(Assignment(
+                            id=a_data["id"],
+                            course_id=a_data["course_id"],
+                            title=a_data["title"],
+                            description=a_data.get("description"),
+                            max_score=float(a_data.get("max_score", 100.0)),
+                            rubric_id=a_data.get("rubric_id"),
+                            reference_assignment_text=a_data.get("reference_assignment_text"),
+                        ))
+                db.commit()
+                assignments = db.query(Assignment).filter(Assignment.course_id == course_id).all()
+        except Exception as e:
+            logger.warning(f"Supabase assignments sync notice: {e}")
+    return assignments
 
 
 @router.post("/courses/{course_id}/assignments", response_model=AssignmentResponse)
@@ -75,6 +96,27 @@ def get_assignment_detail(
 ):
     """Retrieve single assignment details."""
     assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        try:
+            from app.core.supabase import supabase
+            res = supabase.table("assignments").select("*").eq("id", assignment_id).execute()
+            if res.data:
+                a_data = res.data[0]
+                assignment = Assignment(
+                    id=a_data["id"],
+                    course_id=a_data["course_id"],
+                    title=a_data["title"],
+                    description=a_data.get("description"),
+                    max_score=float(a_data.get("max_score", 100.0)),
+                    rubric_id=a_data.get("rubric_id"),
+                    reference_assignment_text=a_data.get("reference_assignment_text"),
+                )
+                db.add(assignment)
+                db.commit()
+                db.refresh(assignment)
+        except Exception as e:
+            logger.warning(f"Supabase assignment detail sync notice: {e}")
+
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
     return assignment

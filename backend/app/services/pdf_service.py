@@ -19,12 +19,53 @@ class PDFService:
         """Extracts text from file bytes."""
         extension = filename.lower().split(".")[-1] if "." in filename else ""
 
-        if extension == "txt":
+        # Text and source code files
+        code_and_text_extensions = {
+            "txt", "py", "java", "c", "cpp", "cc", "cxx", "h", "hpp", "cs",
+            "js", "jsx", "ts", "tsx", "html", "htm", "css", "scss", "json",
+            "xml", "md", "markdown", "sql", "sh", "bash", "r", "go", "rs",
+            "php", "rb", "yaml", "yml", "csv", "tsv"
+        }
+
+        if extension in code_and_text_extensions:
             try:
-                return file_bytes.decode("utf-8", errors="replace")
+                text = file_bytes.decode("utf-8", errors="replace")
+                if text.strip():
+                    return text.strip()
             except Exception as e:
-                logger.error(f"Error decoding TXT file {filename}: {e}")
-                return ""
+                logger.error(f"Error decoding text/code file {filename}: {e}")
+
+        # Jupyter Notebook (.ipynb)
+        if extension == "ipynb":
+            try:
+                import json
+                nb = json.loads(file_bytes.decode("utf-8", errors="replace"))
+                extracted_lines = []
+                for cell in nb.get("cells", []):
+                    src = cell.get("source", [])
+                    cell_text = "".join(src) if isinstance(src, list) else str(src)
+                    if cell_text.strip():
+                        extracted_lines.append(cell_text.strip())
+                if extracted_lines:
+                    return "\n\n".join(extracted_lines)
+            except Exception as e:
+                logger.warning(f"Error parsing notebook {filename}: {e}")
+
+        # Word Document (.docx)
+        if extension == "docx":
+            try:
+                import zipfile
+                import xml.etree.ElementTree as ET
+                with zipfile.ZipFile(BytesIO(file_bytes)) as docx_zip:
+                    if "word/document.xml" in docx_zip.namelist():
+                        xml_content = docx_zip.read("word/document.xml")
+                        root = ET.fromstring(xml_content)
+                        # Extract all text inside w:t tags
+                        texts = [elem.text for elem in root.iter() if elem.text and elem.tag.endswith("}t")]
+                        if texts:
+                            return " ".join(texts).strip()
+            except Exception as e:
+                logger.warning(f"Error extracting docx file {filename}: {e}")
 
         if extension == "pdf":
             if _PYPDF_AVAILABLE:
@@ -50,7 +91,15 @@ class PDFService:
             except Exception:
                 return f"Content extracted from {filename}"
 
-        # Default fallback for doc/docx/other
+        # Universal fallback: try utf-8, then latin1
+        try:
+            decoded = file_bytes.decode("utf-8", errors="ignore").strip()
+            if len(decoded) > 20:
+                cleaned = "".join(c for c in decoded if c.isprintable() or c in "\n\r\t")
+                return cleaned[:10000]
+        except Exception:
+            pass
+
         return f"Document submission text extracted from {filename}"
 
     def extract_text_from_file_path(self, file_path: str) -> str:

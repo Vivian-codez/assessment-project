@@ -20,6 +20,54 @@ from app.models.instructor import Instructor
 router = APIRouter(tags=["Submissions"])
 
 
+def _ensure_assignment_exists(db: Session, assignment_id: str) -> Optional[Assignment]:
+    """Ensure assignment exists in local DB, checking and replicating from Supabase if needed."""
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if assignment:
+        return assignment
+
+    try:
+        from app.core.supabase import supabase
+        from app.models.course import Course
+        res = supabase.table("assignments").select("*").eq("id", assignment_id).execute()
+        if res.data:
+            a_data = res.data[0]
+            course_id = a_data["course_id"]
+            course = db.query(Course).filter(Course.id == course_id).first()
+            if not course:
+                c_res = supabase.table("courses").select("*").eq("id", course_id).execute()
+                if c_res.data:
+                    c_data = c_res.data[0]
+                    course = Course(
+                        id=c_data["id"],
+                        name=c_data["name"],
+                        code=c_data["code"],
+                        section=c_data.get("section", "A"),
+                        tone=c_data.get("tone", "lav"),
+                        students_count=c_data.get("students_count", 0),
+                        instructor_id=c_data.get("instructor_id"),
+                    )
+                    db.add(course)
+                    db.commit()
+            assignment = Assignment(
+                id=a_data["id"],
+                course_id=course_id,
+                title=a_data["title"],
+                description=a_data.get("description"),
+                max_score=float(a_data.get("max_score", 100.0)),
+                rubric_id=a_data.get("rubric_id"),
+                reference_assignment_text=a_data.get("reference_assignment_text"),
+            )
+            db.add(assignment)
+            db.commit()
+            db.refresh(assignment)
+            return assignment
+    except Exception as e:
+        logger.warning(f"Supabase assignment lookup fallback notice: {e}")
+
+    return None
+
+
 @router.post("/assignments/{assignment_id}/submissions/batch-upload", response_model=BatchUploadResponse)
 async def batch_upload_submissions(
     assignment_id: str,
@@ -27,12 +75,12 @@ async def batch_upload_submissions(
     db: Session = Depends(get_db),
     instructor: Instructor = Depends(get_current_instructor),
 ):
-    """Batch upload student submissions (PDF, TXT, DOCX, ZIP).
+    """Batch upload student submissions (PDF, TXT, DOCX, ZIP, Code).
 
-    Extracts text, stores files, and registers submissions with FERPA
-    encryption.
+    Extracts text, stores files directly in database with FERPA encryption,
+    and synchronizes with persistent database storage.
     """
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    assignment = _ensure_assignment_exists(db, assignment_id)
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
@@ -69,6 +117,33 @@ async def batch_upload_submissions(
             created_submissions.append(sub)
 
     db.commit()
+
+    # Sync created submissions to Supabase database
+    try:
+        from app.core.supabase import supabase
+        supabase_records = [
+            {
+                "id": s.id,
+                "assignment_id": s.assignment_id,
+                "student_name_encrypted": s.student_name_encrypted,
+                "student_roll_encrypted": s.student_roll_encrypted,
+                "student_email_encrypted": s.student_email_encrypted,
+                "file_name": s.file_name,
+                "file_path": s.file_path,
+                "file_type": s.file_type,
+                "extracted_text": s.extracted_text,
+                "file_content": s.file_content,
+                "similarity_score": 0.0,
+                "ai_content_probability": 0.0,
+                "status": s.status,
+            }
+            for s in created_submissions
+        ]
+        if supabase_records:
+            supabase.table("submissions").upsert(supabase_records).execute()
+            logger.info(f"Synchronized {len(supabase_records)} submissions with Supabase database.")
+    except Exception as e:
+        logger.warning(f"Supabase batch submission sync notice: {e}")
 
     log_audit_event(
         actor=instructor.name,
@@ -117,7 +192,22 @@ def _create_single_submission(
     except Exception:
         file_path = ""
 
+    # Determine file type and format file content string
+    ext = filename.lower().split(".")[-1] if "." in filename else "text"
+    is_binary = ext in {"pdf", "docx", "doc", "zip", "png", "jpg", "jpeg", "tar", "gz"}
+
+    import base64
+    if not is_binary:
+        try:
+            file_content_str = content.decode("utf-8", errors="replace")
+        except Exception:
+            file_content_str = base64.b64encode(content).decode("ascii")
+    else:
+        file_content_str = base64.b64encode(content).decode("ascii")
+
     extracted_text = pdf_service.extract_text_from_bytes(content, filename)
+    if not extracted_text and not is_binary:
+        extracted_text = file_content_str
 
     # Heuristic student parsing from filename (e.g., 'sharma_rahul_graphs.pdf')
     clean_stem = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ")
@@ -135,7 +225,9 @@ def _create_single_submission(
         assignment_id=assignment_id,
         file_name=filename,
         file_path=file_path,
+        file_type=ext,
         extracted_text=extracted_text,
+        file_content=file_content_str,
         status="pending",
     )
     # Uses FERPA transparent encryption setters
@@ -155,7 +247,7 @@ def create_single_submission(
     instructor: Instructor = Depends(get_current_instructor),
 ):
     """Create a single student submission with manual text entry."""
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    assignment = _ensure_assignment_exists(db, assignment_id)
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
 
@@ -167,6 +259,7 @@ def create_single_submission(
         file_path="",
         file_type="text",
         extracted_text=payload.extracted_text or "",
+        file_content=payload.extracted_text or "",
         status="pending",
     )
     sub.student_name = payload.student_name
@@ -176,6 +269,27 @@ def create_single_submission(
     db.add(sub)
     db.commit()
     db.refresh(sub)
+
+    # Sync to Supabase
+    try:
+        from app.core.supabase import supabase
+        supabase.table("submissions").upsert({
+            "id": sub.id,
+            "assignment_id": sub.assignment_id,
+            "student_name_encrypted": sub.student_name_encrypted,
+            "student_roll_encrypted": sub.student_roll_encrypted,
+            "student_email_encrypted": sub.student_email_encrypted,
+            "file_name": sub.file_name,
+            "file_path": "",
+            "file_type": "text",
+            "extracted_text": sub.extracted_text,
+            "file_content": sub.file_content,
+            "similarity_score": 0.0,
+            "ai_content_probability": 0.0,
+            "status": "pending",
+        }).execute()
+    except Exception as e:
+        logger.warning(f"Supabase single submission sync notice: {e}")
 
     log_audit_event(
         actor=instructor.name,
@@ -207,6 +321,37 @@ def get_assignment_submissions(
 ):
     """Retrieve all submissions for an assignment with decrypted student names and plagiarism scores."""
     submissions = db.query(Submission).filter(Submission.assignment_id == assignment_id).all()
+    if not submissions:
+        # Check Supabase database
+        try:
+            from app.core.supabase import supabase
+            res = supabase.table("submissions").select("*").eq("assignment_id", assignment_id).execute()
+            if res.data:
+                for row in res.data:
+                    existing = db.query(Submission).filter(Submission.id == row["id"]).first()
+                    if not existing:
+                        s = Submission(
+                            id=row["id"],
+                            assignment_id=row["assignment_id"],
+                            student_name_encrypted=row["student_name_encrypted"],
+                            student_roll_encrypted=row["student_roll_encrypted"],
+                            student_email_encrypted=row.get("student_email_encrypted"),
+                            file_name=row["file_name"],
+                            file_path=row.get("file_path", ""),
+                            file_type=row.get("file_type", "pdf"),
+                            extracted_text=row.get("extracted_text"),
+                            file_content=row.get("file_content"),
+                            similarity_score=float(row.get("similarity_score") or 0.0),
+                            ai_content_probability=float(row.get("ai_content_probability") or 0.0),
+                            web_plagiarism_score=float(row.get("web_plagiarism_score") or 0.0),
+                            status=row.get("status", "pending"),
+                        )
+                        db.add(s)
+                db.commit()
+                submissions = db.query(Submission).filter(Submission.assignment_id == assignment_id).all()
+        except Exception as e:
+            logger.warning(f"Supabase submissions fetch fallback notice: {e}")
+
     return [
         SubmissionResponse(
             id=s.id,

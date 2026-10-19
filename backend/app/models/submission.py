@@ -24,6 +24,7 @@ class Submission(Base):
     file_path = Column(String(512), nullable=True)
     file_type = Column(String(64), default="pdf")
     extracted_text = Column(Text, nullable=True)
+    file_content = Column(Text, nullable=True)  # Raw file content (text or base64) stored directly in database
 
     # Plagiarism / Similarity & AI Indicators
     similarity_score = Column(Float, default=0.0)  # Highest similarity % found with any peer

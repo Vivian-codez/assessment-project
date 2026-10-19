@@ -35,8 +35,12 @@ else:
             pool_recycle=3600,
             pool_pre_ping=True,
             echo=False,
+            connect_args={"connect_timeout": 3},
         )
-    except Exception as e:
+        # Test connection eagerly to verify server availability
+        with engine.connect() as conn:
+            pass
+    except Exception:
         # Fallback to local SQLite if PostgreSQL connection fails
         fallback_url = "sqlite:///./verism.db"
         engine = create_engine(
@@ -48,6 +52,31 @@ else:
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 Base = declarative_base()
+
+
+def init_db():
+    """Create tables and ensure newly added columns are migrated."""
+    from sqlalchemy import text
+    Base.metadata.create_all(bind=engine)
+    with engine.connect() as conn:
+        for col_sql in [
+            "ALTER TABLE assignments ADD COLUMN reference_assignment_text TEXT;",
+            "ALTER TABLE submissions ADD COLUMN file_content TEXT;",
+            "ALTER TABLE submissions ADD COLUMN web_plagiarism_score REAL DEFAULT 0.0;",
+            "ALTER TABLE submissions ADD COLUMN web_sources JSON DEFAULT '[]';",
+        ]:
+            try:
+                conn.execute(text(col_sql))
+                conn.commit()
+            except Exception:
+                pass
+
+
+try:
+    init_db()
+except Exception:
+    pass
+
 
 
 def get_db() -> Generator:

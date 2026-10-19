@@ -28,6 +28,36 @@ async def lifespan(app: FastAPI):
         # Create tables automatically if they do not exist
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables initialized successfully.")
+
+        # Ensure newly added columns exist in SQLite or existing databases
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            for col_sql in [
+                "ALTER TABLE assignments ADD COLUMN reference_assignment_text TEXT;",
+                "ALTER TABLE submissions ADD COLUMN file_content TEXT;",
+                "ALTER TABLE submissions ADD COLUMN web_plagiarism_score REAL DEFAULT 0.0;",
+                "ALTER TABLE submissions ADD COLUMN web_sources JSON DEFAULT '[]';",
+            ]:
+                try:
+                    conn.execute(text(col_sql))
+                    conn.commit()
+                except Exception:
+                    pass
+
+        # Ensure seed data exists in database for courses and assignments
+        from app.core.database import SessionLocal
+        from app.models.course import Course
+        db = SessionLocal()
+        try:
+            if db.query(Course).count() == 0:
+                logger.info("Database contains 0 courses. Initializing seed data...")
+                from scripts.seed_data import seed
+                seed()
+                logger.info("Default seed courses, assignments, and rubrics loaded successfully.")
+        except Exception as seed_err:
+            logger.warning(f"Seed data initialization notice: {seed_err}")
+        finally:
+            db.close()
     except Exception as e:
         logger.warning(f"Database table auto-creation skipped or encountered error: {e}")
     yield

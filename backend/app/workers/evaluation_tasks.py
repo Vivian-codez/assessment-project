@@ -119,6 +119,19 @@ def run_evaluation_batch_logic(
         # 5. Extract Text & Index into Qdrant for Similarity Checking
         batch_texts = []
         for sub in submissions:
+            if not sub.extracted_text and sub.file_content:
+                # Recover text directly from saved file_content
+                ext = sub.file_name.lower().split(".")[-1] if "." in sub.file_name else ""
+                is_binary = ext in {"pdf", "docx", "doc", "zip", "tar", "gz", "png", "jpg"}
+                if not is_binary:
+                    sub.extracted_text = sub.file_content
+                else:
+                    try:
+                        import base64
+                        raw_bytes = base64.b64decode(sub.file_content)
+                        sub.extracted_text = pdf_service.extract_text_from_bytes(raw_bytes, sub.file_name)
+                    except Exception:
+                        pass
             if not sub.extracted_text and sub.file_path:
                 sub.extracted_text = pdf_service.extract_text_from_file_path(sub.file_path)
             elif not sub.extracted_text:
@@ -273,6 +286,33 @@ def run_evaluation_batch_logic(
             "ready_for_review": total,
         }
         db.commit()
+
+        # Sync evaluated submissions & draft grades to Supabase database
+        try:
+            from app.core.supabase import supabase
+            for s in submissions:
+                supabase.table("submissions").update({
+                    "similarity_score": s.similarity_score,
+                    "ai_content_probability": s.ai_content_probability,
+                    "web_plagiarism_score": s.web_plagiarism_score,
+                    "status": s.status,
+                }).eq("id", s.id).execute()
+
+                if s.draft_grade:
+                    dg = s.draft_grade
+                    supabase.table("draft_grades").upsert({
+                        "id": dg.id,
+                        "submission_id": dg.submission_id,
+                        "suggested_score": dg.suggested_score,
+                        "final_score": dg.final_score,
+                        "criteria_scores": dg.criteria_scores,
+                        "ai_feedback": dg.ai_feedback,
+                        "teacher_feedback": dg.teacher_feedback,
+                        "status": dg.status,
+                        "ai_model": dg.ai_model,
+                    }).execute()
+        except Exception as sync_err:
+            logger.warning(f"Supabase evaluation results sync notice: {sync_err}")
 
         log_audit_event(
             actor="SYSTEM_CELERY_WORKER",

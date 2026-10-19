@@ -68,8 +68,8 @@ class Settings(BaseSettings):
         return ["*"]
 
     # Supabase Layer (Active Supabase Connection via supabase-py)
-    SUPABASE_URL: str = "https://bziehnbdeczqtaemelkw.supabase.co"
-    SUPABASE_KEY: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummy_anon_key_for_development"
+    SUPABASE_URL: str = "https://lzranjtbiucfaktbnjec.supabase.co"
+    SUPABASE_KEY: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6cmFuanRiaXVjZmFrdGJuamVjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIzNDAyMTMsImV4cCI6MjEwNzkxNjIxM30.TWBIc8-chcw7aI2LYX8NEiopKWMz9-wNB9oqTKe5q9s"
     SUPABASE_SERVICE_ROLE_KEY: str = ""
 
     # Database (SQLite default for embedded development, PostgreSQL supported)
@@ -95,7 +95,7 @@ class Settings(BaseSettings):
     QDRANT_COLLECTION_NAME: str = "verism_submissions"
 
     # Google GenAI (Gemini 2.5 Flash / Pro)
-    GEMINI_API_KEY: str = ""
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL: str = "gemini-flash-latest"
     GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
 
