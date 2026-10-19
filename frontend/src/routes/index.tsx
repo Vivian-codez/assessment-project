@@ -421,7 +421,13 @@ function VerismApp() {
 
   // Trigger Live AI Auto-Grading & 3-Way Plagiarism Check
   const startAIAutoGrading = async (assignId?: string) => {
-    const targetId = assignId || selectedAssignmentId;
+    let targetId = assignId || selectedAssignmentId;
+    if (!targetId && currentCourse) {
+      const created = await handleTakeDefaultAssignment();
+      if (created) {
+        targetId = created.id;
+      }
+    }
     if (!targetId || isProcessing) return;
     setIsProcessing(true);
     setProcessingAssignmentId(targetId);
@@ -429,8 +435,12 @@ function VerismApp() {
     showToast("AI Auto-Grading & 3-Way Plagiarism Audit initiated. Evaluation is in process...");
 
     try {
+      const assignObj = assignments.find((a) => a.id === targetId) || currentAssignment;
       const job = await api.evaluations.triggerBatch(targetId, {
         similarity_threshold: 90.0,
+        title: assignObj?.title,
+        reference_assignment_text: assignObj?.reference_assignment_text,
+        rubric_id: assignObj?.rubric_id,
       });
 
       pollBatchJob(job.job_id, targetId);
@@ -2077,7 +2087,7 @@ function AIGradingView({
   assignment: APIAssignment | null;
   isProcessing: boolean;
   progress?: number;
-  onStartGrading: () => void;
+  onStartGrading: (assignId?: string) => void;
   onReview: (id: string) => void;
   onNavigate: (view: ViewKey) => void;
   showToast: (msg: string) => void;
@@ -2089,7 +2099,7 @@ function AIGradingView({
         title="Suggested Grades & Integrity Scores"
         description="AI evaluates submissions against your criteria and reference solution. Every grade is held in Pending Review until approved."
         action={
-          <Button onClick={onStartGrading} disabled={isProcessing} className="bg-ink text-card hover:bg-ink/90">
+          <Button onClick={() => onStartGrading(assignment?.id)} disabled={isProcessing} className="bg-ink text-card hover:bg-ink/90">
             {isProcessing ? (
               <>
                 <Loader2 className="mr-1.5 size-4 animate-spin text-amber" />

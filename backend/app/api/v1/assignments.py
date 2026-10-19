@@ -45,21 +45,34 @@ def get_course_assignments(
     return assignments
 
 
-@router.post("/courses/{course_id}/assignments", response_model=AssignmentResponse)
-def create_assignment(
-    course_id: str,
-    payload: AssignmentCreate,
-    db: Session = Depends(get_db),
-):
-    """Create a new assignment under a course with reference assignment support."""
-    course = db.query(Course).filter(Course.id == course_id).first()
-    if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
+def _ensure_course_in_supabase(course: Course):
+    """Ensures parent course exists in Supabase so foreign key constraints pass."""
+    try:
+        c_res = supabase.table("courses").select("id").eq("id", course.id).execute()
+        if not c_res.data:
+            supabase.table("courses").insert({
+                "id": course.id,
+                "name": course.name,
+                "code": course.code,
+                "section": course.section or "A",
+                "tone": getattr(course, "tone", "lav"),
+                "students_count": getattr(course, "students_count", 0),
+            }).execute()
+            logger.info(f"Synchronized parent course {course.id} ({course.name}) to Supabase.")
+    except Exception as e:
+        logger.warning(f"Could not pre-sync course {course.id} to Supabase: {e}")
 
-    assign_id = f"a_{uuid.uuid4().hex[:8]}"
+
+def _persist_assignment_record(
+    course: Course,
+    payload: AssignmentCreate,
+    db: Session,
+) -> Assignment:
+    """Internal helper to create assignment in local DB and Supabase."""
+    assign_id = f"assign_{uuid.uuid4().hex[:12]}"
     assignment = Assignment(
         id=assign_id,
-        course_id=course_id,
+        course_id=course.id,
         title=payload.title,
         description=payload.description,
         due_date=payload.due_date,
@@ -71,7 +84,20 @@ def create_assignment(
     db.commit()
     db.refresh(assignment)
 
-    # Sync to Supabase
+    # 1. Ensure parent course exists in Supabase to fulfill foreign key
+    _ensure_course_in_supabase(course)
+
+    # 2. Check if rubric_id exists in Supabase before attaching foreign key
+    sb_rubric_id = None
+    if assignment.rubric_id:
+        try:
+            r_check = supabase.table("rubrics").select("id").eq("id", assignment.rubric_id).execute()
+            if r_check.data:
+                sb_rubric_id = assignment.rubric_id
+        except Exception:
+            sb_rubric_id = None
+
+    # 3. Upsert assignment into Supabase
     try:
         supabase.table("assignments").upsert({
             "id": assignment.id,
@@ -80,13 +106,96 @@ def create_assignment(
             "description": assignment.description,
             "due_date": assignment.due_date.isoformat() if assignment.due_date else None,
             "max_score": assignment.max_score,
-            "rubric_id": assignment.rubric_id,
+            "rubric_id": sb_rubric_id,
             "reference_assignment_text": assignment.reference_assignment_text,
         }).execute()
+        logger.info(f"Persisted assignment {assignment.id} to Supabase successfully.")
     except Exception as e:
-        logger.warning(f"Supabase assignment sync notice: {e}")
+        logger.warning(f"Supabase assignment sync notice for {assignment.id}: {e}")
 
     return assignment
+
+
+@router.post("/courses/{course_id}/assignments", response_model=AssignmentResponse)
+def create_course_assignment(
+    course_id: str,
+    payload: AssignmentCreate,
+    db: Session = Depends(get_db),
+):
+    """Create a new assignment under a course with reference assignment support."""
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        # Check Supabase
+        try:
+            res = supabase.table("courses").select("*").eq("id", course_id).execute()
+            if res.data:
+                c_data = res.data[0]
+                course = Course(
+                    id=c_data["id"],
+                    name=c_data["name"],
+                    code=c_data["code"],
+                    section=c_data.get("section", "A"),
+                    tone=c_data.get("tone", "lav"),
+                    students_count=c_data.get("students_count", 0),
+                )
+                db.add(course)
+                db.commit()
+                db.refresh(course)
+        except Exception as e:
+            logger.warning(f"Supabase course lookup error: {e}")
+
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    return _persist_assignment_record(course=course, payload=payload, db=db)
+
+
+@router.post("/assignments", response_model=AssignmentResponse)
+def create_assignment_direct(
+    payload: AssignmentCreate,
+    db: Session = Depends(get_db),
+):
+    """Direct assignment creation endpoint (/api/v1/assignments).
+
+    Accepts course_id in payload, defaulting to primary course if not provided.
+    """
+    course_id = payload.course_id
+    course = None
+    if course_id:
+        course = db.query(Course).filter(Course.id == course_id).first()
+        if not course:
+            try:
+                res = supabase.table("courses").select("*").eq("id", course_id).execute()
+                if res.data:
+                    c_data = res.data[0]
+                    course = Course(
+                        id=c_data["id"],
+                        name=c_data["name"],
+                        code=c_data["code"],
+                        section=c_data.get("section", "A"),
+                        tone=c_data.get("tone", "lav"),
+                        students_count=c_data.get("students_count", 0),
+                    )
+                    db.add(course)
+                    db.commit()
+            except Exception:
+                pass
+
+    if not course:
+        # Pick first available course
+        course = db.query(Course).first()
+        if not course:
+            course = Course(
+                id=f"c_{uuid.uuid4().hex[:8]}",
+                name="Data Structures",
+                code="CS201",
+                section="A",
+                tone="lav",
+            )
+            db.add(course)
+            db.commit()
+
+    return _persist_assignment_record(course=course, payload=payload, db=db)
 
 
 @router.get("/assignments/{assignment_id}", response_model=AssignmentResponse)

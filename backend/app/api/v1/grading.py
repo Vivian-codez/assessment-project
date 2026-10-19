@@ -156,14 +156,48 @@ def evaluate_single_submission(
     """Trigger on-demand 3-way plagiarism and autograding evaluation for a single submission."""
     sub = db.query(Submission).filter(Submission.id == submission_id).first()
     if not sub:
+        try:
+            from app.core.supabase import supabase
+            res = supabase.table("submissions").select("*").eq("id", submission_id).execute()
+            if res.data:
+                row = res.data[0]
+                sub = Submission(
+                    id=row["id"],
+                    assignment_id=row["assignment_id"],
+                    student_name_encrypted=row["student_name_encrypted"],
+                    student_roll_encrypted=row["student_roll_encrypted"],
+                    student_email_encrypted=row.get("student_email_encrypted"),
+                    file_name=row["file_name"],
+                    file_path=row.get("file_path", ""),
+                    file_url=row.get("file_url"),
+                    file_type=row.get("file_type", "pdf"),
+                    extracted_text=row.get("extracted_text"),
+                    content=row.get("content") or row.get("extracted_text") or "",
+                    file_content=row.get("file_content"),
+                    similarity_score=float(row.get("similarity_score") or 0.0),
+                    ai_content_probability=float(row.get("ai_content_probability") or 0.0),
+                    web_plagiarism_score=float(row.get("web_plagiarism_score") or 0.0),
+                    web_sources=row.get("web_sources") or [],
+                    status=row.get("status", "pending"),
+                )
+                db.add(sub)
+                db.commit()
+                db.refresh(sub)
+        except Exception as e:
+            logger.warning(f"Supabase submission lookup notice: {e}")
+
+    if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
 
     from app.services.gemini_service import gemini_service
     from app.services.supabase_service import supabase_service
     from app.services.ferpa_service import ferpa_service
     from app.models.assignment import Assignment
+    from app.workers.evaluation_tasks import _ensure_assignment_in_db
 
     assignment = db.query(Assignment).filter(Assignment.id == sub.assignment_id).first()
+    if not assignment:
+        assignment = _ensure_assignment_in_db(db, sub.assignment_id)
     rubric_criteria = [
         {"name": "Understanding", "description": "Conceptual clarity and depth", "weight": 30.0, "max_score": 30.0},
         {"name": "Accuracy", "description": "Correctness of algorithmic solution", "weight": 40.0, "max_score": 40.0},

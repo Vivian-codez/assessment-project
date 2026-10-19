@@ -16,6 +16,7 @@ router = APIRouter(tags=["Batch Jobs & Worker Tasks"])
 
 
 @router.post("/assignments/{assignment_id}/evaluate-batch", response_model=BatchJobResponse)
+@router.post("/assignments/{assignment_id}/evaluate", response_model=BatchJobResponse)
 def trigger_batch_evaluation(
     assignment_id: str,
     payload: BatchEvaluationRequest,
@@ -30,6 +31,14 @@ def trigger_batch_evaluation(
     job_id = f"job_{uuid.uuid4().hex[:12]}"
 
     submission_count = db.query(Submission).filter(Submission.assignment_id == assignment_id).count()
+    if submission_count == 0:
+        try:
+            from app.core.supabase import supabase
+            sb_res = supabase.table("submissions").select("id", count="exact").eq("assignment_id", assignment_id).execute()
+            if sb_res.count:
+                submission_count = sb_res.count
+        except Exception:
+            pass
 
     job = BatchJob(
         id=job_id,
@@ -72,6 +81,8 @@ def trigger_batch_evaluation(
             submission_ids=payload.submission_ids,
             rubric_id=payload.rubric_id,
             similarity_threshold=payload.similarity_threshold,
+            title=payload.title,
+            reference_assignment_text=payload.reference_assignment_text,
         )
 
     return BatchJobResponse(
@@ -82,6 +93,28 @@ def trigger_batch_evaluation(
         processed_items=0,
         similarity_flags=0,
         ready_for_review=0,
+    )
+
+
+@router.post("/evaluate", response_model=BatchJobResponse)
+def trigger_evaluate_direct(
+    payload: BatchEvaluationRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Global evaluation trigger endpoint (/api/v1/evaluate)."""
+    target_id = payload.assignment_id
+    if not target_id:
+        # Fallback to first available assignment
+        from app.models.assignment import Assignment
+        first_assign = db.query(Assignment).first()
+        target_id = first_assign.id if first_assign else f"assign_{uuid.uuid4().hex[:12]}"
+
+    return trigger_batch_evaluation(
+        assignment_id=target_id,
+        payload=payload,
+        background_tasks=background_tasks,
+        db=db,
     )
 
 

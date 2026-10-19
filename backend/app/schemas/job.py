@@ -9,6 +9,8 @@ class BatchEvaluationRequest(BaseModel):
     submission_ids: Optional[List[str]] = None  # None means evaluate all pending for the assignment
     rubric_id: Optional[str] = None
     similarity_threshold: float = 90.0
+    title: Optional[str] = None
+    reference_assignment_text: Optional[str] = None
 
 
 class BatchJobResponse(BaseModel):

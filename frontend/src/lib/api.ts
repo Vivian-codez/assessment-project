@@ -301,10 +301,20 @@ export const api = {
         due_date?: string;
       }
     ): Promise<Assignment> => {
-      return request<Assignment>(`/courses/${courseId}/assignments`, {
-        method: "POST",
-        body: JSON.stringify(data),
-      });
+      try {
+        return await request<Assignment>("/assignments", {
+          method: "POST",
+          body: JSON.stringify({
+            course_id: courseId,
+            ...data,
+          }),
+        });
+      } catch {
+        return await request<Assignment>(`/courses/${courseId}/assignments`, {
+          method: "POST",
+          body: JSON.stringify(data),
+        });
+      }
     },
     update: async (
       id: string,
@@ -410,11 +420,31 @@ export const api = {
         rubric_id?: string;
         similarity_threshold?: number;
         submission_ids?: string[];
+        title?: string;
+        reference_assignment_text?: string;
       } = {}
     ): Promise<BatchJobResponse> => {
-      return request<BatchJobResponse>(`/assignments/${assignmentId}/evaluate-batch`, {
+      try {
+        return await request<BatchJobResponse>(`/assignments/${assignmentId}/evaluate`, {
+          method: "POST",
+          body: JSON.stringify({
+            assignment_id: assignmentId,
+            ...data,
+          }),
+        });
+      } catch {
+        return await request<BatchJobResponse>(`/assignments/${assignmentId}/evaluate-batch`, {
+          method: "POST",
+          body: JSON.stringify({
+            assignment_id: assignmentId,
+            ...data,
+          }),
+        });
+      }
+    },
+    evaluateSingle: async (submissionId: string): Promise<SubmissionDetail> => {
+      return request<SubmissionDetail>(`/submissions/${submissionId}/evaluate`, {
         method: "POST",
-        body: JSON.stringify(data),
       });
     },
     pollJobStatus: async (jobId: string): Promise<BatchJobResponse> => {

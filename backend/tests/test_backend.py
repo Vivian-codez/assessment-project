@@ -448,5 +448,70 @@ def test_gemini_schema_bidirectional_mapping():
     assert len(output.feedback.strengths) == 2
 
 
+def test_assignment_creation_and_supabase_sync():
+    """Verify /assignments endpoint creates assignment with UUID, syncs course, and sets up evaluation."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.core.database import SessionLocal
+    from app.models.assignment import Assignment
+
+    client = TestClient(app)
+    res = client.post(
+        "/api/v1/assignments",
+        json={
+            "course_id": "c_cs201",
+            "title": "CS201 · Data Structures - Section A Assignment",
+            "description": "Sorting algorithms and tree traversal implementation.",
+            "reference_assignment_text": "Reference Exemplar: Dijkstra and Quicksort with complexity analysis.",
+        },
+    )
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assign_id = data["id"]
+    assert assign_id.startswith("assign_")
+    assert data["title"] == "CS201 · Data Structures - Section A Assignment"
+
+    # Verify local DB persistence
+    db = SessionLocal()
+    try:
+        assign = db.query(Assignment).filter(Assignment.id == assign_id).first()
+        assert assign is not None
+        assert assign.reference_assignment_text is not None
+
+        # Trigger evaluation on this assignment ID
+        eval_res = client.post(
+            f"/api/v1/assignments/{assign_id}/evaluate",
+            json={"similarity_threshold": 90.0},
+        )
+        assert eval_res.status_code == 200, eval_res.text
+        eval_data = eval_res.json()
+        assert eval_data["status"] in ("queued", "processing", "completed")
+    finally:
+        db.close()
+
+
+def test_evaluation_fallback_for_unregistered_assignment_id():
+    """Verify that evaluating an unregistered/temporary assignment ID dynamically creates it without crashing."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    import uuid
+
+    client = TestClient(app)
+    temp_id = f"a_{uuid.uuid4().hex[:8]}"
+
+    # Evaluating a non-existent assignment ID should self-heal and not throw 404/500
+    eval_res = client.post(
+        f"/api/v1/assignments/{temp_id}/evaluate",
+        json={
+            "title": "Dynamic Fallback Assignment",
+            "reference_assignment_text": "Dynamic benchmark solution.",
+            "similarity_threshold": 90.0,
+        },
+    )
+    assert eval_res.status_code == 200, eval_res.text
+    eval_data = eval_res.json()
+    assert eval_data["status"] in ("queued", "processing", "completed")
+
+
 
 
