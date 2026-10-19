@@ -420,6 +420,13 @@ export const api = {
     pollJobStatus: async (jobId: string): Promise<BatchJobResponse> => {
       return request<BatchJobResponse>(`/jobs/${jobId}`);
     },
+    getActiveJob: async (assignmentId: string): Promise<BatchJobResponse | null> => {
+      try {
+        return await request<BatchJobResponse | null>(`/assignments/${assignmentId}/active-job`);
+      } catch {
+        return null;
+      }
+    },
   },
 
   // ==========================================

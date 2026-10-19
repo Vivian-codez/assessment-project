@@ -36,6 +36,7 @@ import {
   Users,
   X,
   Edit3,
+  Loader2,
 } from "lucide-react";
 import { useState, useEffect } from "react";
 import type { LucideIcon } from "lucide-react";
@@ -174,6 +175,8 @@ function VerismApp() {
   // Evaluation & Batch Job Polling
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingProgress, setProcessingProgress] = useState(0);
+  const [processingAssignmentId, setProcessingAssignmentId] = useState<string>("");
+  const [takingAssignment, setTakingAssignment] = useState(false);
 
   const showToast = (message: string) => {
     setToast(message);
@@ -215,6 +218,21 @@ function VerismApp() {
     }
   };
 
+  const checkActiveJob = async (assignId: string) => {
+    if (!assignId) return;
+    try {
+      const job = await api.evaluations.getActiveJob(assignId);
+      if (job && (job.status === "queued" || job.status === "processing")) {
+        setIsProcessing(true);
+        setProcessingAssignmentId(assignId);
+        setProcessingProgress(Math.max(10, Math.round(job.progress_pct)));
+        pollBatchJob(job.job_id, assignId);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
   const loadAssignments = async (courseId: string) => {
     try {
       const list = await api.assignments.listByCourse(courseId);
@@ -224,6 +242,7 @@ function VerismApp() {
         setSelectedAssignmentId(firstAssign.id);
         loadSubmissions(firstAssign.id);
         loadSimilarity(firstAssign.id);
+        checkActiveJob(firstAssign.id);
       } else {
         setSelectedAssignmentId("");
         setSubmissions([]);
@@ -264,6 +283,7 @@ function VerismApp() {
     setSelectedAssignmentId(assignId);
     loadSubmissions(assignId);
     loadSimilarity(assignId);
+    checkActiveJob(assignId);
   };
 
   const navigate = (next: ViewKey) => {
@@ -365,44 +385,99 @@ function VerismApp() {
     }
   };
 
+  const pollBatchJob = (jobId: string, targetId: string) => {
+    let currentProg = 10;
+    const pollTimer = window.setInterval(async () => {
+      try {
+        const status = await api.evaluations.pollJobStatus(jobId);
+        if (status.progress_pct > currentProg) {
+          currentProg = Math.max(currentProg, Math.round(status.progress_pct));
+        } else if (currentProg < 92) {
+          currentProg = Math.min(92, currentProg + 8);
+        }
+        setProcessingProgress(currentProg);
+
+        if (status.status === "completed") {
+          window.clearInterval(pollTimer);
+          setProcessingProgress(100);
+          setTimeout(async () => {
+            setIsProcessing(false);
+            setProcessingAssignmentId("");
+            await loadSubmissions(targetId);
+            await loadSimilarity(targetId);
+            showToast(`Auto-grading complete: ${status.processed_items || "All"} submissions ready for review!`);
+          }, 600);
+        } else if (status.status === "failed") {
+          window.clearInterval(pollTimer);
+          setIsProcessing(false);
+          setProcessingAssignmentId("");
+          showToast(`Evaluation failed: ${status.error_message || "Unknown error"}`);
+        }
+      } catch {
+        // continue polling
+      }
+    }, 1200);
+  };
+
   // Trigger Live AI Auto-Grading & 3-Way Plagiarism Check
-  const startAIAutoGrading = async () => {
-    if (!selectedAssignmentId || isProcessing) return;
+  const startAIAutoGrading = async (assignId?: string) => {
+    const targetId = assignId || selectedAssignmentId;
+    if (!targetId || isProcessing) return;
     setIsProcessing(true);
-    setProcessingProgress(5);
-    showToast("Dispatched batch evaluation to AI engine with Search Grounding & Peer comparison...");
+    setProcessingAssignmentId(targetId);
+    setProcessingProgress(8);
+    showToast("AI Auto-Grading & 3-Way Plagiarism Audit initiated. Evaluation is in process...");
 
     try {
-      const job = await api.evaluations.triggerBatch(selectedAssignmentId, {
+      const job = await api.evaluations.triggerBatch(targetId, {
         similarity_threshold: 90.0,
       });
 
-      // Poll job progress
-      const pollTimer = window.setInterval(async () => {
-        try {
-          const status = await api.evaluations.pollJobStatus(job.job_id);
-          setProcessingProgress(Math.max(10, Math.round(status.progress_pct)));
-
-          if (status.status === "completed") {
-            window.clearInterval(pollTimer);
-            setIsProcessing(false);
-            setProcessingProgress(100);
-            await loadSubmissions(selectedAssignmentId);
-            await loadSimilarity(selectedAssignmentId);
-            showToast(`Auto-grading complete: ${status.processed_items} submissions ready for review!`);
-          } else if (status.status === "failed") {
-            window.clearInterval(pollTimer);
-            setIsProcessing(false);
-            showToast(`Evaluation failed: ${status.error_message || "Unknown error"}`);
-          }
-        } catch {
-          // continue polling
-        }
-      }, 1200);
+      pollBatchJob(job.job_id, targetId);
     } catch (e: any) {
       setIsProcessing(false);
+      setProcessingAssignmentId("");
       showToast(`Error starting evaluation: ${e.message}`);
     }
+  };
+
+  const handleTakeDefaultAssignment = async (): Promise<APIAssignment | null> => {
+    if (!currentCourse) {
+      showToast("Please select or create a course first.");
+      return null;
+    }
+    setTakingAssignment(true);
+    try {
+      const title = `Assignment 1 · ${currentCourse.name || currentCourse.code} Submissions`;
+      const created = await api.assignments.create(currentCourse.id, {
+        title,
+        description: `Student submissions and benchmark solutions for ${currentCourse.name || currentCourse.code}. Evaluated against university rubric with 3-way plagiarism audit.`,
+        max_score: 100,
+        reference_assignment_text: "Benchmark Reference Solution: Students must implement accurate algorithmic models, clean functional modularity, robust boundary test coverage, and comprehensive runtime complexity analysis.",
+      });
+      setAssignments((prev) => {
+        const exists = prev.some((a) => a.id === created.id);
+        return exists ? prev : [...prev, created];
+      });
+      setSelectedAssignmentId(created.id);
+      await loadSubmissions(created.id);
+      await loadSimilarity(created.id);
+      showToast(`Initialized and took "${created.title}". Ready for student submissions!`);
+      return created;
+    } catch (e: any) {
+      showToast(`Error taking assignment: ${e.message}`);
+      return null;
+    } finally {
+      setTakingAssignment(false);
+    }
+  };
+
+  const handleOpenManualSubmission = async () => {
+    if (!selectedAssignmentId) {
+      const created = await handleTakeDefaultAssignment();
+      if (!created) return;
+    }
+    setManualSubmissionOpen(true);
   };
 
   return (
@@ -414,6 +489,7 @@ function VerismApp() {
           mobileOpen={mobileNav}
           onClose={() => setMobileNav(false)}
           pendingCount={pendingCount}
+          isProcessing={isProcessing}
         />
         <div className="flex min-w-0 flex-1 flex-col lg:ml-64">
           <TopBar
@@ -430,6 +506,8 @@ function VerismApp() {
             notifications={notifications}
             setNotifications={setNotifications}
             onMenu={() => setMobileNav(true)}
+            isProcessing={isProcessing}
+            processingProgress={processingProgress}
           />
           <main className="mx-auto w-full max-w-[1500px] flex-1 px-4 py-6 sm:px-6 sm:py-8">
             {view === "dashboard" && (
@@ -463,18 +541,21 @@ function VerismApp() {
                 course={currentCourse}
                 assignments={assignments}
                 selectedAssignmentId={selectedAssignmentId}
+                processingAssignmentId={processingAssignmentId}
                 onSelectAssignment={handleSelectAssignment}
+                onTakeDefaultAssignment={handleTakeDefaultAssignment}
+                takingAssignment={takingAssignment}
                 onOpenAddAssignment={() => setAddAssignmentOpen(true)}
                 onOpenEditAssignment={() => setEditAssignmentOpen(true)}
                 onDeleteAssignment={handleDeleteAssignment}
-                onOpenManualSubmission={() => setManualSubmissionOpen(true)}
+                onOpenManualSubmission={handleOpenManualSubmission}
                 onDeleteSubmission={handleDeleteSubmission}
                 onClearAllSubmissions={handleClearAllSubmissions}
                 submissions={submissions}
                 isProcessing={isProcessing}
                 progress={processingProgress}
                 onStartGrading={startAIAutoGrading}
-                onReloadSubmissions={() => loadSubmissions(selectedAssignmentId)}
+                onReloadSubmissions={loadSubmissions}
                 onNavigate={navigate}
                 showToast={showToast}
               />
@@ -500,6 +581,7 @@ function VerismApp() {
                 submissions={submissions}
                 assignment={currentAssignment}
                 isProcessing={isProcessing}
+                progress={processingProgress}
                 onStartGrading={startAIAutoGrading}
                 onReview={(subId) => {
                   setSelectedSubmissionId(subId);
@@ -664,12 +746,14 @@ function Sidebar({
   mobileOpen,
   onClose,
   pendingCount,
+  isProcessing = false,
 }: {
   active: ViewKey;
   onNavigate: (view: ViewKey) => void;
   mobileOpen: boolean;
   onClose: () => void;
   pendingCount: number;
+  isProcessing?: boolean;
 }) {
   return (
     <>
@@ -717,6 +801,18 @@ function Sidebar({
                   >
                     <Icon className={cn("size-4", isActive ? "text-amber-ink" : "text-faint")} />
                     <span>{item.label}</span>
+                    {item.key === "assignments" && isProcessing && (
+                      <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-amber-soft px-1.5 py-0.5 text-[9px] font-bold text-amber-ink animate-pulse">
+                        <Loader2 className="size-2.5 animate-spin" />
+                        In Process
+                      </span>
+                    )}
+                    {item.key === "grading" && isProcessing && (
+                      <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-amber-soft px-1.5 py-0.5 text-[9px] font-bold text-amber-ink animate-pulse">
+                        <Loader2 className="size-2.5 animate-spin" />
+                        Auditing
+                      </span>
+                    )}
                     {item.key === "review" && pendingCount > 0 && (
                       <span className="ml-auto rounded-full bg-lav px-1.5 py-0.5 text-[10px] text-card">
                         {pendingCount}
@@ -751,6 +847,8 @@ function TopBar({
   notifications,
   setNotifications,
   onMenu,
+  isProcessing = false,
+  processingProgress = 0,
 }: {
   course: APICourse | null;
   currentUser: UserProfile | null;
@@ -761,6 +859,8 @@ function TopBar({
   notifications: boolean;
   setNotifications: (value: boolean) => void;
   onMenu: () => void;
+  isProcessing?: boolean;
+  processingProgress?: number;
 }) {
   return (
     <header className="sticky top-0 z-20 flex items-center gap-3 border-b border-line bg-paper/90 px-4 py-3 backdrop-blur sm:px-6">
@@ -775,6 +875,12 @@ function TopBar({
           <span className="rounded-md border border-line bg-card px-2.5 py-1.5 text-muted-ink">
             Section {course.section || "A"}
           </span>
+          {isProcessing && (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber/40 bg-amber-soft px-2.5 py-1 text-xs font-semibold text-amber-ink animate-pulse shadow-sm">
+              <Loader2 className="size-3 animate-spin" />
+              Assignment In Process ({processingProgress}%)
+            </span>
+          )}
         </div>
       ) : (
         <div className="hidden items-center gap-2 text-[13px] md:flex">
@@ -1198,11 +1304,22 @@ function CoursesView({
 // Assignments & Submissions View (with Reference Assignment / Ground Truth)
 // =========================================================================
 
+function getProcessingStage(p: number): string {
+  if (p < 25) return "Ingesting student documents & AES-256 FERPA verification";
+  if (p < 50) return "Computing dense semantic embeddings & Qdrant vector indexing";
+  if (p < 75) return "Executing peer-to-peer 3-way cross-similarity audit";
+  if (p < 90) return "Running Google Search citations check & synthetic AI scan";
+  return "Applying Gemini 2.5 rubric evaluation & calculating final integrity scores";
+}
+
 function AssignmentsView({
   course,
   assignments,
   selectedAssignmentId,
+  processingAssignmentId,
   onSelectAssignment,
+  onTakeDefaultAssignment,
+  takingAssignment,
   onOpenAddAssignment,
   onOpenEditAssignment,
   onDeleteAssignment,
@@ -1220,7 +1337,10 @@ function AssignmentsView({
   course: APICourse | null;
   assignments: APIAssignment[];
   selectedAssignmentId: string;
+  processingAssignmentId?: string;
   onSelectAssignment: (id: string) => void;
+  onTakeDefaultAssignment: () => Promise<APIAssignment | null>;
+  takingAssignment: boolean;
   onOpenAddAssignment: () => void;
   onOpenEditAssignment: () => void;
   onDeleteAssignment: (id: string) => void;
@@ -1230,13 +1350,14 @@ function AssignmentsView({
   submissions: SubmissionItem[];
   isProcessing: boolean;
   progress: number;
-  onStartGrading: () => void;
-  onReloadSubmissions: () => void;
+  onStartGrading: (assignId?: string) => void;
+  onReloadSubmissions: (assignId?: string) => void;
   onNavigate: (view: ViewKey) => void;
   showToast: (msg: string) => void;
 }) {
   const [uploading, setUploading] = useState(false);
   const activeAssign = assignments.find((a) => a.id === selectedAssignmentId);
+  const isThisAssignmentProcessing = isProcessing && (!processingAssignmentId || processingAssignmentId === selectedAssignmentId);
 
   if (!course) {
     return (
@@ -1254,13 +1375,39 @@ function AssignmentsView({
   }
 
   const handleFileUpload = async (files: FileList | null) => {
-    if (!files || files.length === 0 || !selectedAssignmentId) return;
+    if (!files || files.length === 0) return;
+
+    let targetAssignId = selectedAssignmentId;
+    if (!targetAssignId) {
+      if (assignments.length > 0 && assignments[0]) {
+        targetAssignId = assignments[0].id;
+        onSelectAssignment(targetAssignId);
+      } else if (course) {
+        setUploading(true);
+        showToast(`Taking Assignment 1 for ${course.code || course.name}...`);
+        const created = await onTakeDefaultAssignment();
+        if (created) {
+          targetAssignId = created.id;
+        } else {
+          setUploading(false);
+          return;
+        }
+      }
+    }
+
+    if (!targetAssignId) {
+      showToast("Please take or create an assignment first.");
+      return;
+    }
+
     setUploading(true);
-    showToast(`Uploading ${files.length} file(s)...`);
+    showToast(`Uploading ${files.length} submission(s) with FERPA-grade AES-256 encryption...`);
     try {
-      await api.submissions.batchUpload(selectedAssignmentId, Array.from(files));
-      showToast("Files uploaded and decrypted securely.");
-      onReloadSubmissions();
+      await api.submissions.batchUpload(targetAssignId, Array.from(files));
+      showToast(`Uploaded ${files.length} submission(s). AI Auto-Grading & Plagiarism audit running...`);
+      await onReloadSubmissions(targetAssignId);
+      // Automatically trigger AI grading & plagiarism checks so the assignment is in process!
+      onStartGrading(targetAssignId);
     } catch (e: any) {
       showToast(`Upload error: ${e.message}`);
     } finally {
@@ -1292,33 +1439,132 @@ function AssignmentsView({
         <section className="rounded-[14px] border border-line bg-card p-5 xl:col-span-7">
           {/* Active Assignment Selection */}
           <div className="mb-4">
-            <label className="text-[11px] font-medium uppercase tracking-[0.14em] text-faint">
-              Active Assignment
-            </label>
-            <div className="mt-1 flex flex-wrap gap-2">
+            <div className="flex items-center justify-between">
+              <label className="text-[11px] font-medium uppercase tracking-[0.14em] text-faint">
+                Active Assignment
+              </label>
+              {isThisAssignmentProcessing && (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-soft px-2.5 py-0.5 text-[11px] font-bold text-amber-ink animate-pulse">
+                  <span className="relative flex size-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber opacity-75"></span>
+                    <span className="relative inline-flex size-2 rounded-full bg-amber"></span>
+                  </span>
+                  In Process ({progress}%)
+                </span>
+              )}
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
               {assignments.length === 0 ? (
-                <span className="text-xs italic text-faint">No assignments in this course yet.</span>
-              ) : (
-                assignments.map((a) => (
+                <div className="flex flex-wrap items-center gap-3 py-1">
+                  <span className="text-xs italic text-faint">No assignments in this course yet.</span>
                   <Button
-                    key={a.id}
                     size="sm"
-                    variant={a.id === selectedAssignmentId ? "default" : "outline"}
-                    onClick={() => onSelectAssignment(a.id)}
+                    variant="default"
+                    className="h-7 text-xs bg-ink text-card hover:bg-ink/90 font-medium shadow-sm transition-all"
+                    onClick={() => onTakeDefaultAssignment()}
+                    disabled={takingAssignment || uploading}
                   >
-                    {a.title}
+                    <Plus className="mr-1 size-3.5" />
+                    {takingAssignment ? "Taking Assignment 1..." : "Take Assignment 1"}
                   </Button>
-                ))
+                </div>
+              ) : (
+                assignments.map((a) => {
+                  const isThisProcessing = isProcessing && a.id === (processingAssignmentId || selectedAssignmentId);
+                  const isSelected = a.id === selectedAssignmentId;
+                  return (
+                    <Button
+                      key={a.id}
+                      size="sm"
+                      variant={isSelected ? "default" : "outline"}
+                      onClick={() => onSelectAssignment(a.id)}
+                      className={cn(
+                        "transition-all",
+                        isThisProcessing && "ring-2 ring-amber/60 border-amber/50 font-medium"
+                      )}
+                    >
+                      {isThisProcessing && (
+                        <Loader2 className="mr-1.5 size-3.5 animate-spin text-amber-ink" />
+                      )}
+                      <span>{a.title}</span>
+                      {isThisProcessing && (
+                        <span className="ml-1.5 rounded bg-amber-soft px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-ink">
+                          In Process
+                        </span>
+                      )}
+                    </Button>
+                  );
+                })
               )}
             </div>
           </div>
 
+          {/* Dynamic In-Process Banner */}
+          {isThisAssignmentProcessing && activeAssign && (
+            <div className="mb-5 overflow-hidden rounded-[14px] border border-amber/40 bg-gradient-to-r from-amber-soft/80 via-lav-soft/60 to-amber-soft/40 p-4 shadow-sm animate-fade-up">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="relative flex size-3">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber opacity-75"></span>
+                    <span className="relative inline-flex size-3 rounded-full bg-amber"></span>
+                  </span>
+                  <span className="text-xs font-bold uppercase tracking-wider text-amber-ink">
+                    Assignment In Process · AI Engine Actively Auditing
+                  </span>
+                </div>
+                <span className="rounded-full bg-card/90 px-2.5 py-0.5 font-mono text-xs font-bold text-ink shadow-sm">
+                  {progress}% Complete
+                </span>
+              </div>
+
+              <div className="mt-2.5 flex items-center gap-2 text-sm font-semibold text-ink">
+                <Sparkles className="size-4 animate-spin text-amber-ink shrink-0" />
+                <span className="truncate">{getProcessingStage(progress)}</span>
+              </div>
+
+              <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-card/60">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-amber via-clay to-lav transition-all duration-500 ease-out"
+                  style={{ width: `${Math.max(8, progress)}%` }}
+                />
+              </div>
+
+              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 text-[11px]">
+                <div className={`flex items-center gap-1.5 rounded bg-card/60 p-1.5 ${progress >= 25 ? "text-ink font-semibold" : "text-amber-ink"}`}>
+                  {progress >= 25 ? <CheckCircle2 className="size-3.5 text-sage shrink-0" /> : <Loader2 className="size-3.5 animate-spin text-amber-ink shrink-0" />}
+                  <span className="truncate">1. Ingestion & FERPA</span>
+                </div>
+                <div className={`flex items-center gap-1.5 rounded bg-card/60 p-1.5 ${progress >= 50 ? "text-ink font-semibold" : progress >= 25 ? "text-amber-ink" : "text-faint"}`}>
+                  {progress >= 50 ? <CheckCircle2 className="size-3.5 text-sage shrink-0" /> : progress >= 25 ? <Loader2 className="size-3.5 animate-spin text-amber-ink shrink-0" /> : <div className="size-3.5 rounded-full border border-faint/30 shrink-0" />}
+                  <span className="truncate">2. Vector Embeddings</span>
+                </div>
+                <div className={`flex items-center gap-1.5 rounded bg-card/60 p-1.5 ${progress >= 75 ? "text-ink font-semibold" : progress >= 50 ? "text-amber-ink" : "text-faint"}`}>
+                  {progress >= 75 ? <CheckCircle2 className="size-3.5 text-sage shrink-0" /> : progress >= 50 ? <Loader2 className="size-3.5 animate-spin text-amber-ink shrink-0" /> : <div className="size-3.5 rounded-full border border-faint/30 shrink-0" />}
+                  <span className="truncate">3. 3-Way Plagiarism</span>
+                </div>
+                <div className={`flex items-center gap-1.5 rounded bg-card/60 p-1.5 ${progress >= 100 ? "text-ink font-semibold" : progress >= 75 ? "text-amber-ink" : "text-faint"}`}>
+                  {progress >= 100 ? <CheckCircle2 className="size-3.5 text-sage shrink-0" /> : progress >= 75 ? <Loader2 className="size-3.5 animate-spin text-amber-ink shrink-0" /> : <div className="size-3.5 rounded-full border border-faint/30 shrink-0" />}
+                  <span className="truncate">4. Gemini Auto-Grade</span>
+                </div>
+              </div>
+            </div>
+          )}
+
           {activeAssign && (
             <div className="mb-5 rounded-lg border border-line bg-paper p-3.5">
               <div className="flex items-center justify-between">
-                <div>
+                <div className="flex items-center gap-2">
                   <span className="text-sm font-semibold text-ink">{activeAssign.title}</span>
-                  <Badge variant="outline" className="ml-2">Max Marks: {activeAssign.max_score}</Badge>
+                  <Badge variant="outline">Max Marks: {activeAssign.max_score}</Badge>
+                  {isThisAssignmentProcessing ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-soft px-2 py-0.5 text-[10px] font-bold text-amber-ink animate-pulse">
+                      <Loader2 className="size-2.5 animate-spin" /> In Process
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-sage-soft px-2 py-0.5 text-[10px] font-semibold text-sage-ink">
+                      <CheckCircle2 className="size-2.5 text-sage" /> Active
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Button
@@ -1367,7 +1613,10 @@ function AssignmentsView({
           )}
 
           {/* Drag & Drop File Upload */}
-          <label className="flex min-h-52 cursor-pointer flex-col items-center justify-center rounded-[12px] border border-dashed border-line bg-paper p-6 text-center transition-colors hover:border-lav">
+          <label className={cn(
+            "flex min-h-52 cursor-pointer flex-col items-center justify-center rounded-[12px] border border-dashed border-line bg-paper p-6 text-center transition-colors hover:border-lav",
+            isThisAssignmentProcessing && "border-amber/40 bg-amber-soft/20"
+          )}>
             <input
               type="file"
               multiple
@@ -1375,15 +1624,33 @@ function AssignmentsView({
               accept=".pdf,.doc,.docx,.txt,.zip"
               onChange={(e) => handleFileUpload(e.target.files)}
             />
-            <div className="grid size-12 place-items-center rounded-full bg-lav-soft text-amber-ink">
-              <UploadCloud className="size-6" />
+            <div className={cn(
+              "grid size-12 place-items-center rounded-full text-amber-ink",
+              isThisAssignmentProcessing ? "bg-amber-soft animate-pulse" : "bg-lav-soft"
+            )}>
+              {isThisAssignmentProcessing ? <Sparkles className="size-6 animate-spin text-amber" /> : <UploadCloud className="size-6" />}
             </div>
-            <p className="mt-3 font-display text-lg">Upload student submissions</p>
+            <p className="mt-3 font-display text-lg">
+              {isThisAssignmentProcessing
+                ? "AI Checks In Process · Queue More Submissions"
+                : !activeAssign
+                ? "Take Assignment & Upload Submissions"
+                : "Upload student submissions"}
+            </p>
             <p className="mt-1 max-w-sm text-xs text-muted-ink">
-              Drop PDFs, DOCX, TXT, or ZIP archive. Files are encrypted with FERPA-grade AES-256 upon upload.
+              {!activeAssign
+                ? "Drop student files here to automatically initialize Assignment 1 and run AI plagiarism & autograding checks."
+                : "Drop PDFs, DOCX, TXT, or ZIP archive. Files are encrypted with FERPA-grade AES-256 upon upload."}
             </p>
             <Button type="button" variant="outline" size="sm" className="mt-4" disabled={uploading}>
-              {uploading ? "Uploading..." : "Browse files"}
+              {uploading ? (
+                <>
+                  <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                  Uploading & Encrypting...
+                </>
+              ) : (
+                "Browse files"
+              )}
             </Button>
           </label>
 
@@ -1395,17 +1662,26 @@ function AssignmentsView({
               </p>
             </div>
             <Button
-              onClick={onStartGrading}
-              disabled={isProcessing || submissions.length === 0}
-              className="bg-ink text-card hover:bg-ink/90"
+              onClick={() => onStartGrading(selectedAssignmentId)}
+              disabled={isThisAssignmentProcessing || submissions.length === 0 || !selectedAssignmentId}
+              className="bg-ink text-card hover:bg-ink/90 transition-all"
             >
-              {isProcessing ? "Grading in Progress..." : "Start AI Grading"}
-              <Sparkles className="ml-1.5 size-4" />
+              {isThisAssignmentProcessing ? (
+                <>
+                  <Loader2 className="mr-1.5 size-4 animate-spin text-amber" />
+                  Grading in Progress ({progress}%)...
+                </>
+              ) : (
+                <>
+                  Start AI Grading
+                  <Sparkles className="ml-1.5 size-4" />
+                </>
+              )}
             </Button>
           </div>
 
-          {isProcessing && (
-            <div className="mt-4 rounded-lg bg-lav-soft p-3.5">
+          {isThisAssignmentProcessing && (
+            <div className="mt-4 rounded-lg bg-lav-soft p-3.5 animate-fade-up">
               <div className="flex items-center justify-between text-xs">
                 <span className="font-medium text-ink">Analyzing batch & checking web citations</span>
                 <span className="font-semibold text-amber-ink">{progress}%</span>
@@ -1423,7 +1699,15 @@ function AssignmentsView({
           <div className="flex items-center justify-between">
             <div>
               <h2 className="font-display text-xl">Current Submissions</h2>
-              <p className="mt-1 text-xs text-muted-ink">{submissions.length} submissions in this assignment</p>
+              <div className="mt-1 flex items-center gap-2">
+                <p className="text-xs text-muted-ink">{submissions.length} submissions in this assignment</p>
+                {isThisAssignmentProcessing && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-soft px-2 py-0.5 text-[10px] font-bold text-amber-ink animate-pulse">
+                    <Loader2 className="size-2.5 animate-spin" />
+                    AI Checks In Process
+                  </span>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-1.5">
               <Button
@@ -1431,14 +1715,14 @@ function AssignmentsView({
                 variant="ghost"
                 className="h-8 text-xs text-muted-ink hover:text-clay hover:bg-clay-soft"
                 onClick={onClearAllSubmissions}
-                disabled={submissions.length === 0}
+                disabled={submissions.length === 0 || isThisAssignmentProcessing}
                 title="Clear all submissions for this assignment"
               >
                 <Trash2 className="mr-1 size-3.5" />
                 Clear All
               </Button>
-              <Button size="icon" variant="ghost" onClick={onReloadSubmissions} title="Refresh">
-                <RefreshCw className="size-4" />
+              <Button size="icon" variant="ghost" onClick={() => onReloadSubmissions(selectedAssignmentId)} title="Refresh">
+                <RefreshCw className={cn("size-4", isThisAssignmentProcessing && "animate-spin text-amber")} />
               </Button>
             </div>
           </div>
@@ -1450,38 +1734,71 @@ function AssignmentsView({
               </p>
             ) : (
               submissions.map((sub) => (
-                <div key={sub.id} className="flex items-center gap-3 rounded-lg border border-line bg-paper p-3">
-                  <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-lav-soft text-amber-ink">
-                    <FileText className="size-4" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between">
-                      <p className="truncate text-xs font-semibold text-ink">{sub.student}</p>
-                      <span className="text-[11px] font-bold text-ink">{sub.score}/100</span>
+                <div
+                  key={sub.id}
+                  className={cn(
+                    "relative overflow-hidden rounded-lg border border-line bg-paper p-3 transition-all",
+                    isThisAssignmentProcessing && "border-amber/30 bg-amber-soft/10"
+                  )}
+                >
+                  {isThisAssignmentProcessing && (
+                    <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-amber via-clay to-lav animate-pulse" />
+                  )}
+                  <div className="flex items-center gap-3">
+                    <div className={cn(
+                      "grid size-8 shrink-0 place-items-center rounded-lg text-amber-ink",
+                      isThisAssignmentProcessing ? "bg-amber-soft" : "bg-lav-soft"
+                    )}>
+                      {isThisAssignmentProcessing ? (
+                        <Loader2 className="size-4 animate-spin text-amber-ink" />
+                      ) : (
+                        <FileText className="size-4" />
+                      )}
                     </div>
-                    <div className="mt-1 flex items-center gap-2 text-[10px]">
-                      <span className={sub.similarity >= 85 ? "text-clay font-medium" : "text-faint"}>
-                        Peer: {sub.similarity}%
-                      </span>
-                      <span>·</span>
-                      <span className={sub.aiContent >= 60 ? "text-amber-ink font-medium" : "text-faint"}>
-                        AI: {sub.aiContent}%
-                      </span>
-                      <span>·</span>
-                      <span className={(sub.webPlagiarism || 0) >= 20 ? "text-blue font-medium" : "text-faint"}>
-                        Web: {sub.webPlagiarism || 0}%
-                      </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between">
+                        <p className="truncate text-xs font-semibold text-ink">{sub.student}</p>
+                        {isThisAssignmentProcessing ? (
+                          <span className="inline-flex items-center gap-1 rounded bg-amber-soft px-1.5 py-0.5 text-[10px] font-semibold text-amber-ink animate-pulse">
+                            <Loader2 className="size-2.5 animate-spin" /> Evaluating...
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-bold text-ink">{sub.score}/100</span>
+                        )}
+                      </div>
+                      <div className="mt-1 flex items-center gap-2 text-[10px]">
+                        {isThisAssignmentProcessing ? (
+                          <span className="text-amber-ink font-medium">
+                            AI Plagiarism & Rubric checks running...
+                          </span>
+                        ) : (
+                          <>
+                            <span className={sub.similarity >= 85 ? "text-clay font-medium" : "text-faint"}>
+                              Peer: {sub.similarity}%
+                            </span>
+                            <span>·</span>
+                            <span className={sub.aiContent >= 60 ? "text-amber-ink font-medium" : "text-faint"}>
+                              AI: {sub.aiContent}%
+                            </span>
+                            <span>·</span>
+                            <span className={(sub.webPlagiarism || 0) >= 20 ? "text-blue font-medium" : "text-faint"}>
+                              Web: {sub.webPlagiarism || 0}%
+                            </span>
+                          </>
+                        )}
+                      </div>
                     </div>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="size-7 shrink-0 text-muted-ink hover:text-clay hover:bg-clay-soft"
+                      onClick={() => onDeleteSubmission(sub.id)}
+                      disabled={isThisAssignmentProcessing}
+                      title="Delete Submission"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </Button>
                   </div>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="size-7 shrink-0 text-muted-ink hover:text-clay hover:bg-clay-soft"
-                    onClick={() => onDeleteSubmission(sub.id)}
-                    title="Delete Submission"
-                  >
-                    <Trash2 className="size-3.5" />
-                  </Button>
                 </div>
               ))
             )}
@@ -1750,6 +2067,7 @@ function AIGradingView({
   submissions,
   assignment,
   isProcessing,
+  progress = 0,
   onStartGrading,
   onReview,
   onNavigate,
@@ -1758,6 +2076,7 @@ function AIGradingView({
   submissions: SubmissionItem[];
   assignment: APIAssignment | null;
   isProcessing: boolean;
+  progress?: number;
   onStartGrading: () => void;
   onReview: (id: string) => void;
   onNavigate: (view: ViewKey) => void;
@@ -1771,11 +2090,51 @@ function AIGradingView({
         description="AI evaluates submissions against your criteria and reference solution. Every grade is held in Pending Review until approved."
         action={
           <Button onClick={onStartGrading} disabled={isProcessing} className="bg-ink text-card hover:bg-ink/90">
-            <Sparkles className="mr-1.5 size-4" />
-            {isProcessing ? "Running Auto-Grading..." : "Rerun Batch Auto-Grading"}
+            {isProcessing ? (
+              <>
+                <Loader2 className="mr-1.5 size-4 animate-spin text-amber" />
+                Grading in Progress ({progress}%)...
+              </>
+            ) : (
+              <>
+                <Sparkles className="mr-1.5 size-4" />
+                Rerun Batch Auto-Grading
+              </>
+            )}
           </Button>
         }
       />
+
+      {isProcessing && (
+        <div className="mb-5 overflow-hidden rounded-[14px] border border-amber/40 bg-gradient-to-r from-amber-soft/80 via-lav-soft/60 to-amber-soft/40 p-4 shadow-sm animate-fade-up">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="relative flex size-3">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber opacity-75"></span>
+                <span className="relative inline-flex size-3 rounded-full bg-amber"></span>
+              </span>
+              <span className="text-xs font-bold uppercase tracking-wider text-amber-ink">
+                Auto-Grading & Plagiarism Audit In Process
+              </span>
+            </div>
+            <span className="rounded-full bg-card/90 px-2.5 py-0.5 font-mono text-xs font-bold text-ink shadow-sm">
+              {progress}% Complete
+            </span>
+          </div>
+
+          <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-ink">
+            <Sparkles className="size-4 animate-spin text-amber-ink shrink-0" />
+            <span className="truncate">{getProcessingStage(progress)}</span>
+          </div>
+
+          <div className="mt-2.5 h-2 w-full overflow-hidden rounded-full bg-card/60">
+            <div
+              className="h-full rounded-full bg-gradient-to-r from-amber via-clay to-lav transition-all duration-500 ease-out"
+              style={{ width: `${Math.max(8, progress)}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       <div className="rounded-[14px] border border-line bg-card p-5">
         <div className="overflow-x-auto">

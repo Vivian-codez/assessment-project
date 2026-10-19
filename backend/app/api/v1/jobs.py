@@ -1,6 +1,7 @@
 """Batch Job Dispatcher and Progress Polling API endpoints."""
 
 import uuid
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 
@@ -102,3 +103,29 @@ def get_job_status(job_id: str, db: Session = Depends(get_db)):
         ready_for_review=meta.get("ready_for_review", job.processed_items),
         error_message=job.error_message,
     )
+
+
+@router.get("/assignments/{assignment_id}/active-job", response_model=Optional[BatchJobResponse])
+def get_active_assignment_job(assignment_id: str, db: Session = Depends(get_db)):
+    """Check if an assignment currently has an evaluation job in process."""
+    job = (
+        db.query(BatchJob)
+        .filter(BatchJob.assignment_id == assignment_id, BatchJob.status.in_(["queued", "processing"]))
+        .order_by(BatchJob.created_at.desc())
+        .first()
+    )
+    if not job:
+        return None
+
+    meta = job.meta_info or {}
+    return BatchJobResponse(
+        job_id=job.id,
+        status=job.status,
+        progress_pct=job.progress_pct,
+        total_items=job.total_items,
+        processed_items=job.processed_items,
+        similarity_flags=meta.get("similarity_flags", 0),
+        ready_for_review=meta.get("ready_for_review", job.processed_items),
+        error_message=job.error_message,
+    )
+
