@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   Activity,
   ArrowLeft,
@@ -47,11 +47,14 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { supabase } from "@/lib/supabase";
 import {
   api,
   getAuthToken,
+  setAuthToken,
   clearAuthToken,
   getCachedUser,
+  setCachedUser,
   type Course as APICourse,
   type Assignment as APIAssignment,
   type SubmissionItem,
@@ -59,7 +62,12 @@ import {
   type UserProfile,
   type Rubric,
   type SimilarityMatch,
+  type Classroom,
+  type Student,
 } from "@/lib/api";
+import { RosterView } from "@/components/RosterView";
+import { MatrixRubricBuilder } from "@/components/MatrixRubricBuilder";
+import { RubricsListView } from "@/components/RubricsListView";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -80,6 +88,9 @@ export const Route = createFileRoute("/")({
 type ViewKey =
   | "dashboard"
   | "courses"
+  | "roster"
+  | "rubrics"
+  | "rubric_builder"
   | "assignments"
   | "assessments"
   | "similarity"
@@ -143,8 +154,9 @@ function SectionTitle({
   );
 }
 
-function VerismApp() {
-  const [view, setView] = useState<ViewKey>("dashboard");
+export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey } = {}) {
+  const routerNavigate = useNavigate();
+  const [view, setView] = useState<ViewKey>(initialView);
   const [mobileNav, setMobileNav] = useState(false);
   const [notifications, setNotifications] = useState(false);
   const [search, setSearch] = useState("");
@@ -157,9 +169,15 @@ function VerismApp() {
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState("");
 
-  // Live Backend Data States
+  // Live Backend Data States - Courses & Classrooms
   const [courses, setCourses] = useState<APICourse[]>([]);
   const [selectedCourseId, setSelectedCourseId] = useState<string>("");
+  const [classrooms, setClassrooms] = useState<Classroom[]>([]);
+  const [selectedClassroomId, setSelectedClassroomId] = useState<string>("");
+  const [enrolledStudents, setEnrolledStudents] = useState<Student[]>([]);
+  const [matrixRubrics, setMatrixRubrics] = useState<Rubric[]>([]);
+
+  // Assignments & Submissions
   const [assignments, setAssignments] = useState<APIAssignment[]>([]);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string>("");
   const [submissions, setSubmissions] = useState<SubmissionItem[]>([]);
@@ -183,10 +201,73 @@ function VerismApp() {
     window.setTimeout(() => setToast(""), 3500);
   };
 
-  // Initial Data Fetch
+  // Initial Data Fetch & Supabase Auth Verification
   useEffect(() => {
-    loadUser();
-    loadCourses();
+    let mounted = true;
+    const initAuthAndData = async () => {
+      // 1. Verify authentic Supabase session
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = getAuthToken();
+
+      if (!session && !token) {
+        routerNavigate({ to: "/login" });
+        return;
+      }
+
+      if (session) {
+        setAuthToken(session.access_token);
+        const meta = session.user.user_metadata || {};
+        const profile: UserProfile = {
+          id: session.user.id,
+          name: meta.name || meta.full_name || session.user.email?.split("@")[0] || "Instructor",
+          email: session.user.email || "",
+          role: meta.role || "Instructor · Computer Science",
+          preferences: meta.preferences || {},
+        };
+        if (mounted) {
+          setCurrentUser(profile);
+          setCachedUser(profile);
+        }
+      } else {
+        await loadUser();
+      }
+
+      if (mounted) {
+        await Promise.all([
+          loadCourses(),
+          loadClassrooms(),
+          loadRubrics(),
+        ]);
+      }
+    };
+
+    initAuthAndData();
+
+    // Listen to real-time auth state events
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "SIGNED_OUT" || (!session && !getAuthToken())) {
+        clearAuthToken();
+        setCurrentUser(null);
+        routerNavigate({ to: "/login" });
+      } else if (session) {
+        setAuthToken(session.access_token);
+        const meta = session.user.user_metadata || {};
+        const profile: UserProfile = {
+          id: session.user.id,
+          name: meta.name || meta.full_name || session.user.email?.split("@")[0] || "Instructor",
+          email: session.user.email || "",
+          role: meta.role || "Instructor · Computer Science",
+          preferences: meta.preferences || {},
+        };
+        setCurrentUser(profile);
+        setCachedUser(profile);
+      }
+    });
+
+    return () => {
+      mounted = false;
+      authListener?.subscription?.unsubscribe();
+    };
   }, []);
 
   const loadUser = async () => {
@@ -194,7 +275,7 @@ function VerismApp() {
       const user = await api.auth.getMe();
       setCurrentUser(user);
     } catch {
-      // not logged in yet or default fallback
+      // not logged in
     }
   };
 
@@ -215,6 +296,40 @@ function VerismApp() {
       }
     } finally {
       setLoadingCourses(false);
+    }
+  };
+
+  const loadClassrooms = async () => {
+    try {
+      const cls = await api.classrooms.list();
+      setClassrooms(cls || []);
+      if (cls && cls.length > 0) {
+        const first = cls[0];
+        setSelectedClassroomId((prev) => prev || first.id);
+        loadStudents(selectedClassroomId || first.id);
+        loadRubrics(selectedClassroomId || first.id);
+      }
+    } catch (e: any) {
+      console.warn("Could not load classrooms:", e?.message);
+    }
+  };
+
+  const loadStudents = async (classroomId: string) => {
+    if (!classroomId) return;
+    try {
+      const studs = await api.classrooms.getStudents(classroomId);
+      setEnrolledStudents(studs || []);
+    } catch (e: any) {
+      console.warn("Could not load students:", e?.message);
+    }
+  };
+
+  const loadRubrics = async (classroomId?: string) => {
+    try {
+      const rub = await api.rubrics.list(classroomId);
+      setMatrixRubrics(rub || []);
+    } catch (e: any) {
+      console.warn("Could not load rubrics:", e?.message);
     }
   };
 
@@ -296,9 +411,34 @@ function VerismApp() {
 
   const currentCourse: APICourse | null = courses.find((c) => c.id === selectedCourseId) || (courses.length > 0 && courses[0] ? courses[0] : null);
 
+  const currentClassroom: Classroom | null =
+    classrooms.find((c) => c.id === selectedClassroomId) ||
+    (classrooms.length > 0 ? classrooms[0] : null) ||
+    (currentCourse ? { id: currentCourse.id, name: currentCourse.name, code: currentCourse.code, students_count: currentCourse.students_count || 0 } : null);
+
   const currentAssignment: APIAssignment | null = assignments.find((a) => a.id === selectedAssignmentId) || (assignments.length > 0 && assignments[0] ? assignments[0] : null);
 
   const pendingCount = submissions.filter((s) => s.status !== "approved").length;
+
+  const handleSelectClassroom = (classroomId: string) => {
+    setSelectedClassroomId(classroomId);
+    setSelectedCourseId(classroomId);
+    loadStudents(classroomId);
+    loadRubrics(classroomId);
+    loadAssignments(classroomId);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      // ignore
+    }
+    clearAuthToken();
+    setCurrentUser(null);
+    showToast("Signed out successfully.");
+    routerNavigate({ to: "/login" });
+  };
 
   const handleDeleteCourse = async (courseId: string) => {
     if (!window.confirm("Are you sure you want to delete this course and all its data?")) return;
@@ -506,11 +646,7 @@ function VerismApp() {
             course={currentCourse}
             currentUser={currentUser}
             onOpenAuth={() => setAuthModalOpen(true)}
-            onLogout={() => {
-              clearAuthToken();
-              setCurrentUser(null);
-              showToast("Signed out successfully.");
-            }}
+            onLogout={handleLogout}
             search={search}
             setSearch={setSearch}
             notifications={notifications}
@@ -524,7 +660,11 @@ function VerismApp() {
               <Dashboard
                 course={currentCourse}
                 courses={courses}
+                classrooms={classrooms}
+                students={enrolledStudents}
+                rubrics={matrixRubrics}
                 assignment={currentAssignment}
+                assignments={assignments}
                 submissions={submissions}
                 pendingCount={pendingCount}
                 onNavigate={navigate}
@@ -533,6 +673,35 @@ function VerismApp() {
                   navigate("review");
                 }}
                 onOpenAddCourse={() => setAddCourseOpen(true)}
+              />
+            )}
+            {view === "roster" && (
+              <RosterView
+                classroom={currentClassroom}
+                classrooms={classrooms.length > 0 ? classrooms : (courses.map((c) => ({ id: c.id, name: c.name, code: c.code, students_count: c.students_count || 0 })))}
+                onSelectClassroom={handleSelectClassroom}
+                showToast={showToast}
+              />
+            )}
+            {view === "rubric_builder" && (
+              <MatrixRubricBuilder
+                classroom={currentClassroom}
+                classrooms={classrooms.length > 0 ? classrooms : (courses.map((c) => ({ id: c.id, name: c.name, code: c.code, students_count: c.students_count || 0 })))}
+                onSelectClassroom={handleSelectClassroom}
+                onSaved={() => {
+                  loadRubrics(currentClassroom?.id);
+                  navigate("rubrics");
+                }}
+                onCancel={() => navigate("rubrics")}
+                showToast={showToast}
+              />
+            )}
+            {view === "rubrics" && (
+              <RubricsListView
+                classroom={currentClassroom}
+                classrooms={classrooms.length > 0 ? classrooms : (courses.map((c) => ({ id: c.id, name: c.name, code: c.code, students_count: c.students_count || 0 })))}
+                onOpenCreateRubric={() => navigate("rubric_builder")}
+                showToast={showToast}
               />
             )}
             {view === "courses" && (
@@ -737,13 +906,15 @@ const navSections: {
     label: "Workspace",
     items: [
       { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-      { key: "courses", label: "My Courses", icon: BookOpen },
+      { key: "courses", label: "My Classrooms", icon: BookOpen },
+      { key: "roster", label: "Student Roll Call", icon: Users },
+      { key: "rubrics", label: "Matrix Rubrics", icon: ClipboardCheck },
+      { key: "rubric_builder", label: "Rubric Designer", icon: Edit3 },
       { key: "assignments", label: "Assignments & Submissions", icon: FolderOpen },
-      { key: "assessments", label: "Rubric Engine", icon: ClipboardCheck },
-      { key: "similarity", label: "Similarity & Plagiarism", icon: ShieldAlert },
       { key: "grading", label: "AI Auto-Grading", icon: Sparkles },
       { key: "review", label: "Review Queue", icon: CheckCircle2 },
       { key: "gradebook", label: "Live Gradebook", icon: BarChart3 },
+      { key: "similarity", label: "Similarity & Plagiarism", icon: ShieldAlert },
       { key: "reports", label: "Integrity Reports", icon: Activity },
     ],
   },
@@ -951,7 +1122,11 @@ function TopBar({
 function Dashboard({
   course,
   courses,
+  classrooms,
+  students,
+  rubrics,
   assignment,
+  assignments,
   submissions,
   pendingCount,
   onNavigate,
@@ -960,45 +1135,57 @@ function Dashboard({
 }: {
   course: APICourse | null;
   courses: APICourse[];
+  classrooms: Classroom[];
+  students: Student[];
+  rubrics: Rubric[];
   assignment: APIAssignment | null;
+  assignments: APIAssignment[];
   submissions: SubmissionItem[];
   pendingCount: number;
   onNavigate: (view: ViewKey) => void;
   onReview: (id: string) => void;
   onOpenAddCourse: () => void;
 }) {
-  if (!course || courses.length === 0) {
+  if (!course && courses.length === 0 && classrooms.length === 0) {
     return (
       <div className="mx-auto max-w-4xl py-12 text-center animate-fade-up">
         <div className="mx-auto grid size-16 place-items-center rounded-2xl bg-lav-soft text-ink mb-6 shadow-sm">
-          <BookOpen className="size-8 text-amber-ink" />
+          <GraduationCap className="size-8 text-amber-ink" />
         </div>
-        <p className="text-xs uppercase tracking-[0.2em] text-faint mb-2">Teacher Workspace · Real Data Input</p>
-        <h1 className="font-display text-4xl text-ink">Welcome to Verism AI</h1>
+        <p className="text-xs uppercase tracking-[0.2em] text-faint mb-2">Teacher Workspace · Live Supabase</p>
+        <h1 className="font-display text-4xl text-ink">Welcome to Your Educator Console</h1>
         <p className="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-muted-ink">
-          Your personal academic integrity and automated grading console. All mock data has been removed so you can configure your own real courses, grading rubrics, and reference benchmark exemplars.
+          Live database connected with zero mock records. Start setting up your courses, student roll call rosters, and matrix rubrics to begin automated evaluations.
         </p>
-        <div className="mt-8 flex justify-center gap-3">
-          <Button onClick={onOpenAddCourse} size="lg" className="bg-ink text-card hover:bg-ink/90 rounded-xl px-6">
+        <div className="mt-8 flex flex-wrap justify-center gap-3">
+          <Button onClick={onOpenAddCourse} size="lg" className="bg-ink text-card hover:bg-ink/90 rounded-xl px-5">
             <Plus className="mr-2 size-4" />
-            Add Your First Course
+            Add Your First Classroom
+          </Button>
+          <Button onClick={() => onNavigate("roster")} size="lg" variant="outline" className="rounded-xl px-5 border-line">
+            <Users className="mr-2 size-4 text-amber-ink" />
+            Enroll Your First Student
+          </Button>
+          <Button onClick={() => onNavigate("rubric_builder")} size="lg" variant="outline" className="rounded-xl px-5 border-line">
+            <ClipboardCheck className="mr-2 size-4 text-sage" />
+            Create Your First Rubric
           </Button>
         </div>
         <div className="mt-12 grid gap-4 text-left sm:grid-cols-3">
           <div className="rounded-[14px] border border-line bg-card p-5">
             <div className="grid size-9 place-items-center rounded-lg bg-lav-soft text-ink mb-3 font-semibold">1</div>
-            <h3 className="font-display text-lg">Rubric Auto-Grading</h3>
-            <p className="mt-1 text-xs text-muted-ink">Define criteria with custom weights and marks. Gemini assesses submissions with clear rationales.</p>
+            <h3 className="font-display text-lg">Classroom & Roll Call</h3>
+            <p className="mt-1 text-xs text-muted-ink">Batch enroll students manually or drag-and-drop CSV rosters with duplicate validation.</p>
           </div>
           <div className="rounded-[14px] border border-line bg-card p-5">
             <div className="grid size-9 place-items-center rounded-lg bg-sage-soft text-sage mb-3 font-semibold">2</div>
-            <h3 className="font-display text-lg">Reference Solution</h3>
-            <p className="mt-1 text-xs text-muted-ink">Provide an exemplar or benchmark code to evaluate technical accuracy and depth.</p>
+            <h3 className="font-display text-lg">Matrix Rubric Builder</h3>
+            <p className="mt-1 text-xs text-muted-ink">Multi-tier criteria matrices with custom score tiers (4, 3, 2, 0 pts) and auto-calculated total marks.</p>
           </div>
           <div className="rounded-[14px] border border-line bg-card p-5">
             <div className="grid size-9 place-items-center rounded-lg bg-amber-soft text-amber-ink mb-3 font-semibold">3</div>
-            <h3 className="font-display text-lg">3-Way Plagiarism Check</h3>
-            <p className="mt-1 text-xs text-muted-ink">Continuous peer-to-peer cross-similarity, AI content probability, and public web search citations.</p>
+            <h3 className="font-display text-lg">Submissions & Auditing</h3>
+            <p className="mt-1 text-xs text-muted-ink">Benchmark student work against reference exemplars with 3-way peer, AI, and web plagiarism checking.</p>
           </div>
         </div>
       </div>
@@ -1016,23 +1203,34 @@ function Dashboard({
       : 0;
 
   const metrics = [
-    { label: "Active Courses", value: `${courses.length}`, note: "Registered in Supabase", tone: "lav" },
-    { label: "Submissions", value: `${submissions.length}`, note: assignment ? assignment.title : "No assignment", tone: "blue" },
-    { label: "Pending Reviews", value: `${pendingCount}`, note: "Teacher approval required", tone: "amber" },
+    { label: "Total Enrolled Students", value: `${students.length}`, note: course ? `${course.code} roll call` : "Active roll call", tone: "lav" },
+    { label: "Active Assignments", value: `${assignments.length}`, note: "Configured in Supabase", tone: "blue" },
+    { label: "Submissions Pending Evaluation", value: `${pendingCount}`, note: "Teacher approval required", tone: "amber" },
+    { label: "Matrix Rubrics", value: `${rubrics.length}`, note: "Tiered criteria matrices", tone: "sage" },
+    { label: "Active Classrooms", value: `${courses.length || classrooms.length}`, note: "Registered in Supabase", tone: "lav" },
     { label: "Approved Grades", value: `${approvedCount}`, note: "Final stamped marks", tone: "sage" },
-    { label: "Peer Plagiarism Flags", value: `${highSimCount}`, note: "Similarity >= 85%", tone: "clay" },
-    { label: "AI Content Indicators", value: `${highAiCount}`, note: "Synthetic probability >= 60%", tone: "amber" },
-    { label: "Web Plagiarism Flags", value: `${highWebCount}`, note: "Public web match >= 20%", tone: "clay" },
+    { label: "Plagiarism Flags", value: `${highSimCount}`, note: "Similarity >= 85%", tone: "clay" },
   ];
+
+  const activeClassName = course?.name || (classrooms[0]?.name || "Active Classroom");
+  const activeClassCode = course?.code || (classrooms[0]?.code || "CLASS");
 
   return (
     <>
       <SectionTitle
         eyebrow="Teacher Console · Live Overview"
-        title={`Workspace · ${course.name}`}
-        description="Automated grading benchmarks each submission against your reference solution and audits peer, AI, and public web plagiarism."
+        title={`Dashboard · ${activeClassName}`}
+        description="Comprehensive educator workspace for class rosters, active assignments, pending grading queues, and multi-tier matrix rubrics."
         action={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => onNavigate("roster")} variant="outline" className="rounded-lg border-line">
+              <Users className="mr-1.5 size-4 text-amber-ink" />
+              Manage Roll Call
+            </Button>
+            <Button onClick={() => onNavigate("rubric_builder")} variant="outline" className="rounded-lg border-line">
+              <ClipboardCheck className="mr-1.5 size-4 text-sage" />
+              New Rubric
+            </Button>
             <Button onClick={() => onNavigate("assignments")} className="rounded-lg bg-ink text-card hover:bg-ink/90">
               <UploadCloud className="mr-1.5 size-4" />
               Manage Submissions
@@ -1041,6 +1239,7 @@ function Dashboard({
         }
       />
 
+      {/* Metrics Bar */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-7">
         {metrics.map((metric) => (
           <div key={metric.label} className="rounded-[12px] border border-line bg-card p-4">
@@ -1052,13 +1251,147 @@ function Dashboard({
         ))}
       </div>
 
+      {/* 2-Column Overview: Student Roster & Matrix Rubrics */}
+      <div className="mt-6 grid gap-5 xl:grid-cols-12">
+        {/* Class Roster Preview */}
+        <div className="rounded-[14px] border border-line bg-card p-5 xl:col-span-7">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <Users className="size-4 text-amber-ink" />
+                <h2 className="font-display text-xl">Class Roster & Roll Call</h2>
+                <Badge variant="outline" className="text-xs font-mono">
+                  {students.length} Enrolled
+                </Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted-ink">
+                Active students registered for {activeClassName} ({activeClassCode}).
+              </p>
+            </div>
+            <Button variant="ghost" size="sm" className="text-amber-ink" onClick={() => onNavigate("roster")}>
+              Full Roster <ArrowRight className="ml-1 size-3.5" />
+            </Button>
+          </div>
+
+          <div className="mt-4">
+            {students.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-line p-6 text-center">
+                <Users className="mx-auto size-7 text-faint" />
+                <p className="mt-2 text-sm font-medium text-ink">No students enrolled yet</p>
+                <p className="mt-1 text-xs text-muted-ink">
+                  Add students manually or upload a CSV with roll numbers and full names.
+                </p>
+                <Button size="sm" onClick={() => onNavigate("roster")} className="mt-3 bg-ink text-card">
+                  <UserPlus className="mr-1.5 size-3.5" />
+                  Enroll Students / Upload CSV
+                </Button>
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-lg border border-line">
+                <table className="w-full text-left text-xs">
+                  <thead className="border-b border-line bg-paper text-muted-ink">
+                    <tr>
+                      <th className="py-2.5 px-3 font-medium">Roll Number</th>
+                      <th className="py-2.5 px-3 font-medium">Full Name</th>
+                      <th className="py-2.5 px-3 font-medium">Email</th>
+                      <th className="py-2.5 px-3 text-right font-medium">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-line">
+                    {students.slice(0, 5).map((st) => (
+                      <tr key={st.id} className="hover:bg-paper/50">
+                        <td className="py-2.5 px-3 font-mono font-medium text-ink">{st.roll_number}</td>
+                        <td className="py-2.5 px-3 font-medium text-ink">{st.full_name}</td>
+                        <td className="py-2.5 px-3 text-muted-ink">{st.email || "—"}</td>
+                        <td className="py-2.5 px-3 text-right">
+                          <Pill tone="sage">Enrolled</Pill>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {students.length > 5 && (
+                  <div className="border-t border-line bg-paper/50 py-2 px-3 text-center text-xs text-muted-ink">
+                    Showing 5 of {students.length} students ·{" "}
+                    <button onClick={() => onNavigate("roster")} className="font-medium text-ink underline">
+                      View all in Student Roll Call
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Matrix Rubrics Management Card */}
+        <div className="rounded-[14px] border border-line bg-card p-5 xl:col-span-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <ClipboardCheck className="size-4 text-sage" />
+                <h2 className="font-display text-xl">Matrix Rubrics</h2>
+                <Badge variant="outline" className="text-xs">
+                  {rubrics.length} Available
+                </Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted-ink">
+                Tiered grading rubrics for objective evaluation.
+              </p>
+            </div>
+            <Button variant="ghost" size="sm" className="text-sage" onClick={() => onNavigate("rubrics")}>
+              All Rubrics <ArrowRight className="ml-1 size-3.5" />
+            </Button>
+          </div>
+
+          <div className="mt-4 space-y-3">
+            {rubrics.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-line p-6 text-center">
+                <ClipboardCheck className="mx-auto size-7 text-faint" />
+                <p className="mt-2 text-sm font-medium text-ink">No rubrics created yet</p>
+                <p className="mt-1 text-xs text-muted-ink">
+                  Build multi-tier criteria matrices with custom points (4, 3, 2, 0 pts).
+                </p>
+                <Button size="sm" onClick={() => onNavigate("rubric_builder")} className="mt-3 bg-ink text-card">
+                  <Plus className="mr-1.5 size-3.5" />
+                  Create Matrix Rubric
+                </Button>
+              </div>
+            ) : (
+              rubrics.slice(0, 3).map((r) => (
+                <div key={r.id} className="rounded-lg border border-line bg-paper p-3.5 hover:border-ink/20 transition-colors">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-semibold text-ink line-clamp-1">{r.title || r.name}</p>
+                    <Badge variant="secondary" className="font-mono text-xs">
+                      {r.total_marks || r.total_max_score || 100} pts
+                    </Badge>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between text-xs text-muted-ink">
+                    <span>{r.criteria?.length || 0} criteria rows</span>
+                    <button onClick={() => onNavigate("rubrics")} className="text-amber-ink font-medium hover:underline">
+                      View matrix
+                    </button>
+                  </div>
+                </div>
+              ))
+            )}
+            <div className="pt-2">
+              <Button onClick={() => onNavigate("rubric_builder")} variant="outline" size="sm" className="w-full border-dashed">
+                <Plus className="mr-1.5 size-3.5" />
+                Build New Matrix Rubric
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 2-Column Overview: Active Assignments & Integrity Auditing */}
       <div className="mt-6 grid gap-5 xl:grid-cols-12">
         <div className="rounded-[14px] border border-line bg-card p-5 xl:col-span-7">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="font-display text-xl">Integrity Audit Breakdown</h2>
               <p className="mt-1 text-xs text-muted-ink">
-                3-Way academic integrity overview for {assignment ? assignment.title : course.name}.
+                3-Way academic integrity overview for {assignment ? assignment.title : activeClassName}.
               </p>
             </div>
             <Button variant="ghost" size="sm" className="text-amber-ink" onClick={() => onNavigate("similarity")}>
@@ -1118,7 +1451,7 @@ function Dashboard({
           <div className="flex items-center justify-between">
             <div>
               <h2 className="font-display text-xl">Class Average Score</h2>
-              <p className="mt-1 text-xs text-muted-ink">{course.name} · Section {course.section || "A"}</p>
+              <p className="mt-1 text-xs text-muted-ink">{activeClassName} · {activeClassCode}</p>
             </div>
             <span className="font-display text-3xl text-ink">{avgScore}/100</span>
           </div>
@@ -1140,6 +1473,7 @@ function Dashboard({
         </div>
       </div>
 
+      {/* Pending Reviews Queue Section */}
       <div className="mt-5 rounded-[14px] border border-line bg-card p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -2662,11 +2996,11 @@ function SettingsView({
         <div className="mt-4 space-y-3 text-sm">
           <div>
             <label className="text-[11px] uppercase tracking-[0.14em] text-faint">Name</label>
-            <p className="font-medium text-ink">{currentUser?.name || "Dr. Priya Rao"}</p>
+            <p className="font-medium text-ink">{currentUser?.name || "Educator / Instructor"}</p>
           </div>
           <div>
             <label className="text-[11px] uppercase tracking-[0.14em] text-faint">Email</label>
-            <p className="text-muted-ink">{currentUser?.email || "priya.rao@university.edu"}</p>
+            <p className="text-muted-ink">{currentUser?.email || "Signed in via Supabase"}</p>
           </div>
           <div>
             <label className="text-[11px] uppercase tracking-[0.14em] text-faint">Role</label>

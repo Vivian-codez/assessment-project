@@ -32,23 +32,56 @@ def get_current_instructor(
     authorization: Optional[str] = Header(None),
     db: Session = Depends(get_db),
 ) -> Instructor:
-    """Returns authenticated user from Bearer token, or defaults to first instructor."""
+    """Returns authenticated user from Bearer token via Supabase Auth or local JWT.
+    
+    Raises 401 if unauthenticated. No hardcoded or demo fallbacks.
+    """
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ")[1]
+
+        # 1. First check with Supabase Auth
+        try:
+            sb_user_res = supabase.auth.get_user(token)
+            if sb_user_res and sb_user_res.user:
+                sb_u = sb_user_res.user
+                inst_id = str(sb_u.id)
+                inst = db.query(Instructor).filter(Instructor.id == inst_id).first()
+                user_meta = sb_u.user_metadata or {}
+                name = user_meta.get("name") or user_meta.get("full_name") or (sb_u.email.split("@")[0] if sb_u.email else "Instructor")
+                role = user_meta.get("role") or "Instructor · Computer Science"
+
+                if not inst:
+                    inst = Instructor(
+                        id=inst_id,
+                        name=name,
+                        email=sb_u.email or f"{inst_id}@auth.supabase",
+                        role=role,
+                        hashed_password="supabase_auth_managed",
+                        preferences={
+                            "show_similarity_context": True,
+                            "require_teacher_notes_on_overrides": False,
+                            "include_ai_content_indicator": True,
+                        },
+                    )
+                    db.add(inst)
+                    db.commit()
+                    db.refresh(inst)
+                return inst
+        except Exception as sb_err:
+            logger.debug(f"Supabase auth check: {sb_err}")
+
+        # 2. Check local JWT
         payload = decode_access_token(token)
         if payload and "sub" in payload:
             user_id = payload["sub"]
-            # Look up instructor or user
             instructor = db.query(Instructor).filter(Instructor.id == user_id).first()
             if instructor:
                 return instructor
             user = db.query(User).filter(User.id == user_id).first()
             if user:
-                # Return or adapt user as instructor
                 inst = db.query(Instructor).filter(Instructor.email == user.email).first()
                 if inst:
                     return inst
-                # Ensure instructor mirror exists
                 new_inst = Instructor(
                     id=user.id,
                     name=user.name,
@@ -62,31 +95,12 @@ def get_current_instructor(
                 db.refresh(new_inst)
                 return new_inst
 
-    # Fallback to default demo instructor if none logged in
-    instructor = db.query(Instructor).filter(Instructor.email == "priya.rao@university.edu").first()
-    if not instructor:
-        instructor = db.query(Instructor).filter(Instructor.id == "inst_priya_rao").first()
-    if not instructor:
-        instructor = db.query(Instructor).filter(Instructor.courses.any()).first()
-    if not instructor:
-        instructor = db.query(Instructor).first()
-    if not instructor:
-        instructor = Instructor(
-            id="inst_priya_rao",
-            name="Dr. Priya Rao",
-            email="priya.rao@university.edu",
-            role="Instructor · Computer Science",
-            hashed_password=get_password_hash("password123"),
-            preferences={
-                "show_similarity_context": True,
-                "require_teacher_notes_on_overrides": False,
-                "include_ai_content_indicator": True,
-            },
-        )
-        db.add(instructor)
-        db.commit()
-        db.refresh(instructor)
-    return instructor
+    # Strict authentication guard: No fallback to Priya Rao
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required. Please sign in with your email and password.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 @router.post("/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
@@ -204,15 +218,53 @@ def login(
     matched_record = user or instructor
     authenticated = False
 
+    # 1. Authenticate via authentic Supabase Auth
+    try:
+        sb_auth = supabase.auth.sign_in_with_password({
+            "email": email_clean,
+            "password": login_data.password,
+        })
+        if sb_auth and sb_auth.user and sb_auth.session:
+            sb_u = sb_auth.user
+            token = sb_auth.session.access_token
+            meta = sb_u.user_metadata or {}
+            name = meta.get("name") or meta.get("full_name") or email_clean.split("@")[0]
+            role = meta.get("role") or "Instructor · Computer Science"
+
+            inst = db.query(Instructor).filter(Instructor.id == str(sb_u.id)).first()
+            if not inst:
+                inst = Instructor(
+                    id=str(sb_u.id),
+                    name=name,
+                    email=sb_u.email or email_clean,
+                    role=role,
+                    hashed_password="supabase_auth_managed",
+                    preferences={
+                        "show_similarity_context": True,
+                        "require_teacher_notes_on_overrides": False,
+                        "include_ai_content_indicator": True,
+                    },
+                )
+                db.add(inst)
+                db.commit()
+                db.refresh(inst)
+
+            user_resp = UserResponse(
+                id=str(sb_u.id),
+                name=name,
+                email=sb_u.email or email_clean,
+                role=role,
+                preferences=inst.preferences or {},
+            )
+            return AuthResponse(access_token=token, token_type="bearer", user=user_resp)
+    except Exception as sb_err:
+        logger.debug(f"Supabase sign_in_with_password notice: {sb_err}")
+
+    # 2. Check local database credentials
     if matched_record and verify_password(login_data.password, matched_record.hashed_password):
         authenticated = True
-    elif email_clean == "priya.rao@university.edu":
-        # Demo fallback for Dr. Priya Rao
-        authenticated = True
-        if not matched_record:
-            matched_record = get_current_instructor(None, db)
 
-    # If not found locally, check Supabase
+    # 3. If not found locally, check Supabase users table
     if not authenticated:
         try:
             res = supabase.table("users").select("*").eq("email", email_clean).execute()
@@ -220,7 +272,6 @@ def login(
                 remote_user = res.data[0]
                 if verify_password(login_data.password, remote_user.get("hashed_password", "")):
                     authenticated = True
-                    # Sync to local DB
                     matched_record = User(
                         id=remote_user["id"],
                         name=remote_user["name"],

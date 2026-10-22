@@ -46,20 +46,7 @@ async def lifespan(app: FastAPI):
                 except Exception:
                     pass
 
-        # Ensure seed data exists in database for courses and assignments
-        from app.core.database import SessionLocal
-        from app.models.course import Course
-        db = SessionLocal()
-        try:
-            if db.query(Course).count() == 0:
-                logger.info("Database contains 0 courses. Initializing seed data...")
-                from scripts.seed_data import seed
-                seed()
-                logger.info("Default seed courses, assignments, and rubrics loaded successfully.")
-        except Exception as seed_err:
-            logger.warning(f"Seed data initialization notice: {seed_err}")
-        finally:
-            db.close()
+        # Auto-seed removed to maintain clean user-driven state without mock data.
     except Exception as e:
         logger.warning(f"Database table auto-creation skipped or encountered error: {e}")
     yield
@@ -104,9 +91,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register API v1 Router under both /api/v1 and root /
-# This ensures that frontend requests succeed regardless of whether VITE_API_BASE_URL includes /api/v1 or not!
+# Register API v1 Router under /api/v1, /api, and root /
+# This ensures that frontend requests succeed regardless of whether API_BASE_URL includes /api/v1, /api, or /
 app.include_router(api_v1_router, prefix=settings.API_V1_STR)
+app.include_router(api_v1_router, prefix="/api")
 app.include_router(api_v1_router)
 
 

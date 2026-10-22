@@ -56,9 +56,9 @@ def get_courses(
         except Exception as e:
             logger.warning(f"Supabase courses sync notice: {e}")
 
-    if not courses and not search:
-        # Fallback to seeded demo courses for prototype display
-        courses = db.query(Course).all()
+    # Return empty list if no courses exist for this instructor (clean empty state)
+    if not courses:
+        return []
 
     results = []
     for c in courses:
@@ -146,8 +146,9 @@ def create_course(
     instructor: Instructor = Depends(get_current_instructor),
 ):
     """Add a new course."""
+    course_id = str(uuid.uuid4())
     new_course = Course(
-        id=f"c_{uuid.uuid4().hex[:8]}",
+        id=course_id,
         name=payload.name,
         code=payload.code,
         section=payload.section,
@@ -170,8 +171,15 @@ def create_course(
             "students_count": new_course.students_count,
             "instructor_id": new_course.instructor_id,
         }).execute()
+        # Also ensure classroom record exists in classrooms table
+        supabase.table("classrooms").upsert({
+            "id": new_course.id,
+            "name": new_course.name,
+            "code": new_course.code,
+            "instructor_id": new_course.instructor_id,
+        }).execute()
     except Exception as e:
-        logger.warning(f"Supabase course sync notice: {e}")
+        logger.warning(f"Supabase course/classroom sync notice: {e}")
 
     return CourseResponse(
         id=new_course.id,

@@ -20,7 +20,31 @@ CREATE TABLE IF NOT EXISTS public.instructors (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 3. Courses Table
+-- 3. Classrooms (Courses) Table
+CREATE TABLE IF NOT EXISTS public.classrooms (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    instructor_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+    name TEXT NOT NULL,
+    code TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_classrooms_instructor ON public.classrooms(instructor_id);
+
+-- 3b. Students (Roll Call List) Table
+CREATE TABLE IF NOT EXISTS public.students (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    classroom_id UUID NOT NULL REFERENCES public.classrooms(id) ON DELETE CASCADE,
+    roll_number TEXT NOT NULL,
+    full_name TEXT NOT NULL,
+    email TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_students_classroom_roll UNIQUE (classroom_id, roll_number)
+);
+CREATE INDEX IF NOT EXISTS idx_students_classroom ON public.students(classroom_id);
+CREATE INDEX IF NOT EXISTS idx_students_roll ON public.students(classroom_id, roll_number);
+
+-- 3c. Legacy Courses Table (for backwards compatibility)
 CREATE TABLE IF NOT EXISTS public.courses (
     id VARCHAR(64) PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
@@ -35,26 +59,33 @@ CREATE TABLE IF NOT EXISTS public.courses (
 CREATE INDEX IF NOT EXISTS idx_courses_code ON public.courses(code);
 CREATE INDEX IF NOT EXISTS idx_courses_instructor ON public.courses(instructor_id);
 
--- 4. Rubrics Table
+-- 4. Rubrics Table (Matrix Rubric format)
 CREATE TABLE IF NOT EXISTS public.rubrics (
-    id VARCHAR(64) PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    course_id VARCHAR(64) NOT NULL REFERENCES public.courses(id) ON DELETE CASCADE,
-    total_max_score NUMERIC(5,2) DEFAULT 100.0,
+    id VARCHAR(64) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    classroom_id UUID REFERENCES public.classrooms(id) ON DELETE CASCADE,
+    course_id VARCHAR(64),
+    title TEXT,
+    name VARCHAR(255),
+    total_marks NUMERIC(6,2) DEFAULT 0.0,
+    total_max_score NUMERIC(6,2) DEFAULT 0.0,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS idx_rubrics_classroom ON public.rubrics(classroom_id);
 CREATE INDEX IF NOT EXISTS idx_rubrics_course ON public.rubrics(course_id);
 
--- 4b. Rubric Criteria Table
+-- 4b. Rubric Criteria Table (with Tiered Levels JSONB)
 CREATE TABLE IF NOT EXISTS public.rubric_criteria (
-    id VARCHAR(64) PRIMARY KEY,
+    id VARCHAR(64) PRIMARY KEY DEFAULT gen_random_uuid()::text,
     rubric_id VARCHAR(64) NOT NULL REFERENCES public.rubrics(id) ON DELETE CASCADE,
-    name VARCHAR(255) NOT NULL,
+    criterion_name TEXT,
+    name VARCHAR(255),
     description TEXT,
-    weight NUMERIC(5,2) NOT NULL DEFAULT 25.0,
-    max_score NUMERIC(5,2) NOT NULL DEFAULT 30.0,
+    weight NUMERIC(5,2) DEFAULT 25.0,
+    max_points NUMERIC(6,2) DEFAULT 4.0,
+    max_score NUMERIC(5,2) DEFAULT 4.0,
     order_index INT DEFAULT 0,
+    levels JSONB DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_rubric_criteria_rubric ON public.rubric_criteria(rubric_id);
@@ -159,6 +190,8 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON public.audit_logs(create
 
 -- 11. Row-Level Security (RLS) Configuration
 ALTER TABLE public.instructors ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.classrooms ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.students ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.courses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.assignments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.rubrics ENABLE ROW LEVEL SECURITY;
@@ -175,7 +208,7 @@ ALTER TABLE public.user_sessions ENABLE ROW LEVEL SECURITY;
 DO $$
 DECLARE
     tbl text;
-    tbls text[] := ARRAY['courses', 'instructors', 'submissions', 'rubrics', 'rubric_criteria', 'assignments', 'draft_grades', 'audit_logs', 'similarity_matches', 'batch_jobs', 'users', 'user_sessions'];
+    tbls text[] := ARRAY['classrooms', 'students', 'courses', 'instructors', 'submissions', 'rubrics', 'rubric_criteria', 'assignments', 'draft_grades', 'audit_logs', 'similarity_matches', 'batch_jobs', 'users', 'user_sessions'];
 BEGIN
     FOREACH tbl IN ARRAY tbls
     LOOP

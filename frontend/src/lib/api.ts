@@ -58,20 +58,59 @@ export interface Assignment {
   created_at: string;
 }
 
+export interface Classroom {
+  id: string;
+  name: string;
+  code: string;
+  instructor_id?: string;
+  students_count: number;
+  created_at?: string;
+}
+
+export interface Student {
+  id: string;
+  classroom_id: string;
+  roll_number: string;
+  full_name: string;
+  email?: string;
+  created_at?: string;
+}
+
+export interface StudentUploadCSVResponse {
+  total_inserted: number;
+  total_skipped: number;
+  skipped: Array<{ row: any; roll_number: string; full_name: string; reason: string }>;
+  inserted: any[];
+}
+
+export interface RubricLevel {
+  level_name: string;
+  points: number;
+  description: string;
+}
+
 export interface RubricCriterion {
   id?: string;
+  criterion_name?: string;
   name: string;
   description: string;
   weight: number;
   max: number;
+  max_points?: number;
   score?: number;
+  order_index?: number;
+  levels?: RubricLevel[];
 }
 
 export interface Rubric {
   id: string;
+  title?: string;
   name: string;
+  classroom_id?: string;
   course_id: string;
+  total_marks?: number;
   total_max_score: number;
+  created_at?: string;
   criteria: RubricCriterion[];
 }
 
@@ -339,29 +378,97 @@ export const api = {
   },
 
   // ==========================================
-  // Rubrics
+  // Classrooms & Roll Call Roster
+  // ==========================================
+  classrooms: {
+    list: async (): Promise<Classroom[]> => {
+      return request<Classroom[]>("/classrooms");
+    },
+    get: async (id: string): Promise<Classroom> => {
+      return request<Classroom>(`/classrooms/${id}`);
+    },
+    create: async (data: { name: string; code: string }): Promise<Classroom> => {
+      return request<Classroom>("/classrooms", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    delete: async (id: string): Promise<void> => {
+      return request<void>(`/classrooms/${id}`, {
+        method: "DELETE",
+      });
+    },
+    getStudents: async (classroomId: string): Promise<Student[]> => {
+      return request<Student[]>(`/classrooms/${classroomId}/students`);
+    },
+    enrollManual: async (
+      classroomId: string,
+      students: Array<{ roll_number: string; full_name: string; email?: string }>
+    ): Promise<any> => {
+      return request<any>(`/classrooms/${classroomId}/students/manual`, {
+        method: "POST",
+        body: JSON.stringify(students),
+      });
+    },
+    uploadCSV: async (classroomId: string, file: File): Promise<StudentUploadCSVResponse> => {
+      const formData = new FormData();
+      formData.append("file", file);
+      return request<StudentUploadCSVResponse>(`/classrooms/${classroomId}/students/upload-csv`, {
+        method: "POST",
+        body: formData,
+      });
+    },
+  },
+
+  // ==========================================
+  // Matrix Rubrics
   // ==========================================
   rubrics: {
+    list: async (classroomId?: string): Promise<Rubric[]> => {
+      const q = classroomId ? `?classroom_id=${encodeURIComponent(classroomId)}` : "";
+      return request<Rubric[]>(`/rubrics${q}`);
+    },
     listByCourse: async (courseId: string): Promise<Rubric[]> => {
-      return request<Rubric[]>(`/rubrics/courses/${courseId}/rubrics`);
+      return request<Rubric[]>(`/rubrics?classroom_id=${encodeURIComponent(courseId)}`);
     },
     get: async (id: string): Promise<Rubric> => {
       return request<Rubric>(`/rubrics/${id}`);
     },
     create: async (data: {
-      name: string;
-      course_id: string;
+      title?: string;
+      name?: string;
+      classroom_id?: string;
+      course_id?: string;
+      total_marks?: number;
       total_max_score?: number;
       criteria: Array<{
-        name: string;
+        criterion_name?: string;
+        name?: string;
         description?: string;
-        weight: number;
-        max_score: number;
+        weight?: number;
+        max_points?: number;
+        max_score?: number;
+        levels?: RubricLevel[];
       }>;
     }): Promise<Rubric> => {
       return request<Rubric>("/rubrics", {
         method: "POST",
-        body: JSON.stringify(data),
+        body: JSON.stringify({
+          title: data.title || data.name,
+          classroom_id: data.classroom_id || data.course_id,
+          total_marks: data.total_marks || data.total_max_score,
+          criteria: data.criteria.map((c, i) => ({
+            criterion_name: c.criterion_name || c.name || `Criterion ${i + 1}`,
+            max_points: c.max_points || c.max_score || 4.0,
+            order_index: i,
+            levels: c.levels || [],
+          })),
+        }),
+      });
+    },
+    delete: async (id: string): Promise<void> => {
+      return request<void>(`/rubrics/${id}`, {
+        method: "DELETE",
       });
     },
   },
