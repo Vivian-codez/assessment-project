@@ -9,10 +9,79 @@ from app.core.database import get_db
 from app.core.logging import logger
 from app.models.batch_job import BatchJob
 from app.models.submission import Submission
-from app.schemas.job import BatchEvaluationRequest, BatchJobResponse
+from app.schemas.job import BatchEvaluationRequest, BatchJobResponse, JobStatusResponse
+from app.workers.celery_app import is_redis_available
 from app.workers.evaluation_tasks import evaluate_batch_task, run_evaluation_batch_logic
 
 router = APIRouter(tags=["Batch Jobs & Worker Tasks"])
+
+
+@router.get("/jobs/{batch_job_id}/status", response_model=JobStatusResponse)
+def get_live_job_status(batch_job_id: str, db: Session = Depends(get_db)):
+    """Live Status Polling endpoint using Celery AsyncResult and Redis."""
+    status_str = "PENDING"
+    current = 0
+    total = 0
+    percent = 0.0
+    result_data = None
+    error_msg = None
+
+    # 1. Query Celery AsyncResult (Redis broker) if Redis is active
+    if is_redis_available():
+        try:
+            from celery.result import AsyncResult
+            from app.workers.celery_app import celery_app
+
+            res = AsyncResult(batch_job_id, app=celery_app)
+            celery_state = res.state
+
+            if celery_state:
+                status_str = celery_state
+                if celery_state == "PROCESSING":
+                    info = res.info if isinstance(res.info, dict) else {}
+                    current = int(info.get("current", 0))
+                    total = int(info.get("total", 0))
+                    percent = float(info.get("percent", 0.0))
+                elif celery_state == "SUCCESS":
+                    info = res.result if isinstance(res.result, dict) else {}
+                    total = int(info.get("total", info.get("evaluated", 0)))
+                    current = total
+                    percent = 100.0
+                    result_data = info
+                elif celery_state == "FAILURE":
+                    error_msg = str(res.result)
+        except Exception as celery_err:
+            logger.debug(f"Celery AsyncResult query error for {batch_job_id}: {celery_err}")
+
+    # 2. Enrich from local Database BatchJob record
+    job = db.query(BatchJob).filter(BatchJob.id == batch_job_id).first()
+    if job:
+        if status_str in ("PENDING", None) or (job.status == "completed" and status_str != "SUCCESS"):
+            db_status_map = {
+                "queued": "PENDING",
+                "processing": "PROCESSING",
+                "completed": "SUCCESS",
+                "failed": "FAILURE",
+            }
+            status_str = db_status_map.get(job.status, status_str or "PENDING")
+            current = job.processed_items
+            total = job.total_items
+            percent = job.progress_pct
+            if job.status == "completed":
+                percent = 100.0
+                result_data = job.meta_info or {"evaluated": job.processed_items}
+            elif job.status == "failed":
+                error_msg = job.error_message
+
+    return JobStatusResponse(
+        batch_job_id=batch_job_id,
+        status=status_str or "PENDING",
+        current=current,
+        total=total,
+        percent=percent,
+        result=result_data,
+        error=error_msg,
+    )
 
 
 @router.post("/assignments/{assignment_id}/evaluate-batch", response_model=BatchJobResponse)

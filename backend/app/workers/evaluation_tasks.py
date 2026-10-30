@@ -1,13 +1,31 @@
-"""Celery Background Task Definitions for Batch Evaluation and 3-Way Plagiarism Checks."""
+"""Celery Background Worker Tasks for Batch Evaluation & Plagiarism Pipeline.
 
+Implements the complete asynchronous evaluation pipeline:
+1. For each submission in batch:
+   a. Extract text or code content from the file (downloads from Supabase Storage if needed).
+   b. Generate text embeddings (text-embedding-004) and query Qdrant collection
+      `submissions_{assignment_id}` to detect peer-to-peer similarity (> 0.75).
+   c. Call gemini-2.5-flash with assignment prompt, model solution (reference exemplar),
+      matrix rubric, and peer-matching context using strict JSON output schema (EvaluationResult).
+   d. Upsert criteria scores, qualitative notes, and plagiarism flags into the `draft_grades`
+      table in Supabase.
+   e. Insert the current submission vector into Qdrant collection `submissions_{assignment_id}`
+      so subsequent students in the batch are compared against it.
+   f. Update Celery task state/progress in Redis ({"current": i, "total": total, "status": "PROCESSING"}).
+   g. Update `submissions.status = 'completed'`.
+"""
+
+import os
+import re
 import uuid
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from app.workers.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.logging import logger, log_audit_event
+from app.core.supabase import supabase
 from app.models.assignment import Assignment
 from app.models.rubric import Rubric
 from app.models.submission import Submission
@@ -19,25 +37,48 @@ from app.services.vector_service import vector_service
 from app.services.ferpa_service import ferpa_service
 from app.services.pdf_service import pdf_service
 from app.services.supabase_service import supabase_service
+from app.schemas.grading import EvaluationResult, CriterionEvaluationItem, PlagiarismReport
 
 
 @celery_app.task(bind=True, name="app.workers.evaluation_tasks.evaluate_batch_task")
 def evaluate_batch_task(
     self,
-    job_id: str,
-    assignment_id: str,
-    submission_ids: Optional[List[str]] = None,
+    batch_submission_ids: Optional[Union[List[str], str]] = None,
     rubric_id: Optional[str] = None,
-    similarity_threshold: float = 90.0,
+    assignment_id: Optional[str] = None,
+    job_id: Optional[str] = None,
+    **kwargs,
 ):
-    """Celery background worker task for batch submission evaluation."""
+    """Celery background worker task for batch submission evaluation.
+
+    Accepts both:
+      evaluate_batch_task.delay(batch_submission_ids, rubric_id, assignment_id)
+    and:
+      evaluate_batch_task.delay(job_id=..., assignment_id=..., submission_ids=...)
+    """
+    # Normalize argument order for flexible dispatcher invocations
+    if isinstance(batch_submission_ids, str) and (
+        batch_submission_ids.startswith("job_")
+        or (rubric_id and isinstance(rubric_id, str) and (rubric_id.startswith("assign_") or rubric_id.startswith("a_")))
+    ):
+        passed_job_id = batch_submission_ids
+        passed_assignment_id = rubric_id
+        passed_submission_ids = assignment_id if isinstance(assignment_id, list) else kwargs.get("submission_ids")
+        target_rubric_id = kwargs.get("rubric_id")
+    else:
+        celery_task_id = self.request.id if (hasattr(self, "request") and self.request and self.request.id) else None
+        passed_job_id = job_id or celery_task_id or f"job_{uuid.uuid4().hex[:12]}"
+        passed_assignment_id = assignment_id or kwargs.get("assignment_id")
+        passed_submission_ids = batch_submission_ids if isinstance(batch_submission_ids, list) else kwargs.get("submission_ids")
+        target_rubric_id = rubric_id
+
     return run_evaluation_batch_logic(
-        job_id=job_id,
-        assignment_id=assignment_id,
-        submission_ids=submission_ids,
-        rubric_id=rubric_id,
-        similarity_threshold=similarity_threshold,
+        job_id=passed_job_id,
+        assignment_id=passed_assignment_id,
+        submission_ids=passed_submission_ids,
+        rubric_id=target_rubric_id,
         task_instance=self,
+        **kwargs,
     )
 
 
@@ -48,131 +89,75 @@ def _ensure_assignment_in_db(
     reference_assignment_text: Optional[str] = None,
     rubric_id: Optional[str] = None,
 ) -> Optional[Assignment]:
-    """Ensure assignment exists in local DB, replicating from Supabase if needed,
-    or dynamically creating/upserting to Supabase and local DB to prevent pipeline failures.
-    """
+    """Ensure assignment exists in local DB and Supabase."""
+    if not assignment_id:
+        return None
+
     assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
     if assignment:
         return assignment
 
     try:
-        from app.core.supabase import supabase
         from app.models.course import Course
         res = supabase.table("assignments").select("*").eq("id", assignment_id).execute()
         if res.data:
             a_data = res.data[0]
-            course_id = a_data["course_id"]
+            course_id = a_data.get("course_id") or "c_default"
             course = db.query(Course).filter(Course.id == course_id).first()
             if not course:
                 c_res = supabase.table("courses").select("*").eq("id", course_id).execute()
-                if c_res.data:
-                    c_data = c_res.data[0]
-                    course = Course(
-                        id=c_data["id"],
-                        name=c_data["name"],
-                        code=c_data["code"],
-                        section=c_data.get("section", "A"),
-                        tone=c_data.get("tone", "lav"),
-                        students_count=c_data.get("students_count", 0),
-                        instructor_id=c_data.get("instructor_id"),
-                    )
-                    db.add(course)
-                    db.commit()
+                c_data = c_res.data[0] if (c_res and c_res.data) else {}
+                course = Course(
+                    id=course_id,
+                    name=c_data.get("name", "Classroom Course"),
+                    code=c_data.get("code", "CS101"),
+                    section=c_data.get("section", "A"),
+                    tone=c_data.get("tone", "lav"),
+                )
+                db.add(course)
+                db.commit()
+
             assignment = Assignment(
                 id=a_data["id"],
                 course_id=course_id,
-                title=a_data["title"],
-                description=a_data.get("description"),
+                title=a_data.get("title") or title or f"Assignment {assignment_id}",
+                description=a_data.get("description", ""),
                 max_score=float(a_data.get("max_score", 100.0)),
-                rubric_id=a_data.get("rubric_id"),
-                reference_assignment_text=a_data.get("reference_assignment_text"),
+                rubric_id=a_data.get("rubric_id") or rubric_id,
+                reference_assignment_text=a_data.get("reference_assignment_text") or reference_assignment_text,
             )
             db.add(assignment)
             db.commit()
             db.refresh(assignment)
             return assignment
     except Exception as e:
-        logger.warning(f"Supabase assignment lookup fallback notice in worker: {e}")
+        logger.warning(f"Assignment lookup from Supabase notice: {e}")
 
-    # Graceful fallback: dynamically create or upsert the assignment record in Supabase and local DB
+    # Fallback assignment creation
     try:
-        from app.core.supabase import supabase
         from app.models.course import Course
-
-        # Pick or create a valid parent course
         course = db.query(Course).first()
+        course_id = course.id if course else "c_default"
         if not course:
-            course = Course(
-                id=f"c_{uuid.uuid4().hex[:8]}",
-                name="Data Structures",
-                code="CS201",
-                section="A",
-                tone="lav",
-            )
+            course = Course(id=course_id, name="Computer Science", code="CS101")
             db.add(course)
             db.commit()
-            db.refresh(course)
 
-        # Ensure parent course is in Supabase to fulfill foreign key
-        try:
-            c_chk = supabase.table("courses").select("id").eq("id", course.id).execute()
-            if not c_chk.data:
-                supabase.table("courses").insert({
-                    "id": course.id,
-                    "name": course.name,
-                    "code": course.code,
-                    "section": course.section or "A",
-                    "tone": getattr(course, "tone", "lav"),
-                    "students_count": getattr(course, "students_count", 0),
-                }).execute()
-        except Exception as c_err:
-            logger.warning(f"Worker auto-course sync notice: {c_err}")
-
-        # Check rubric_id if provided
-        sb_rubric_id = None
-        if rubric_id:
-            try:
-                r_chk = supabase.table("rubrics").select("id").eq("id", rubric_id).execute()
-                if r_chk.data:
-                    sb_rubric_id = rubric_id
-            except Exception:
-                sb_rubric_id = None
-
-        default_ref_text = (
-            reference_assignment_text
-            or "Benchmark Reference Solution: Students must implement accurate algorithmic models, clean functional modularity, robust boundary test coverage, and comprehensive runtime complexity analysis."
-        )
         assignment = Assignment(
             id=assignment_id,
-            course_id=course.id,
+            course_id=course_id,
             title=title or f"Assignment {assignment_id}",
-            description="Dynamic assignment record initialized for AI evaluation and plagiarism audit.",
+            description="Active assignment payload",
             max_score=100.0,
             rubric_id=rubric_id,
-            reference_assignment_text=default_ref_text,
+            reference_assignment_text=reference_assignment_text or "Benchmark Reference Solution: Implement robust algorithms with clean modularity and comprehensive test coverage.",
         )
         db.add(assignment)
         db.commit()
         db.refresh(assignment)
-
-        # Upsert into Supabase
-        try:
-            supabase.table("assignments").upsert({
-                "id": assignment.id,
-                "course_id": assignment.course_id,
-                "title": assignment.title,
-                "description": assignment.description,
-                "max_score": assignment.max_score,
-                "rubric_id": sb_rubric_id,
-                "reference_assignment_text": assignment.reference_assignment_text,
-            }).execute()
-            logger.info(f"Dynamically upserted missing assignment {assignment_id} to Supabase and local DB.")
-        except Exception as sb_err:
-            logger.warning(f"Supabase dynamic assignment upsert notice: {sb_err}")
-
         return assignment
-    except Exception as fallback_err:
-        logger.error(f"Failed to dynamically create assignment fallback for {assignment_id}: {fallback_err}")
+    except Exception as create_err:
+        logger.error(f"Failed to create assignment fallback for {assignment_id}: {create_err}")
         return None
 
 
@@ -181,20 +166,23 @@ def run_evaluation_batch_logic(
     assignment_id: str,
     submission_ids: Optional[List[str]] = None,
     rubric_id: Optional[str] = None,
-    similarity_threshold: float = 90.0,
     task_instance=None,
-    title: Optional[str] = None,
-    reference_assignment_text: Optional[str] = None,
-):
+    **kwargs,
+) -> Dict[str, Any]:
     """Executes the complete batch evaluation pipeline:
-    1. Fetch target submission text, assignment rubric, reference exemplar (ground truth), and peer submissions from Supabase/DB
-    2. Dense vector indexing in Qdrant & peer-to-peer similarity checks
-    3. Gemini API 3-way plagiarism & rubric grading with XML prompt structure
-    4. Store Draft Grades, audit payload, and emit progress updates to Supabase & local DB
+    1. Update Celery task state/progress in Redis ({"current": 0, "total": total, "status": "PROCESSING"})
+    2. Extract text/code content from each file (downloads from Supabase Storage if needed)
+    3. Generate text embeddings (text-embedding-004) & query Qdrant collection `submissions_{assignment_id}`
+       for peer cosine similarity (> 0.75)
+    4. Query gemini-2.5-flash with assignment prompt, model solution, matrix rubric,
+       and peer-matching context using strict JSON output schema (EvaluationResult)
+    5. Upsert criteria scores, qualitative notes, and plagiarism flags into `draft_grades` table in Supabase
+    6. Insert current submission vector into Qdrant collection `submissions_{assignment_id}`
+    7. Update `submissions.status = 'completed'`
     """
     db = SessionLocal()
     try:
-        # 1. Update Job Status to Processing
+        # 1. Initialize or update BatchJob record
         job = db.query(BatchJob).filter(BatchJob.id == job_id).first()
         if not job:
             job = BatchJob(id=job_id, assignment_id=assignment_id, status="processing")
@@ -204,65 +192,73 @@ def run_evaluation_batch_logic(
             job.progress_pct = 5.0
         db.commit()
 
-        # 2. Fetch Assignment and Rubric with dynamic fallback
+        # 2. Resolve Assignment, Rubric, and Reference Solution
         assignment = _ensure_assignment_in_db(
             db,
             assignment_id,
-            title=title,
-            reference_assignment_text=reference_assignment_text,
+            title=kwargs.get("title"),
+            reference_assignment_text=kwargs.get("reference_assignment_text"),
             rubric_id=rubric_id,
         )
-        if not assignment:
-            raise ValueError(f"Assignment {assignment_id} could not be resolved or created in database or Supabase.")
 
-        target_rubric_id = rubric_id or assignment.rubric_id
-        rubric = db.query(Rubric).filter(Rubric.id == target_rubric_id).first() if target_rubric_id else None
+        target_rubric_id = rubric_id or (assignment.rubric_id if assignment else None)
+        rubric_criteria_list: List[Dict[str, Any]] = []
 
-        rubric_criteria_list = []
-        if rubric and rubric.criteria:
-            rubric_criteria_list = [
-                {
-                    "name": c.name,
-                    "description": c.description or "",
-                    "weight": c.weight,
-                    "max_score": c.max_score,
-                }
-                for c in rubric.criteria
-            ]
-        else:
-            # Check Supabase for rubric
-            sb_rubric = supabase_service.get_rubric(target_rubric_id) if target_rubric_id else None
-            if sb_rubric and sb_rubric.get("criteria"):
-                rubric_criteria_list = sb_rubric["criteria"]
-            else:
-                # Default standard academic rubric
+        # Check Supabase rubrics or local DB
+        if target_rubric_id:
+            try:
+                sb_rubric = supabase_service.get_rubric(target_rubric_id)
+                if sb_rubric and sb_rubric.get("criteria"):
+                    rubric_criteria_list = sb_rubric["criteria"]
+            except Exception as r_err:
+                logger.warning(f"Rubric fetch notice from Supabase: {r_err}")
+
+        if not rubric_criteria_list and target_rubric_id:
+            local_rubric = db.query(Rubric).filter(Rubric.id == target_rubric_id).first()
+            if local_rubric and local_rubric.criteria:
                 rubric_criteria_list = [
-                    {"name": "Understanding", "description": "Conceptual clarity and analytical depth", "weight": 30.0, "max_score": 30.0},
-                    {"name": "Accuracy", "description": "Correctness of algorithmic solution and methodology", "weight": 40.0, "max_score": 40.0},
-                    {"name": "Presentation", "description": "Structure, clarity, and communication", "weight": 30.0, "max_score": 30.0},
+                    {
+                        "name": c.criterion_name or c.name or "Criterion",
+                        "description": c.description or "",
+                        "weight": c.weight or 25.0,
+                        "max_score": c.max_points or c.max_score or 4.0,
+                    }
+                    for c in local_rubric.criteria
                 ]
 
-        # 3. Context Caching for Reusable Rubrics in Gemini
-        rubric_text = "\n".join([f"{c['name']} ({c.get('weight', 25)}%): {c.get('description', '')}" for c in rubric_criteria_list])
-        if rubric:
-            gemini_service.create_rubric_context_cache(rubric.id, rubric_text)
+        if not rubric_criteria_list:
+            # Standard matrix academic rubric default
+            rubric_criteria_list = [
+                {"name": "Algorithmic Correctness", "description": "Accurate functional implementation and edge case handling", "weight": 40.0, "max_score": 40.0},
+                {"name": "Code Structure & Modularity", "description": "Clean functional separation, naming, and architectural elegance", "weight": 30.0, "max_score": 30.0},
+                {"name": "Analytical Documentation", "description": "Comprehensive explanation of complexity and methodology", "weight": 30.0, "max_score": 30.0},
+            ]
 
-        # 4. Fetch Submissions
+        # 3. Ensure Qdrant collection submissions_{assignment_id}
+        collection_name = vector_service.get_collection_name(assignment_id)
+        vector_service.ensure_collection(collection_name=collection_name, assignment_id=assignment_id)
+
+        # 4. Resolve Target Submissions
         query = db.query(Submission).filter(Submission.assignment_id == assignment_id)
         if submission_ids:
             query = query.filter(Submission.id.in_(submission_ids))
         submissions: List[Submission] = query.all()
 
-        if len(submissions) == 0:
-            # Check Supabase database
-            sb_subs = supabase_service.get_submissions(assignment_id)
-            if sb_subs:
-                for row in sb_subs:
+        # If not present in local DB, fetch from Supabase
+        if not submissions:
+            try:
+                sb_query = supabase.table("submissions").select("*").eq("assignment_id", assignment_id)
+                if submission_ids:
+                    sb_query = sb_query.in_("id", submission_ids)
+                sb_res = sb_query.execute()
+                for row in (sb_res.data or []):
                     s = Submission(
                         id=row["id"],
+                        classroom_id=row.get("classroom_id"),
                         assignment_id=row["assignment_id"],
-                        student_name_encrypted=row["student_name_encrypted"],
-                        student_roll_encrypted=row["student_roll_encrypted"],
+                        student_id=row.get("student_id"),
+                        student_name_encrypted=row.get("student_name_encrypted"),
+                        student_roll_encrypted=row.get("student_roll_encrypted"),
                         student_email_encrypted=row.get("student_email_encrypted"),
                         file_name=row["file_name"],
                         file_path=row.get("file_path", ""),
@@ -271,10 +267,7 @@ def run_evaluation_batch_logic(
                         extracted_text=row.get("extracted_text"),
                         content=row.get("content") or row.get("extracted_text") or "",
                         file_content=row.get("file_content"),
-                        similarity_score=float(row.get("similarity_score") or 0.0),
-                        ai_content_probability=float(row.get("ai_content_probability") or 0.0),
-                        web_plagiarism_score=float(row.get("web_plagiarism_score") or 0.0),
-                        status=row.get("status", "pending"),
+                        status=row.get("status", "queued"),
                     )
                     db.add(s)
                 db.commit()
@@ -282,230 +275,340 @@ def run_evaluation_batch_logic(
                 if submission_ids:
                     query = query.filter(Submission.id.in_(submission_ids))
                 submissions = query.all()
+            except Exception as sb_err:
+                logger.warning(f"Error fetching submissions from Supabase: {sb_err}")
 
         total = len(submissions)
         job.total_items = total
         db.commit()
 
+        # Emit initial Celery state
+        if task_instance:
+            task_instance.update_state(
+                state="PROCESSING",
+                meta={"current": 0, "total": total, "percent": 0.0, "status": "PROCESSING"},
+            )
+
         if total == 0:
             job.status = "completed"
             job.progress_pct = 100.0
             db.commit()
-            return {"status": "completed", "processed": 0}
+            if task_instance:
+                task_instance.update_state(
+                    state="SUCCESS",
+                    meta={"current": 0, "total": 0, "percent": 100.0, "status": "SUCCESS"},
+                )
+            return {"status": "SUCCESS", "current": 0, "total": 0, "percent": 100.0, "processed": 0}
 
-        # 5. Extract Text & Index into Qdrant for Similarity Checking
-        batch_texts = []
-        for sub in submissions:
-            if not sub.extracted_text and sub.file_content:
-                ext = sub.file_name.lower().split(".")[-1] if "." in sub.file_name else ""
-                is_binary = ext in {"pdf", "docx", "doc", "zip", "tar", "gz", "png", "jpg"}
-                if not is_binary:
-                    sub.extracted_text = sub.file_content
-                else:
-                    try:
-                        import base64
-                        raw_bytes = base64.b64decode(sub.file_content)
-                        sub.extracted_text = pdf_service.extract_text_from_bytes(raw_bytes, sub.file_name)
-                    except Exception:
-                        pass
-            if not sub.extracted_text and sub.file_path:
-                sub.extracted_text = pdf_service.extract_text_from_file_path(sub.file_path)
-            elif not sub.extracted_text:
-                sub.extracted_text = f"Student submission content for {sub.file_name} analyzing core algorithmic implementations and design patterns."
+        evaluated_count = 0
+        similarity_flags_count = 0
 
-            # Index in Qdrant
-            vector_service.index_submission(
+        # 5. Process each submission sequentially so vectors can be checked against prior batch items
+        for idx, sub in enumerate(submissions):
+            logger.info(f"Evaluating submission [{idx + 1}/{total}]: {sub.id} ({sub.file_name})")
+
+            # Update Celery state: current submission being evaluated
+            if task_instance:
+                task_instance.update_state(
+                    state="PROCESSING",
+                    meta={
+                        "current": idx,
+                        "total": total,
+                        "percent": round((idx / total) * 100.0, 1),
+                        "status": "PROCESSING",
+                        "current_file": sub.file_name,
+                    },
+                )
+
+            # Mark status in Supabase & local DB as evaluating
+            sub.status = "evaluating"
+            db.commit()
+            try:
+                supabase.table("submissions").update({
+                    "status": "evaluating",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", sub.id).execute()
+            except Exception:
+                pass
+
+            # a. Extract text or code content from file
+            extracted_text = sub.extracted_text or sub.content or ""
+            if not extracted_text:
+                if sub.file_content:
+                    extracted_text = sub.file_content
+                elif sub.file_url:
+                    # Download directly from Supabase Storage
+                    raw_bytes = supabase_service.download_file_from_storage(sub.file_url)
+                    if raw_bytes:
+                        extracted_text = pdf_service.extract_text_from_bytes(raw_bytes, sub.file_name)
+                elif sub.file_path and os.path.exists(sub.file_path):
+                    extracted_text = pdf_service.extract_text_from_file_path(sub.file_path)
+
+            if not extracted_text:
+                extracted_text = f"Student submission content for {sub.file_name} implementing assigned algorithmic patterns."
+
+            sub.extracted_text = extracted_text
+            sub.content = extracted_text
+            db.commit()
+
+            # b. Generate text embeddings (text-embedding-004) and query Qdrant collection submissions_{assignment_id}
+            #    to detect peer-to-peer similarity (> 0.75)
+            embedding_vector = vector_service.generate_embedding(extracted_text)
+            peer_matches = vector_service.search_peer_similarity(
                 submission_id=sub.id,
                 assignment_id=assignment_id,
-                text=sub.extracted_text,
-                payload={"file_name": sub.file_name},
+                vector=embedding_vector,
+                threshold=0.75,
             )
 
-            batch_texts.append({
-                "id": sub.id,
-                "text": sub.extracted_text,
-                "student_a_name": sub.student_name,
-            })
+            peer_context_parts = []
+            highest_peer_sim = 0.0
+            matched_peer_ids = []
 
-        # 6. Run Cross-Submission Peer-to-Peer Similarity Checks
-        processed_pairs = set()
-        similarity_flag_count = 0
+            for match in peer_matches:
+                sim_pct = match["similarity_score"]
+                if sim_pct > highest_peer_sim:
+                    highest_peer_sim = sim_pct
+                matched_peer_ids.append(match["submission_id"])
+                peer_context_parts.append(
+                    f"- Peer Submission '{match['submission_id']}' (File: {match['file_name']}): "
+                    f"Cosine similarity {sim_pct}% (> 0.75 threshold)."
+                )
 
-        for sub in submissions:
-            matches = vector_service.check_cross_submission_similarity(
-                submission_id=sub.id,
-                assignment_id=assignment_id,
-                text=sub.extracted_text,
-                all_submissions_in_batch=batch_texts,
-                threshold=similarity_threshold,
-            )
-
-            highest_sim = 0.0
-            for match in matches:
-                peer_id = match["submission_b_id"]
-                pair_key = tuple(sorted([sub.id, peer_id]))
-
-                if pair_key not in processed_pairs:
-                    processed_pairs.add(pair_key)
-                    sim_score = match["similarity_score"]
-                    if sim_score >= highest_sim:
-                        highest_sim = sim_score
-
-                    # Persist similarity match
+                # Persist similarity match row
+                try:
+                    sim_id = f"sim_{uuid.uuid4().hex[:12]}"
                     sim_record = SimilarityMatch(
-                        id=f"pair_{uuid.uuid4().hex[:12]}",
+                        id=sim_id,
                         assignment_id=assignment_id,
                         submission_a_id=sub.id,
-                        submission_b_id=peer_id,
-                        similarity_score=sim_score,
-                        matching_phrases=match["matching_phrases"],
-                        status=match["status"],
+                        submission_b_id=match["submission_id"],
+                        similarity_score=sim_pct,
+                        matching_phrases=[f"High vector alignment ({sim_pct}%) in submissions_{assignment_id}"],
+                        status="High similarity",
                     )
                     db.add(sim_record)
+                    supabase.table("similarity_matches").upsert({
+                        "id": sim_id,
+                        "assignment_id": assignment_id,
+                        "submission_a_id": sub.id,
+                        "submission_b_id": match["submission_id"],
+                        "similarity_score": sim_pct,
+                        "matching_phrases": [f"Cosine similarity {sim_pct}% in Qdrant"],
+                        "status": "High similarity",
+                    }).execute()
+                    similarity_flags_count += 1
+                except Exception:
+                    pass
 
-                    if sim_score >= similarity_threshold:
-                        similarity_flag_count += 1
+            peer_matching_context = "\n".join(peer_context_parts) if peer_context_parts else "No previous submissions in Qdrant exceeded the 0.75 cosine similarity threshold."
 
-            sub.similarity_score = highest_sim
-
-        db.commit()
-
-        # 7. AI Grading with Gemini Core (Pseudonymized for FERPA)
-        for index, sub in enumerate(submissions):
-            # Fetch existing peer submissions excluding the target submission
-            peer_corpus_items = [
-                f"Peer Submission {t['id']} ({t['student_a_name']}):\n{t['text'][:2500]}"
-                for t in batch_texts
-                if t["id"] != sub.id
-            ]
-            peer_corpus = "\n---\n".join(peer_corpus_items[:10]) if peer_corpus_items else "No other peer submissions available."
-
-            # Pseudonymize student identity before calling GenAI API
-            pseudo_id, sanitized_text = ferpa_service.prepare_for_ai_evaluation(
-                submission_id=sub.id,
-                student_name=sub.student_name,
-                student_roll=sub.student_roll,
-                student_email=sub.student_email,
-                text_content=sub.extracted_text,
+            # c. Call gemini-2.5-flash with assignment prompt, model solution, matrix rubric,
+            #    and peer-matching context, using strict JSON output schema (EvaluationResult)
+            reference_solution = (
+                assignment.reference_assignment_text
+                if assignment and assignment.reference_assignment_text
+                else kwargs.get("reference_assignment_text")
             )
+            assignment_title = assignment.title if assignment else f"Assignment {assignment_id}"
 
-            # Gemini Evaluation with Structured JSON Output & Reference Assignment
-            ai_result = gemini_service.evaluate_submission(
-                submission_text=sanitized_text,
+            ai_result: EvaluationResult = gemini_service.evaluate_submission_result(
+                submission_text=extracted_text,
                 rubric_criteria=rubric_criteria_list,
-                assignment_title=assignment.title,
-                reference_assignment_text=assignment.reference_assignment_text,
-                peer_submissions_context=peer_corpus,
+                assignment_title=assignment_title,
+                reference_assignment_text=reference_solution,
+                peer_matching_context=peer_matching_context,
                 rubric_id=target_rubric_id,
             )
 
-            sub.ai_content_probability = ai_result.ai_generated_probability or 0.0
-            if ai_result.web_plagiarism_pct is not None:
-                sub.web_plagiarism_score = ai_result.web_plagiarism_pct
-            if ai_result.web_sources:
-                sub.web_sources = ai_result.web_sources
-            if ai_result.peer_to_peer_plagiarism_pct and ai_result.peer_to_peer_plagiarism_pct > sub.similarity_score:
-                sub.similarity_score = ai_result.peer_to_peer_plagiarism_pct
+            # If Qdrant detected peer match > 0.75, ensure it reflects in plagiarism report
+            final_peer_score = max(highest_peer_sim, float(ai_result.plagiarism_report.peer_to_peer_score or 0.0))
+            flagged_matches = ai_result.plagiarism_report.flagged_matches or []
+            if matched_peer_ids:
+                flagged_matches.extend([f"Peer match with {pid} (Cosine > 0.75)" for pid in matched_peer_ids])
 
-            # Determine initial status across Peer Plagiarism, AI Content, and Web Plagiarism
-            is_flagged = (
-                (sub.similarity_score >= similarity_threshold)
-                or (sub.ai_content_probability >= 65.0)
-                or (sub.web_plagiarism_score >= 25.0)
-            )
-            sub.status = "flagged" if is_flagged else "graded"
-
-            # Create or update DraftGrade
+            # d. Upsert criteria scores, qualitative notes, and plagiarism flags into draft_grades table in Supabase
             criteria_payload = [
                 {
                     "criterion_name": c.criterion_name,
-                    "score": c.awarded_score,
+                    "score": c.score,
                     "max": c.max_score,
                     "rationale": c.rationale,
                 }
-                for c in ai_result.criteria_evaluations
+                for c in ai_result.criteria_breakdown
             ]
 
+            plagiarism_payload = {
+                "peer_to_peer_score": final_peer_score,
+                "public_source_score": float(ai_result.plagiarism_report.public_source_score or 0.0),
+                "ai_probability": float(ai_result.plagiarism_report.ai_probability or 0.0),
+                "flagged_matches": list(set(flagged_matches)),
+            }
+
+            draft_id = f"draft_{sub.id}"
+            is_flagged = (
+                final_peer_score >= 75.0
+                or float(ai_result.plagiarism_report.ai_probability or 0.0) >= 65.0
+                or float(ai_result.plagiarism_report.public_source_score or 0.0) >= 25.0
+            )
+            grade_status = "draft"
+
+            # 1. Update draft_grades in Supabase
+            try:
+                supabase.table("draft_grades").upsert({
+                    "id": draft_id,
+                    "submission_id": sub.id,
+                    "total_score": ai_result.total_score,
+                    "max_score": ai_result.max_score,
+                    "suggested_score": ai_result.total_score,
+                    "criteria_scores": criteria_payload,
+                    "criteria_breakdown": criteria_payload,
+                    "plagiarism_report": plagiarism_payload,
+                    "feedback": ai_result.feedback,
+                    "ai_feedback": ai_result.feedback,
+                    "status": grade_status,
+                    "ai_model": "gemini-2.5-flash",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).execute()
+            except Exception as sb_draft_err:
+                logger.error(f"Failed to upsert draft_grade in Supabase for {sub.id}: {sb_draft_err}")
+
+            # 2. Update local DB draft_grades
             existing_draft = db.query(DraftGrade).filter(DraftGrade.submission_id == sub.id).first()
             if existing_draft:
-                existing_draft.suggested_score = ai_result.overall_score
+                existing_draft.total_score = ai_result.total_score
+                existing_draft.suggested_score = ai_result.total_score
+                existing_draft.max_score = ai_result.max_score
                 existing_draft.criteria_scores = criteria_payload
-                existing_draft.ai_feedback = ai_result.feedback_summary
-                existing_draft.status = "flagged" if is_flagged else "pending"
-                existing_draft.ai_model = settings.GEMINI_MODEL
+                existing_draft.criteria_breakdown = criteria_payload
+                existing_draft.plagiarism_report = plagiarism_payload
+                existing_draft.feedback = ai_result.feedback
+                existing_draft.ai_feedback = ai_result.feedback
+                existing_draft.status = grade_status
+                existing_draft.ai_model = "gemini-2.5-flash"
             else:
-                draft_grade = DraftGrade(
-                    id=f"draft_{uuid.uuid4().hex[:12]}",
+                new_draft = DraftGrade(
+                    id=draft_id,
                     submission_id=sub.id,
-                    suggested_score=ai_result.overall_score,
+                    total_score=ai_result.total_score,
+                    suggested_score=ai_result.total_score,
+                    max_score=ai_result.max_score,
                     criteria_scores=criteria_payload,
-                    ai_feedback=ai_result.feedback_summary,
-                    status="flagged" if is_flagged else "pending",
-                    ai_model=settings.GEMINI_MODEL,
+                    criteria_breakdown=criteria_payload,
+                    plagiarism_report=plagiarism_payload,
+                    feedback=ai_result.feedback,
+                    ai_feedback=ai_result.feedback,
+                    status=grade_status,
+                    ai_model="gemini-2.5-flash",
                 )
-                db.add(draft_grade)
+                db.add(new_draft)
 
+            # e. Insert the current submission vector into Qdrant collection submissions_{assignment_id}
+            #    so subsequent students in the batch are compared against it
+            vector_service.upsert_submission_vector(
+                submission_id=sub.id,
+                assignment_id=assignment_id,
+                vector=embedding_vector,
+                payload={
+                    "file_name": sub.file_name,
+                    "student_name": sub.student_name,
+                    "student_id": sub.student_id,
+                },
+            )
+
+            # g. Update submissions.status = 'completed' in Supabase and DB
+            sub.status = "completed"
+            sub.similarity_score = final_peer_score
+            sub.ai_content_probability = float(ai_result.plagiarism_report.ai_probability or 0.0)
+            sub.web_plagiarism_score = float(ai_result.plagiarism_report.public_source_score or 0.0)
             db.commit()
 
-            # Save parsed scores, feedback, plagiarism flags, and audit payload to Supabase
             try:
-                supabase_service.save_evaluation_results(
-                    submission_id=sub.id,
-                    overall_score=ai_result.overall_score,
-                    similarity_score=sub.similarity_score,
-                    ai_content_probability=sub.ai_content_probability,
-                    web_plagiarism_score=sub.web_plagiarism_score,
-                    web_sources=sub.web_sources or [],
-                    criteria_scores=criteria_payload,
-                    ai_feedback=ai_result.feedback_summary,
-                    is_flagged=is_flagged,
-                )
-            except Exception as sb_save_err:
-                logger.warning(f"Failed to persist evaluation results in Supabase for {sub.id}: {sb_save_err}")
+                supabase.table("submissions").update({
+                    "status": "completed",
+                    "similarity_score": final_peer_score,
+                    "ai_content_probability": float(ai_result.plagiarism_report.ai_probability or 0.0),
+                    "web_plagiarism_score": float(ai_result.plagiarism_report.public_source_score or 0.0),
+                    "extracted_text": extracted_text[:10000],
+                    "content": extracted_text[:10000],
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", sub.id).execute()
+            except Exception as sb_sub_err:
+                logger.warning(f"Failed to update submission status in Supabase for {sub.id}: {sb_sub_err}")
 
-            # Update progress
-            progress = round(15.0 + ((index + 1) / total) * 85.0, 1)
-            job.processed_items = index + 1
-            job.progress_pct = progress
+            evaluated_count += 1
+
+            # f. Update Celery task state/progress in Redis ({"current": i, "total": total, "status": "PROCESSING"})
+            current_progress_pct = round(((idx + 1) / total) * 100.0, 1)
+            job.processed_items = idx + 1
+            job.progress_pct = current_progress_pct
             db.commit()
 
             if task_instance:
                 task_instance.update_state(
-                    state="PROGRESS",
-                    meta={"current": index + 1, "total": total, "progress": progress},
+                    state="PROCESSING",
+                    meta={
+                        "current": idx + 1,
+                        "total": total,
+                        "percent": current_progress_pct,
+                        "status": "PROCESSING",
+                    },
                 )
 
-        # 8. Mark Job Completed
+        # 6. Mark Job Complete
         job.status = "completed"
         job.progress_pct = 100.0
         job.meta_info = {
-            "similarity_flags": similarity_flag_count,
-            "ready_for_review": total,
+            "similarity_flags": similarity_flags_count,
+            "ready_for_review": evaluated_count,
         }
         db.commit()
 
+        if task_instance:
+            task_instance.update_state(
+                state="SUCCESS",
+                meta={
+                    "current": total,
+                    "total": total,
+                    "percent": 100.0,
+                    "status": "SUCCESS",
+                    "processed": evaluated_count,
+                    "similarity_flags": similarity_flags_count,
+                },
+            )
+
         log_audit_event(
-            actor="SYSTEM_CELERY_WORKER",
-            action="BATCH_EVALUATION_COMPLETED",
-            entity="BatchJob",
-            entity_id=job_id,
-            details=f"Processed {total} submissions for assignment {assignment_id}",
+            actor="CELERY_WORKER",
+            action="BATCH_EVALUATION_SUCCESS",
+            entity="Assignment",
+            entity_id=assignment_id,
+            details=f"Evaluated {evaluated_count}/{total} submissions for assignment {assignment_id}",
         )
 
         return {
-            "status": "completed",
+            "status": "SUCCESS",
+            "current": total,
+            "total": total,
+            "percent": 100.0,
+            "processed": evaluated_count,
+            "similarity_flags": similarity_flags_count,
             "job_id": job_id,
-            "processed": total,
-            "similarity_flags": similarity_flag_count,
         }
 
     except Exception as e:
-        logger.error(f"Error executing batch evaluation job {job_id}: {e}", exc_info=True)
+        logger.error(f"Error in batch evaluation worker task {job_id}: {e}", exc_info=True)
         job = db.query(BatchJob).filter(BatchJob.id == job_id).first()
         if job:
             job.status = "failed"
             job.error_message = str(e)
             db.commit()
+
+        if task_instance:
+            task_instance.update_state(
+                state="FAILURE",
+                meta={"error": str(e), "status": "FAILURE"},
+            )
         raise e
     finally:
         db.close()

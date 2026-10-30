@@ -22,7 +22,8 @@ const API_BASE_URL = resolveApiBaseUrl();
 
 export interface UserProfile {
   id: string;
-  name: string;
+  name?: string;
+  full_name?: string;
   email: string;
   role: string;
   preferences?: Record<string, any>;
@@ -126,13 +127,61 @@ export interface SubmissionItem {
   assignment_id: string;
   student: string;
   roll: string;
+  student_id?: string;
   file_name: string;
-  status: "pending" | "flagged" | "approved";
+  status: "pending" | "flagged" | "approved" | "queued" | "evaluating" | "completed" | "unmatched" | string;
   score: number;
+  max_score?: number;
   similarity: number;
   aiContent: number;
   webPlagiarism?: number;
+  file_url?: string;
+  criteria_scores?: Array<{
+    criterion_name: string;
+    score: number;
+    max?: number;
+    rationale?: string;
+  }>;
+  feedback?: string;
+  plagiarism_report?: {
+    peer_to_peer_score?: number;
+    public_source_score?: number;
+    ai_probability?: number;
+    flagged_matches?: Array<{
+      matched_submission_id?: string;
+      matched_student_name?: string;
+      matched_student_roll?: string;
+      similarity_score?: number;
+    }>;
+  };
   created_at: string;
+}
+
+export interface ClassroomBatchUploadItem {
+  id: string;
+  file_name: string;
+  student_id?: string;
+  roll_number?: string;
+  student_name?: string;
+  status: "queued" | "unmatched" | "completed" | string;
+  file_url?: string;
+}
+
+export interface ClassroomBatchUploadResponse {
+  batch_job_id: string;
+  total: number;
+  queued_submissions: ClassroomBatchUploadItem[];
+  unmatched_submissions: ClassroomBatchUploadItem[];
+  status: string;
+}
+
+export interface JobStatusResponse {
+  job_id: string;
+  status: "PENDING" | "PROCESSING" | "SUCCESS" | "FAILURE";
+  current: number;
+  total: number;
+  percent: number;
+  details?: Record<string, any>;
 }
 
 export interface SubmissionDetail extends SubmissionItem {
@@ -259,10 +308,18 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 // ==========================================
 export const api = {
   auth: {
-    signUp: async (data: { name: string; email: string; password: string; role?: string }): Promise<AuthResponse> => {
+    signUp: async (data: { name?: string; full_name?: string; email: string; password: string; role?: string }): Promise<AuthResponse> => {
+      const displayName = (data.full_name || data.name || "").trim();
+      const payload = {
+        full_name: displayName,
+        name: displayName,
+        email: data.email.trim().toLowerCase(),
+        password: data.password,
+        role: data.role || "Instructor · Computer Science",
+      };
       const res = await request<AuthResponse>("/auth/signup", {
         method: "POST",
-        body: JSON.stringify(data),
+        body: JSON.stringify(payload),
       });
       setAuthToken(res.access_token);
       setCachedUser(res.user);
@@ -271,11 +328,23 @@ export const api = {
     login: async (data: { email: string; password: string }): Promise<AuthResponse> => {
       const res = await request<AuthResponse>("/auth/login", {
         method: "POST",
-        body: JSON.stringify(data),
+        body: JSON.stringify({
+          email: data.email.trim().toLowerCase(),
+          password: data.password,
+        }),
       });
       setAuthToken(res.access_token);
       setCachedUser(res.user);
       return res;
+    },
+    logout: async (): Promise<{ message: string }> => {
+      try {
+        return await request<{ message: string }>("/auth/logout", {
+          method: "POST",
+        });
+      } finally {
+        clearAuthToken();
+      }
     },
     getMe: async (): Promise<UserProfile> => {
       const user = await request<UserProfile>("/auth/me");
@@ -505,6 +574,46 @@ export const api = {
         body: formData,
       });
     },
+    batchUploadClassroom: async (
+      classroomId: string,
+      assignmentId: string,
+      files: File[] | File,
+      rubricId?: string
+    ): Promise<ClassroomBatchUploadResponse> => {
+      const formData = new FormData();
+      if (Array.isArray(files)) {
+        if (files.length === 1 && files[0].name.toLowerCase().endsWith(".zip")) {
+          formData.append("file", files[0]);
+        } else {
+          files.forEach((f) => formData.append("files", f));
+        }
+      } else {
+        if (files.name.toLowerCase().endsWith(".zip")) {
+          formData.append("file", files);
+        } else {
+          formData.append("files", files);
+        }
+      }
+      if (rubricId) {
+        formData.append("rubric_id", rubricId);
+      }
+      return request<ClassroomBatchUploadResponse>(
+        `/classrooms/${classroomId}/assignments/${assignmentId}/batch-upload`,
+        {
+          method: "POST",
+          body: formData,
+        }
+      );
+    },
+    assignStudent: async (
+      submissionId: string,
+      studentId: string
+    ): Promise<SubmissionItem> => {
+      return request<SubmissionItem>(`/submissions/${submissionId}/assign-student`, {
+        method: "PATCH",
+        body: JSON.stringify({ student_id: studentId }),
+      });
+    },
     delete: async (id: string): Promise<void> => {
       return request<void>(`/submissions/${id}`, {
         method: "DELETE",
@@ -514,6 +623,15 @@ export const api = {
       return request<{ cleared: number }>(`/assignments/${assignmentId}/submissions`, {
         method: "DELETE",
       });
+    },
+  },
+
+  // ==========================================
+  // Live Job Status Polling
+  // ==========================================
+  jobs: {
+    getStatus: async (batchJobId: string): Promise<JobStatusResponse> => {
+      return request<JobStatusResponse>(`/jobs/${batchJobId}/status`);
     },
   },
 

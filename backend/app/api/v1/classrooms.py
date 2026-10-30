@@ -1,13 +1,19 @@
-"""Classroom Roster & Roll Call Management API endpoints (Supabase)."""
+"""Classroom Roster & Roll Call Management API endpoints (Local-first with optional cloud sync)."""
 
 import csv
 import io
 import uuid
 from typing import List, Dict, Any, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Body, status
+from sqlalchemy.orm import Session
 
+from app.core.config import settings
+from app.core.database import get_db
 from app.core.supabase import supabase
 from app.core.logging import logger
+from app.models.classroom import Classroom
+from app.models.student import Student
+from app.models.course import Course
 from app.schemas.classroom import (
     StudentItem,
     StudentResponse,
@@ -16,72 +22,71 @@ from app.schemas.classroom import (
     ClassroomResponse,
 )
 from app.api.v1.auth import get_current_instructor
+from app.models.instructor import Instructor
 
 router = APIRouter(prefix="/classrooms", tags=["Classrooms & Roll Call"])
 
 
 @router.get("", response_model=List[ClassroomResponse])
 def get_classrooms(
-    current_instructor = Depends(get_current_instructor),
+    db: Session = Depends(get_db),
+    current_instructor: Instructor = Depends(get_current_instructor),
 ):
     """Retrieve all classrooms for the active instructor with live student counts."""
-    try:
-        q = supabase.table("classrooms").select("*")
-        if current_instructor and current_instructor.id:
-            res = q.order("created_at", desc=True).execute()
-        else:
-            res = q.order("created_at", desc=True).execute()
-        raw_classrooms = res.data or []
-        if not raw_classrooms:
-            try:
-                c_res = supabase.table("courses").select("*").execute()
-                for crs in (c_res.data or []):
-                    try:
-                        uuid.UUID(str(crs["id"]))
-                        raw_classrooms.append({
-                            "id": str(crs["id"]),
-                            "name": crs["name"],
-                            "code": crs["code"],
-                            "instructor_id": crs.get("instructor_id"),
-                            "created_at": crs.get("created_at"),
-                        })
-                        supabase.table("classrooms").upsert({
-                            "id": str(crs["id"]),
-                            "name": crs["name"],
-                            "code": crs["code"],
-                            "instructor_id": crs.get("instructor_id"),
-                        }).execute()
-                    except ValueError:
-                        continue
-            except Exception:
-                pass
-    except Exception as e:
-        logger.error(f"Error querying classrooms from Supabase: {e}")
-        raw_classrooms = []
+    # Ensure any existing Course records have corresponding Classroom entries
+    courses = db.query(Course).all()
+    for crs in courses:
+        existing_cl = db.query(Classroom).filter(Classroom.id == crs.id).first()
+        if not existing_cl:
+            new_cl = Classroom(
+                id=crs.id,
+                name=crs.name,
+                code=crs.code,
+                instructor_id=crs.instructor_id,
+                created_at=crs.created_at,
+            )
+            db.add(new_cl)
+    db.commit()
+
+    # Query all classrooms
+    query = db.query(Classroom)
+    if current_instructor and current_instructor.id:
+        # Show all instructor classrooms or general
+        inst_cls = query.filter((Classroom.instructor_id == current_instructor.id) | (Classroom.instructor_id == None)).order_by(Classroom.created_at.desc()).all()
+        classrooms = inst_cls if inst_cls else query.order_by(Classroom.created_at.desc()).all()
+    else:
+        classrooms = query.order_by(Classroom.created_at.desc()).all()
+
+    # Optional cloud sync if enabled
+    if settings.USE_SUPABASE:
+        try:
+            res = supabase.table("classrooms").select("*").execute()
+            for row in (res.data or []):
+                r_id = str(row["id"])
+                if not any(c.id == r_id for c in classrooms):
+                    new_c = Classroom(
+                        id=r_id,
+                        name=row["name"],
+                        code=row["code"],
+                        instructor_id=row.get("instructor_id"),
+                    )
+                    db.add(new_c)
+                    classrooms.append(new_c)
+            db.commit()
+        except Exception as e:
+            logger.debug(f"Cloud classroom sync notice: {e}")
 
     results = []
-    for c in raw_classrooms:
-        c_id = str(c["id"])
-        # Query live enrolled student count
-        try:
-            count_res = (
-                supabase.table("students")
-                .select("id", count="exact")
-                .eq("classroom_id", c_id)
-                .execute()
-            )
-            count = count_res.count if count_res.count is not None else len(count_res.data or [])
-        except Exception:
-            count = 0
-
+    for c in classrooms:
+        st_count = db.query(Student).filter(Student.classroom_id == c.id).count()
         results.append(
             ClassroomResponse(
-                id=c_id,
-                name=c["name"],
-                code=c["code"],
-                instructor_id=str(c.get("instructor_id") or ""),
-                students_count=count,
-                created_at=str(c.get("created_at") or ""),
+                id=c.id,
+                name=c.name,
+                code=c.code,
+                instructor_id=str(c.instructor_id or ""),
+                students_count=st_count,
+                created_at=c.created_at.isoformat() if c.created_at else "",
             )
         )
     return results
@@ -90,28 +95,45 @@ def get_classrooms(
 @router.post("", response_model=ClassroomResponse, status_code=status.HTTP_201_CREATED)
 def create_classroom(
     payload: ClassroomCreate,
-    current_instructor = Depends(get_current_instructor),
+    db: Session = Depends(get_db),
+    current_instructor: Instructor = Depends(get_current_instructor),
 ):
     """Create a new classroom / course for enrollment."""
     c_id = str(uuid.uuid4())
-    record = {
-        "id": c_id,
-        "name": payload.name.strip(),
-        "code": payload.code.strip(),
-        "instructor_id": current_instructor.id if current_instructor else None,
-    }
-    try:
-        try:
-            res = supabase.table("classrooms").insert(record).execute()
-        except Exception as insert_err:
-            if "violates foreign key constraint" in str(insert_err).lower() and record.get("instructor_id"):
-                record["instructor_id"] = None
-                res = supabase.table("classrooms").insert(record).execute()
-            else:
-                raise insert_err
+    inst_id = current_instructor.id if current_instructor else None
 
-        created = res.data[0] if res.data else record
+    # Persist Classroom to local database
+    new_classroom = Classroom(
+        id=c_id,
+        name=payload.name.strip(),
+        code=payload.code.strip(),
+        instructor_id=inst_id,
+    )
+    db.add(new_classroom)
+
+    # Also keep Course table synchronized for unified assignment workflows
+    new_course = Course(
+        id=c_id,
+        name=payload.name.strip(),
+        code=payload.code.strip(),
+        section="A",
+        tone="lav",
+        students_count=0,
+        instructor_id=inst_id,
+    )
+    db.add(new_course)
+    db.commit()
+    db.refresh(new_classroom)
+
+    # Optional cloud sync if enabled
+    if settings.USE_SUPABASE:
         try:
+            supabase.table("classrooms").upsert({
+                "id": c_id,
+                "name": payload.name.strip(),
+                "code": payload.code.strip(),
+                "instructor_id": inst_id,
+            }).execute()
             supabase.table("courses").upsert({
                 "id": c_id,
                 "name": payload.name.strip(),
@@ -119,73 +141,82 @@ def create_classroom(
                 "section": "A",
                 "tone": "lav",
                 "students_count": 0,
-                "instructor_id": record.get("instructor_id"),
+                "instructor_id": inst_id,
             }).execute()
-        except Exception:
-            pass
-        return ClassroomResponse(
-            id=str(created["id"]),
-            name=created["name"],
-            code=created["code"],
-            instructor_id=str(created.get("instructor_id") or ""),
-            students_count=0,
-            created_at=str(created.get("created_at") or ""),
-        )
-    except Exception as e:
-        logger.error(f"Error creating classroom in Supabase: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to create classroom: {str(e)}")
+        except Exception as e:
+            logger.warning(f"Cloud classroom sync notice: {e}")
+
+    return ClassroomResponse(
+        id=new_classroom.id,
+        name=new_classroom.name,
+        code=new_classroom.code,
+        instructor_id=str(new_classroom.instructor_id or ""),
+        students_count=0,
+        created_at=new_classroom.created_at.isoformat() if new_classroom.created_at else "",
+    )
 
 
 @router.get("/{classroom_id}", response_model=ClassroomResponse)
 def get_classroom(
     classroom_id: str,
-    current_instructor = Depends(get_current_instructor),
+    db: Session = Depends(get_db),
+    current_instructor: Instructor = Depends(get_current_instructor),
 ):
     """Retrieve details for a single classroom."""
-    try:
-        res = supabase.table("classrooms").select("*").eq("id", classroom_id).execute()
-        if not res.data:
-            # Also check if matching code or course
-            raise HTTPException(status_code=404, detail="Classroom not found")
-        c = res.data[0]
+    c = db.query(Classroom).filter(Classroom.id == classroom_id).first()
+    if not c:
+        # Check if matching course exists
+        crs = db.query(Course).filter(Course.id == classroom_id).first()
+        if crs:
+            c = Classroom(
+                id=crs.id,
+                name=crs.name,
+                code=crs.code,
+                instructor_id=crs.instructor_id,
+                created_at=crs.created_at,
+            )
+            db.add(c)
+            db.commit()
+            db.refresh(c)
 
-        count_res = (
-            supabase.table("students")
-            .select("id", count="exact")
-            .eq("classroom_id", classroom_id)
-            .execute()
-        )
-        count = count_res.count if count_res.count is not None else 0
+    if not c:
+        raise HTTPException(status_code=404, detail="Classroom not found")
 
-        return ClassroomResponse(
-            id=str(c["id"]),
-            name=c["name"],
-            code=c["code"],
-            instructor_id=str(c.get("instructor_id") or ""),
-            students_count=count,
-            created_at=str(c.get("created_at") or ""),
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting classroom {classroom_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    st_count = db.query(Student).filter(Student.classroom_id == c.id).count()
+    return ClassroomResponse(
+        id=c.id,
+        name=c.name,
+        code=c.code,
+        instructor_id=str(c.instructor_id or ""),
+        students_count=st_count,
+        created_at=c.created_at.isoformat() if c.created_at else "",
+    )
 
 
 @router.delete("/{classroom_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_classroom(
     classroom_id: str,
-    current_instructor = Depends(get_current_instructor),
+    db: Session = Depends(get_db),
+    current_instructor: Instructor = Depends(get_current_instructor),
 ):
     """Delete a classroom and cascade delete all its students and rubrics."""
-    try:
-        supabase.table("students").delete().eq("classroom_id", classroom_id).execute()
-        supabase.table("rubrics").delete().eq("classroom_id", classroom_id).execute()
-        supabase.table("classrooms").delete().eq("id", classroom_id).execute()
-        return None
-    except Exception as e:
-        logger.error(f"Error deleting classroom {classroom_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    c = db.query(Classroom).filter(Classroom.id == classroom_id).first()
+    if c:
+        db.delete(c)
+    crs = db.query(Course).filter(Course.id == classroom_id).first()
+    if crs:
+        db.delete(crs)
+    db.commit()
+
+    if settings.USE_SUPABASE:
+        try:
+            supabase.table("students").delete().eq("classroom_id", classroom_id).execute()
+            supabase.table("rubrics").delete().eq("classroom_id", classroom_id).execute()
+            supabase.table("classrooms").delete().eq("id", classroom_id).execute()
+        except Exception as e:
+            logger.warning(f"Cloud classroom delete notice: {e}")
+
+    return None
 
 
 # ==============================================================================
@@ -196,9 +227,22 @@ def delete_classroom(
 def enroll_students_manual(
     classroom_id: str,
     payload: Union[List[StudentItem], Dict[str, Any]] = Body(...),
-    current_instructor = Depends(get_current_instructor),
+    db: Session = Depends(get_db),
+    current_instructor: Instructor = Depends(get_current_instructor),
 ):
     """Batch enroll students into a classroom either one-by-one or multi-line."""
+    # Ensure classroom exists (or create from course)
+    cl = db.query(Classroom).filter(Classroom.id == classroom_id).first()
+    if not cl:
+        crs = db.query(Course).filter(Course.id == classroom_id).first()
+        if crs:
+            cl = Classroom(id=crs.id, name=crs.name, code=crs.code, instructor_id=crs.instructor_id)
+            db.add(cl)
+            db.commit()
+            db.refresh(cl)
+        else:
+            raise HTTPException(status_code=404, detail="Classroom not found")
+
     # Normalize input
     if isinstance(payload, list):
         students_raw = payload
@@ -207,7 +251,7 @@ def enroll_students_manual(
     else:
         students_raw = [payload]
 
-    records = []
+    inserted_or_updated = []
     for item in students_raw:
         if isinstance(item, StudentItem):
             roll = item.roll_number.strip()
@@ -220,40 +264,71 @@ def enroll_students_manual(
         else:
             continue
 
-        if roll and name:
-            records.append({
-                "id": str(uuid.uuid4()),
+        if not roll or not name:
+            continue
+
+        existing = (
+            db.query(Student)
+            .filter(Student.classroom_id == classroom_id, Student.roll_number == roll)
+            .first()
+        )
+        if existing:
+            existing.full_name = name
+            if email:
+                existing.email = email
+            inserted_or_updated.append({
+                "id": existing.id,
+                "classroom_id": classroom_id,
+                "roll_number": roll,
+                "full_name": name,
+                "email": existing.email,
+            })
+        else:
+            st_id = str(uuid.uuid4())
+            new_st = Student(
+                id=st_id,
+                classroom_id=classroom_id,
+                roll_number=roll,
+                full_name=name,
+                email=email,
+            )
+            db.add(new_st)
+            inserted_or_updated.append({
+                "id": st_id,
                 "classroom_id": classroom_id,
                 "roll_number": roll,
                 "full_name": name,
                 "email": email,
             })
 
-    if not records:
-        raise HTTPException(status_code=400, detail="No valid student records provided.")
+    db.commit()
 
-    try:
-        # Upsert with constraint uq_students_classroom_roll
-        res = (
-            supabase.table("students")
-            .upsert(records, on_conflict="classroom_id,roll_number")
-            .execute()
-        )
-        return {
-            "status": "success",
-            "total_inserted": len(res.data or records),
-            "students": res.data or records,
-        }
-    except Exception as e:
-        logger.error(f"Error upserting manual students: {e}")
-        raise HTTPException(status_code=500, detail=f"Database error during enrollment: {str(e)}")
+    # Update student count on Course if linked
+    crs = db.query(Course).filter(Course.id == classroom_id).first()
+    if crs:
+        crs.students_count = db.query(Student).filter(Student.classroom_id == classroom_id).count()
+        db.commit()
+
+    # Optional cloud sync
+    if settings.USE_SUPABASE and inserted_or_updated:
+        try:
+            supabase.table("students").upsert(inserted_or_updated, on_conflict="classroom_id,roll_number").execute()
+        except Exception as e:
+            logger.warning(f"Cloud student enrollment sync notice: {e}")
+
+    return {
+        "status": "success",
+        "total_inserted": len(inserted_or_updated),
+        "students": inserted_or_updated,
+    }
 
 
 @router.post("/{classroom_id}/students/upload-csv", response_model=StudentUploadCSVResponse)
 async def upload_students_csv(
     classroom_id: str,
     file: UploadFile = File(...),
-    current_instructor = Depends(get_current_instructor),
+    db: Session = Depends(get_db),
+    current_instructor: Instructor = Depends(get_current_instructor),
 ):
     """Accepts a multipart CSV, parses roll_number, name, email, validates duplicates, and inserts."""
     if not file.filename.lower().endswith(".csv"):
@@ -291,25 +366,15 @@ async def upload_students_csv(
             detail=f"CSV must contain 'roll_number' and 'name' columns. Found columns: {', '.join(header)}",
         )
 
-    # Fetch existing students to detect already-enrolled duplicates
-    try:
-        existing_res = (
-            supabase.table("students")
-            .select("roll_number")
-            .eq("classroom_id", classroom_id)
-            .execute()
-        )
-        existing_rolls = {
-            str(r["roll_number"]).strip()
-            for r in (existing_res.data or [])
-            if r.get("roll_number")
-        }
-    except Exception as e:
-        logger.warning(f"Error checking existing students: {e}")
-        existing_rolls = set()
+    # Fetch existing students in local DB
+    existing_rolls = {
+        s.roll_number.strip()
+        for s in db.query(Student).filter(Student.classroom_id == classroom_id).all()
+        if s.roll_number
+    }
 
     seen_rolls_in_file = set()
-    valid_records = []
+    inserted_records = []
     skipped = []
 
     for row_num, row in enumerate(reader, start=2):
@@ -348,37 +413,37 @@ async def upload_students_csv(
             continue
 
         seen_rolls_in_file.add(roll)
-        valid_records.append({
-            "id": str(uuid.uuid4()),
+        st_id = str(uuid.uuid4())
+        new_student = Student(
+            id=st_id,
+            classroom_id=classroom_id,
+            roll_number=roll,
+            full_name=name,
+            email=email or None,
+        )
+        db.add(new_student)
+        inserted_records.append({
+            "id": st_id,
             "classroom_id": classroom_id,
             "roll_number": roll,
             "full_name": name,
             "email": email or None,
         })
 
-    inserted_records = []
-    if valid_records:
-        for i in range(0, len(valid_records), 100):
-            batch = valid_records[i : i + 100]
-            try:
-                ins_res = (
-                    supabase.table("students")
-                    .upsert(batch, on_conflict="classroom_id,roll_number")
-                    .execute()
-                )
-                if ins_res.data:
-                    inserted_records.extend(ins_res.data)
-                else:
-                    inserted_records.extend(batch)
-            except Exception as e:
-                logger.error(f"Error upserting CSV batch: {e}")
-                for b in batch:
-                    skipped.append({
-                        "row": "batch",
-                        "roll_number": b["roll_number"],
-                        "full_name": b["full_name"],
-                        "reason": str(e),
-                    })
+    db.commit()
+
+    # Update course student count
+    crs = db.query(Course).filter(Course.id == classroom_id).first()
+    if crs:
+        crs.students_count = db.query(Student).filter(Student.classroom_id == classroom_id).count()
+        db.commit()
+
+    # Optional cloud sync
+    if settings.USE_SUPABASE and inserted_records:
+        try:
+            supabase.table("students").upsert(inserted_records, on_conflict="classroom_id,roll_number").execute()
+        except Exception as e:
+            logger.warning(f"Cloud CSV roster sync notice: {e}")
 
     return StudentUploadCSVResponse(
         total_inserted=len(inserted_records),
@@ -391,29 +456,49 @@ async def upload_students_csv(
 @router.get("/{classroom_id}/students", response_model=List[StudentResponse])
 def get_classroom_students(
     classroom_id: str,
-    current_instructor = Depends(get_current_instructor),
+    db: Session = Depends(get_db),
+    current_instructor: Instructor = Depends(get_current_instructor),
 ):
     """Retrieve complete enrolled roll call list sorted by roll_number."""
-    try:
-        res = (
-            supabase.table("students")
-            .select("*")
-            .eq("classroom_id", classroom_id)
-            .order("roll_number")
-            .execute()
-        )
-        students = res.data or []
-        return [
-            StudentResponse(
-                id=str(s["id"]),
-                classroom_id=str(s["classroom_id"]),
-                roll_number=str(s["roll_number"]),
-                full_name=str(s["full_name"]),
-                email=s.get("email"),
-                created_at=str(s.get("created_at") or ""),
+    students = (
+        db.query(Student)
+        .filter(Student.classroom_id == classroom_id)
+        .order_by(Student.roll_number.asc())
+        .all()
+    )
+
+    # Optional cloud fetch fallback if empty
+    if not students and settings.USE_SUPABASE:
+        try:
+            res = (
+                supabase.table("students")
+                .select("*")
+                .eq("classroom_id", classroom_id)
+                .order("roll_number")
+                .execute()
             )
-            for s in students
-        ]
-    except Exception as e:
-        logger.error(f"Error getting students for classroom {classroom_id}: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            for s_data in (res.data or []):
+                new_st = Student(
+                    id=str(s_data["id"]),
+                    classroom_id=str(s_data["classroom_id"]),
+                    roll_number=str(s_data["roll_number"]),
+                    full_name=str(s_data["full_name"]),
+                    email=s_data.get("email"),
+                )
+                db.add(new_st)
+                students.append(new_st)
+            db.commit()
+        except Exception as e:
+            logger.debug(f"Cloud students fallback query notice: {e}")
+
+    return [
+        StudentResponse(
+            id=s.id,
+            classroom_id=s.classroom_id,
+            roll_number=s.roll_number,
+            full_name=s.full_name,
+            email=s.email,
+            created_at=s.created_at.isoformat() if s.created_at else "",
+        )
+        for s in students
+    ]

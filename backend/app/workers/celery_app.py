@@ -20,6 +20,11 @@ celery_app.conf.update(
     task_time_limit=3600,  # 1 hour maximum for massive batches
     worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=50,
+    broker_connection_retry_on_startup=False,
+    broker_connection_max_retries=1,
+    result_backend_max_retries=1,
+    redis_socket_connect_timeout=1.0,
+    redis_socket_timeout=1.0,
 )
 
 import sys
@@ -36,6 +41,16 @@ try:
     Base.metadata.create_all(bind=engine)
 except Exception:
     pass
+
+
+def is_redis_available() -> bool:
+    """Checks whether the Redis broker is reachable with an aggressive 0.2s timeout."""
+    try:
+        import redis
+        client = redis.Redis.from_url(settings.REDIS_URL, socket_connect_timeout=0.2, socket_timeout=0.2)
+        return bool(client.ping())
+    except Exception:
+        return False
 
 
 

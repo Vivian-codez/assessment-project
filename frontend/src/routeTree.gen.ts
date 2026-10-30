@@ -14,6 +14,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as DashboardIndexRouteImport } from './routes/dashboard.index'
 import { Route as DashboardRosterRouteImport } from './routes/dashboard.roster'
 import { Route as DashboardRubricsNewRouteImport } from './routes/dashboard.rubrics.new'
+import { Route as DashboardAssignmentsIdUploadRouteImport } from './routes/dashboard.assignments.$id.upload'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -40,6 +41,12 @@ const DashboardRubricsNewRoute = DashboardRubricsNewRouteImport.update({
   path: '/dashboard/rubrics/new',
   getParentRoute: () => rootRouteImport,
 } as any)
+const DashboardAssignmentsIdUploadRoute =
+  DashboardAssignmentsIdUploadRouteImport.update({
+    id: '/dashboard/assignments/$id/upload',
+    path: '/dashboard/assignments/$id/upload',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -47,6 +54,7 @@ export interface FileRoutesByFullPath {
   '/dashboard/roster': typeof DashboardRosterRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/dashboard/rubrics/new': typeof DashboardRubricsNewRoute
+  '/dashboard/assignments/$id/upload': typeof DashboardAssignmentsIdUploadRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -54,6 +62,7 @@ export interface FileRoutesByTo {
   '/dashboard/roster': typeof DashboardRosterRoute
   '/dashboard': typeof DashboardIndexRoute
   '/dashboard/rubrics/new': typeof DashboardRubricsNewRoute
+  '/dashboard/assignments/$id/upload': typeof DashboardAssignmentsIdUploadRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -62,6 +71,7 @@ export interface FileRoutesById {
   '/dashboard/roster': typeof DashboardRosterRoute
   '/dashboard/': typeof DashboardIndexRoute
   '/dashboard/rubrics/new': typeof DashboardRubricsNewRoute
+  '/dashboard/assignments/$id/upload': typeof DashboardAssignmentsIdUploadRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -71,6 +81,7 @@ export interface FileRouteTypes {
     | '/dashboard/roster'
     | '/dashboard/'
     | '/dashboard/rubrics/new'
+    | '/dashboard/assignments/$id/upload'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -78,6 +89,7 @@ export interface FileRouteTypes {
     | '/dashboard/roster'
     | '/dashboard'
     | '/dashboard/rubrics/new'
+    | '/dashboard/assignments/$id/upload'
   id:
     | '__root__'
     | '/'
@@ -85,6 +97,7 @@ export interface FileRouteTypes {
     | '/dashboard/roster'
     | '/dashboard/'
     | '/dashboard/rubrics/new'
+    | '/dashboard/assignments/$id/upload'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -93,6 +106,7 @@ export interface RootRouteChildren {
   DashboardRosterRoute: typeof DashboardRosterRoute
   DashboardIndexRoute: typeof DashboardIndexRoute
   DashboardRubricsNewRoute: typeof DashboardRubricsNewRoute
+  DashboardAssignmentsIdUploadRoute: typeof DashboardAssignmentsIdUploadRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -132,6 +146,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DashboardRubricsNewRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/dashboard/assignments/$id/upload': {
+      id: '/dashboard/assignments/$id/upload'
+      path: '/dashboard/assignments/$id/upload'
+      fullPath: '/dashboard/assignments/$id/upload'
+      preLoaderRoute: typeof DashboardAssignmentsIdUploadRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -141,6 +162,7 @@ const rootRouteChildren: RootRouteChildren = {
   DashboardRosterRoute: DashboardRosterRoute,
   DashboardIndexRoute: DashboardIndexRoute,
   DashboardRubricsNewRoute: DashboardRubricsNewRoute,
+  DashboardAssignmentsIdUploadRoute: DashboardAssignmentsIdUploadRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

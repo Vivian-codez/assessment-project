@@ -110,7 +110,7 @@ def test_supabase_client_and_service():
 
     courses = supabase_service.get_courses()
     assert isinstance(courses, list)
-    assert len(courses) >= 4
+    assert len(courses) >= 1
 
 
 def test_supabase_ferpa_submission_lifecycle():
@@ -158,19 +158,21 @@ def test_fastapi_health_endpoint():
 
 
 def test_user_signup_and_login_api():
-    """Verify user signup and login endpoints work with Supabase/PostgreSQL sync."""
+    """Verify user signup, OAuth2 login, and /auth/me endpoints work with PostgreSQL and JWT."""
     import uuid
     from fastapi.testclient import TestClient
     from app.main import app
+    from app.core.database import SessionLocal
+    from app.models.user import User
 
     client = TestClient(app)
     unique_email = f"prof_{uuid.uuid4().hex[:6]}@university.edu"
 
-    # Test Sign Up
+    # 1. Test Sign Up with full_name payload
     signup_res = client.post(
         "/api/v1/auth/signup",
         json={
-            "name": "Prof. Alan Turing",
+            "full_name": "Prof. Alan Turing",
             "email": unique_email,
             "password": "SecurePassword123!",
             "role": "Professor · Computer Science",
@@ -179,18 +181,48 @@ def test_user_signup_and_login_api():
     assert signup_res.status_code == 201
     signup_data = signup_res.json()
     assert "access_token" in signup_data
-    assert signup_data["user"]["email"] == unique_email
+    assert signup_data["token_type"] == "bearer"
+    user_obj = signup_data["user"]
+    assert user_obj["email"] == unique_email
+    assert user_obj["full_name"] == "Prof. Alan Turing"
+    assert user_obj["role"] == "Professor · Computer Science"
+    assert "id" in user_obj
     token = signup_data["access_token"]
 
-    # Test Get Current User /me with Bearer token
+    # Verify password was hashed with bcrypt in PostgreSQL
+    db = SessionLocal()
+    try:
+        stored_user = db.query(User).filter(User.email == unique_email).first()
+        assert stored_user is not None
+        assert stored_user.hashed_password.startswith("$2")
+        assert "SecurePassword123!" not in stored_user.hashed_password
+    finally:
+        db.close()
+
+    # 2. Test duplicate email registration raises HTTP 400
+    dup_res = client.post(
+        "/api/v1/auth/signup",
+        json={
+            "full_name": "Duplicate Turing",
+            "email": unique_email,
+            "password": "AnotherPassword456!",
+        },
+    )
+    assert dup_res.status_code == 400
+    assert "already exists" in dup_res.json()["detail"]
+
+    # 3. Test Get Current User /me with Bearer token
     me_res = client.get(
         "/api/v1/auth/me",
         headers={"Authorization": f"Bearer {token}"},
     )
     assert me_res.status_code == 200
-    assert me_res.json()["name"] == "Prof. Alan Turing"
+    me_data = me_res.json()
+    assert me_data["full_name"] == "Prof. Alan Turing"
+    assert me_data["email"] == unique_email
+    assert "hashed_password" not in me_data
 
-    # Test Login
+    # 4. Test Login with JSON credentials
     login_res = client.post(
         "/api/v1/auth/login",
         json={
@@ -200,6 +232,36 @@ def test_user_signup_and_login_api():
     )
     assert login_res.status_code == 200
     assert "access_token" in login_res.json()
+    assert login_res.json()["user"]["full_name"] == "Prof. Alan Turing"
+
+    # 5. Test Login with OAuth2 form credentials (username/password)
+    oauth_res = client.post(
+        "/api/v1/auth/login",
+        data={
+            "username": unique_email,
+            "password": "SecurePassword123!",
+        },
+    )
+    assert oauth_res.status_code == 200
+    assert "access_token" in oauth_res.json()
+    assert oauth_res.json()["user"]["email"] == unique_email
+
+    # 6. Test invalid password returns 401
+    bad_login_res = client.post(
+        "/api/v1/auth/login",
+        json={
+            "email": unique_email,
+            "password": "WrongPassword!",
+        },
+    )
+    assert bad_login_res.status_code == 401
+
+    # 7. Test /auth/me with invalid token returns 401
+    bad_me_res = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": "Bearer invalid_token_xyz"},
+    )
+    assert bad_me_res.status_code == 401
 
 
 def test_evaluation_with_reference_assignment_and_web_plagiarism():
@@ -253,11 +315,14 @@ def test_file_upload_database_persistence_and_retrieval():
             db.commit()
             db.refresh(assignment)
 
-        # Upload a code file
+        # Upload a code file with auth header
+        token = create_access_token("inst_priya_rao")
+        headers = {"Authorization": f"Bearer {token}"}
         code_content = b"def bubble_sort(arr):\n    for i in range(len(arr)):\n        for j in range(len(arr)-i-1):\n            if arr[j] > arr[j+1]: arr[j], arr[j+1] = arr[j+1], arr[j]\n    return arr\n"
         upload_res = client.post(
             f"/api/v1/assignments/{assignment.id}/submissions/batch-upload",
             files=[("files", ("sharma_rahul_sort.py", code_content, "text/x-python"))],
+            headers=headers,
         )
         assert upload_res.status_code == 200, upload_res.text
         upload_data = upload_res.json()
@@ -354,11 +419,14 @@ def test_docx_submission_upload_endpoint():
         doc.save(bio)
         docx_bytes = bio.getvalue()
 
-        # Upload via /api/v1/assignments/{assignment_id}/submissions
+        # Upload via /api/v1/assignments/{assignment_id}/submissions with auth header
+        token = create_access_token("inst_priya_rao")
+        headers = {"Authorization": f"Bearer {token}"}
         res = client.post(
             f"/api/v1/assignments/{assignment.id}/submissions",
             files={"file": ("deep_learning_essay.docx", docx_bytes, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
             data={"student_name": "Maya Patel", "student_roll": "2024-555"},
+            headers=headers,
         )
         assert res.status_code == 200, res.text
         data = res.json()

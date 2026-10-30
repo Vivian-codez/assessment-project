@@ -12,17 +12,29 @@ import os
 import uuid
 import zipfile
 from io import BytesIO
+from datetime import datetime, timezone
 from typing import List, Optional, Union
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, status, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.logging import logger, log_audit_event
 from app.models.assignment import Assignment
 from app.models.submission import Submission
-from app.schemas.submission import SubmissionCreate, SubmissionResponse, BatchUploadResponse
+from app.models.batch_job import BatchJob
+from app.schemas.submission import (
+    SubmissionCreate,
+    SubmissionResponse,
+    BatchUploadResponse,
+    ClassroomBatchUploadResponse,
+    ClassroomBatchUploadItem,
+    AssignStudentRequest,
+)
 from app.services.pdf_service import pdf_service
 from app.services.supabase_service import supabase_service
+from app.services.resolver import student_resolver
+from app.workers.celery_app import is_redis_available
+from app.workers.evaluation_tasks import evaluate_batch_task, run_evaluation_batch_logic
 from app.api.v1.auth import get_current_instructor
 from app.models.instructor import Instructor
 
@@ -223,6 +235,278 @@ def _create_single_submission(
 
     db.add(sub)
     return sub
+
+
+@router.post(
+    "/classrooms/{classroom_id}/assignments/{assignment_id}/batch-upload",
+    response_model=ClassroomBatchUploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def batch_upload_classroom_assignment(
+    classroom_id: str,
+    assignment_id: str,
+    background_tasks: BackgroundTasks,
+    file: Optional[UploadFile] = File(None),
+    files: Optional[List[UploadFile]] = File(None),
+    db: Session = Depends(get_db),
+):
+    """Batch upload student submissions for an assignment within a classroom.
+
+    Accepts ZIP archive or multi-file payload, extracts in-memory, uploads to
+    Supabase Storage bucket 'submissions', resolves roll numbers against classroom
+    roster in Supabase, inserts submissions, and non-blockingly dispatches Celery
+    background evaluation. Returns HTTP 202 with batch_job_id immediately.
+    """
+    assignment = _ensure_assignment_exists(db, assignment_id)
+    if not assignment:
+        raise HTTPException(status_code=404, detail=f"Assignment {assignment_id} not found")
+
+    # 1. Gather all incoming file payloads
+    incoming_files: List[UploadFile] = []
+    if file:
+        incoming_files.append(file)
+    if files:
+        incoming_files.extend(files)
+
+    if not incoming_files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No files provided. Please upload a ZIP archive or submission files.",
+        )
+
+    # 2. Extract in-memory without saving temporary junk to disk
+    extracted_entries: List[tuple[str, bytes]] = []
+
+    for up_file in incoming_files:
+        original_name = up_file.filename or "submission.bin"
+        try:
+            content_bytes = await up_file.read()
+        except Exception as read_err:
+            logger.error(f"Failed to read upload payload {original_name}: {read_err}")
+            continue
+
+        if not content_bytes:
+            continue
+
+        if original_name.lower().endswith(".zip"):
+            try:
+                with zipfile.ZipFile(BytesIO(content_bytes)) as zf:
+                    if zf.testzip() is not None:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Corrupted or invalid ZIP archive: {original_name}",
+                        )
+                    for member in zf.infolist():
+                        if member.is_dir():
+                            continue
+                        base_fname = os.path.basename(member.filename)
+                        # Filter system artifacts
+                        if not base_fname or base_fname.startswith(".") or member.filename.startswith("__MACOSX"):
+                            continue
+                        inner_bytes = zf.read(member.filename)
+                        if inner_bytes:
+                            extracted_entries.append((base_fname, inner_bytes))
+            except zipfile.BadZipFile:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"The uploaded file '{original_name}' is not a valid ZIP archive.",
+                )
+        else:
+            base_fname = os.path.basename(original_name)
+            extracted_entries.append((base_fname, content_bytes))
+
+    if not extracted_entries:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid student submission files found in the uploaded payload.",
+        )
+
+    # 3. Build roster index for fast O(1) resolution across the batch
+    roster_index = student_resolver.get_classroom_roster_index(classroom_id)
+
+    created_submissions: List[Submission] = []
+    queued_items: List[ClassroomBatchUploadItem] = []
+    unmatched_items: List[ClassroomBatchUploadItem] = []
+    queued_submission_ids: List[str] = []
+
+    for fname, fbytes in extracted_entries:
+        sub_id = f"sub_{uuid.uuid4().hex[:12]}"
+
+        # a. Save raw asset to Supabase Storage 'submissions/' bucket
+        file_url = None
+        try:
+            file_url = supabase_service.upload_file_to_storage(
+                file_bytes=fbytes,
+                file_name=fname,
+                assignment_id=assignment_id,
+            )
+        except Exception as storage_err:
+            logger.warning(f"Supabase Storage persistence notice for {fname}: {storage_err}")
+
+        # b. Resolve roll number and match to enrolled student in classroom
+        student_id, sub_status, student_match, detected_roll = student_resolver.resolve_submission_file(
+            classroom_id=classroom_id,
+            filename=fname,
+            roster_index=roster_index,
+        )
+
+        if student_match:
+            sub_status = "queued"
+            student_id = str(student_match.get("id"))
+            student_name = student_match.get("full_name") or student_match.get("name") or f"Student {detected_roll}"
+            student_roll = student_match.get("roll_number") or detected_roll
+            student_email = student_match.get("email") or f"{student_roll}@university.edu"
+        else:
+            sub_status = "unmatched"
+            student_id = None
+            student_roll = detected_roll
+            student_name = f"Roll {detected_roll}" if detected_roll else f"Unmatched ({fname})"
+            student_email = f"unmatched_{sub_id[:8]}@university.edu"
+
+        # c. In-memory text/code extraction
+        ext = fname.lower().split(".")[-1] if "." in fname else "text"
+        is_binary = ext in {"pdf", "docx", "doc", "zip", "png", "jpg", "jpeg"}
+        extracted_text = pdf_service.extract_text_from_bytes(fbytes, fname)
+        if not extracted_text and not is_binary:
+            try:
+                extracted_text = fbytes.decode("utf-8", errors="replace")
+            except Exception:
+                extracted_text = ""
+
+        # d. Create Submission model
+        sub = Submission(
+            id=sub_id,
+            classroom_id=classroom_id,
+            assignment_id=assignment_id,
+            student_id=student_id,
+            file_name=fname,
+            file_path="",  # Memory-only extraction without temporary file clutter
+            file_url=file_url,
+            file_type=ext,
+            extracted_text=extracted_text,
+            content=extracted_text or "",
+            file_content=extracted_text or "",
+            status=sub_status,
+        )
+        sub.student_name = student_name
+        sub.student_roll = student_roll or "UNASSIGNED"
+        sub.student_email = student_email
+        db.add(sub)
+        created_submissions.append(sub)
+
+        # e. Item for HTTP response
+        item = ClassroomBatchUploadItem(
+            id=sub_id,
+            file_name=fname,
+            student_id=student_id,
+            roll_number=student_roll,
+            student_name=student_name,
+            status=sub_status,
+            file_url=file_url,
+        )
+
+        if sub_status == "queued":
+            queued_items.append(item)
+            queued_submission_ids.append(sub_id)
+        else:
+            unmatched_items.append(item)
+
+    # 4. Batch insert into database and synchronize to Supabase
+    try:
+        db.commit()
+    except Exception as db_err:
+        db.rollback()
+        logger.error(f"Database commit error for batch submissions: {db_err}")
+        raise HTTPException(status_code=500, detail="Database persistence error during batch upload")
+
+    try:
+        from app.core.supabase import supabase
+        supabase_records = [
+            {
+                "id": s.id,
+                "classroom_id": s.classroom_id,
+                "assignment_id": s.assignment_id,
+                "student_id": s.student_id,
+                "student_name_encrypted": s.student_name_encrypted,
+                "student_roll_encrypted": s.student_roll_encrypted,
+                "student_email_encrypted": s.student_email_encrypted,
+                "file_name": s.file_name,
+                "file_path": s.file_path,
+                "file_url": s.file_url,
+                "file_type": s.file_type,
+                "extracted_text": s.extracted_text,
+                "content": s.content or s.extracted_text or "",
+                "file_content": s.file_content,
+                "similarity_score": 0.0,
+                "ai_content_probability": 0.0,
+                "web_plagiarism_score": 0.0,
+                "web_sources": [],
+                "status": s.status,
+            }
+            for s in created_submissions
+        ]
+        supabase.table("submissions").upsert(supabase_records).execute()
+        logger.info(f"Synchronized {len(supabase_records)} batch submissions to Supabase.")
+    except Exception as sb_err:
+        logger.warning(f"Supabase submissions batch sync notice: {sb_err}")
+
+    # 5. Non-Blocking Enqueue via Celery Background Task (Redis broker)
+    batch_job_id = f"job_{uuid.uuid4().hex[:12]}"
+    total_evaluable = len(queued_submission_ids)
+
+    # Register batch job record
+    job_record = BatchJob(
+        id=batch_job_id,
+        assignment_id=assignment_id,
+        status="queued" if total_evaluable > 0 else "completed",
+        progress_pct=0.0 if total_evaluable > 0 else 100.0,
+        total_items=total_evaluable,
+        processed_items=0,
+    )
+    db.add(job_record)
+    db.commit()
+
+    if total_evaluable > 0:
+        dispatched_celery = False
+        if is_redis_available():
+            try:
+                # Celery task dispatch via Redis: evaluate_batch_task.delay(batch_submission_ids, rubric_id, assignment_id)
+                celery_task = evaluate_batch_task.delay(
+                    batch_submission_ids=queued_submission_ids,
+                    rubric_id=assignment.rubric_id,
+                    assignment_id=assignment_id,
+                )
+                if celery_task and celery_task.id:
+                    old_id = job_record.id
+                    job_record.id = celery_task.id
+                    batch_job_id = celery_task.id
+                    db.commit()
+                    if old_id != batch_job_id:
+                        db.query(BatchJob).filter(BatchJob.id == old_id).delete()
+                        db.commit()
+                    dispatched_celery = True
+                    logger.info(f"Dispatched Celery task {celery_task.id} via Redis for {total_evaluable} submissions")
+            except Exception as celery_err:
+                logger.warning(f"Celery dispatch failed: {celery_err}. Using BackgroundTasks async execution fallback.")
+
+        if not dispatched_celery:
+            background_tasks.add_task(
+                run_evaluation_batch_logic,
+                job_id=batch_job_id,
+                assignment_id=assignment_id,
+                submission_ids=queued_submission_ids,
+                rubric_id=assignment.rubric_id,
+                title=assignment.title,
+                reference_assignment_text=assignment.reference_assignment_text,
+            )
+
+    return ClassroomBatchUploadResponse(
+        batch_job_id=batch_job_id,
+        total=len(created_submissions),
+        queued_submissions=queued_items,
+        unmatched_submissions=unmatched_items,
+        status="queued" if total_evaluable > 0 else "completed",
+    )
 
 
 @router.post("/assignments/{assignment_id}/submissions/batch-upload", response_model=BatchUploadResponse)
@@ -612,23 +896,137 @@ def get_assignment_submissions(
         except Exception as e:
             logger.warning(f"Supabase submissions fetch fallback notice: {e}")
 
-    return [
-        SubmissionResponse(
-            id=s.id,
-            assignment_id=s.assignment_id,
-            student=s.student_name,
-            roll=s.student_roll,
-            file_name=s.file_name,
-            status=s.status,
-            score=s.draft_grade.final_score if (s.draft_grade and s.draft_grade.final_score is not None) else (s.draft_grade.suggested_score if s.draft_grade else 0.0),
-            similarity=s.similarity_score or 0.0,
-            ai_content=s.ai_content_probability or 0.0,
-            web_plagiarism=s.web_plagiarism_score or 0.0,
-            file_url=s.file_url,
-            created_at=s.created_at,
+    res_list = []
+    for s in submissions:
+        score = 0.0
+        max_s = 100.0
+        crit = None
+        fb = None
+        plag = None
+        if s.draft_grade:
+            score = (
+                s.draft_grade.final_score
+                if s.draft_grade.final_score is not None
+                else (
+                    s.draft_grade.total_score
+                    if s.draft_grade.total_score is not None
+                    else (s.draft_grade.suggested_score or 0.0)
+                )
+            )
+            max_s = s.draft_grade.max_score or 100.0
+            crit = s.draft_grade.criteria_breakdown or s.draft_grade.criteria_scores
+            fb = s.draft_grade.feedback or s.draft_grade.ai_feedback
+            plag = s.draft_grade.plagiarism_report
+
+        res_list.append(
+            SubmissionResponse(
+                id=s.id,
+                assignment_id=s.assignment_id,
+                student=s.student_name,
+                roll=s.student_roll,
+                student_id=s.student_id,
+                file_name=s.file_name,
+                status=s.status,
+                score=score,
+                max_score=max_s,
+                similarity=s.similarity_score or 0.0,
+                ai_content=s.ai_content_probability or 0.0,
+                web_plagiarism=s.web_plagiarism_score or 0.0,
+                file_url=s.file_url,
+                criteria_scores=crit,
+                feedback=fb,
+                plagiarism_report=plag,
+                created_at=s.created_at,
+            )
         )
-        for s in submissions
-    ]
+    return res_list
+
+
+@router.patch("/submissions/{submission_id}/assign-student", response_model=SubmissionResponse)
+def assign_submission_student(
+    submission_id: str,
+    payload: AssignStudentRequest,
+    db: Session = Depends(get_db),
+):
+    """Manually assign an unmatched submission to an enrolled student."""
+    sub = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    student_record = None
+    try:
+        from app.core.supabase import supabase
+        s_res = supabase.table("students").select("*").eq("id", payload.student_id).execute()
+        if s_res.data:
+            student_record = s_res.data[0]
+    except Exception as e:
+        logger.warning(f"Error fetching student from Supabase: {e}")
+
+    student_name = student_record.get("full_name") if student_record else "Assigned Student"
+    student_roll = student_record.get("roll_number") if student_record else "UNKNOWN"
+    student_email = student_record.get("email") if student_record else f"{student_roll}@university.edu"
+
+    sub.student_id = payload.student_id
+    sub.student_name = student_name
+    sub.student_roll = student_roll
+    sub.student_email = student_email
+    if sub.status == "unmatched":
+        sub.status = "queued"
+
+    db.commit()
+    db.refresh(sub)
+
+    # Sync to Supabase
+    try:
+        from app.core.supabase import supabase
+        supabase.table("submissions").update({
+            "student_id": payload.student_id,
+            "status": sub.status,
+            "student_name_encrypted": sub.student_name_encrypted,
+            "student_roll_encrypted": sub.student_roll_encrypted,
+        }).eq("id", submission_id).execute()
+    except Exception as e:
+        logger.warning(f"Error updating submission in Supabase: {e}")
+
+    score = 0.0
+    max_s = 100.0
+    crit = None
+    fb = None
+    plag = None
+    if sub.draft_grade:
+        score = (
+            sub.draft_grade.final_score
+            if sub.draft_grade.final_score is not None
+            else (
+                sub.draft_grade.total_score
+                if sub.draft_grade.total_score is not None
+                else (sub.draft_grade.suggested_score or 0.0)
+            )
+        )
+        max_s = sub.draft_grade.max_score or 100.0
+        crit = sub.draft_grade.criteria_breakdown or sub.draft_grade.criteria_scores
+        fb = sub.draft_grade.feedback or sub.draft_grade.ai_feedback
+        plag = sub.draft_grade.plagiarism_report
+
+    return SubmissionResponse(
+        id=sub.id,
+        assignment_id=sub.assignment_id,
+        student=sub.student_name,
+        roll=sub.student_roll,
+        student_id=sub.student_id,
+        file_name=sub.file_name,
+        status=sub.status,
+        score=score,
+        max_score=max_s,
+        similarity=sub.similarity_score or 0.0,
+        ai_content=sub.ai_content_probability or 0.0,
+        web_plagiarism=sub.web_plagiarism_score or 0.0,
+        file_url=sub.file_url,
+        criteria_scores=crit,
+        feedback=fb,
+        plagiarism_report=plag,
+        created_at=sub.created_at,
+    )
 
 
 @router.delete("/submissions/{submission_id}", status_code=204)

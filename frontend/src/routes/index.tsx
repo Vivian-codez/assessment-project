@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, useNavigate, Link } from "@tanstack/react-router";
 import {
   Activity,
   ArrowLeft,
@@ -47,7 +47,6 @@ import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { supabase } from "@/lib/supabase";
 import {
   api,
   getAuthToken,
@@ -201,35 +200,23 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
     window.setTimeout(() => setToast(""), 3500);
   };
 
-  // Initial Data Fetch & Supabase Auth Verification
+  // Initial Data Fetch & Auth Verification
   useEffect(() => {
     let mounted = true;
     const initAuthAndData = async () => {
-      // 1. Verify authentic Supabase session
-      const { data: { session } } = await supabase.auth.getSession();
       const token = getAuthToken();
 
-      if (!session && !token) {
+      if (!token) {
         routerNavigate({ to: "/login" });
         return;
       }
 
-      if (session) {
-        setAuthToken(session.access_token);
-        const meta = session.user.user_metadata || {};
-        const profile: UserProfile = {
-          id: session.user.id,
-          name: meta.name || meta.full_name || session.user.email?.split("@")[0] || "Instructor",
-          email: session.user.email || "",
-          role: meta.role || "Instructor · Computer Science",
-          preferences: meta.preferences || {},
-        };
-        if (mounted) {
-          setCurrentUser(profile);
-          setCachedUser(profile);
-        }
-      } else {
-        await loadUser();
+      const authed = await loadUser();
+      if (!authed) {
+        clearAuthToken();
+        setCurrentUser(null);
+        routerNavigate({ to: "/login" });
+        return;
       }
 
       if (mounted) {
@@ -243,39 +230,19 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
 
     initAuthAndData();
 
-    // Listen to real-time auth state events
-    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === "SIGNED_OUT" || (!session && !getAuthToken())) {
-        clearAuthToken();
-        setCurrentUser(null);
-        routerNavigate({ to: "/login" });
-      } else if (session) {
-        setAuthToken(session.access_token);
-        const meta = session.user.user_metadata || {};
-        const profile: UserProfile = {
-          id: session.user.id,
-          name: meta.name || meta.full_name || session.user.email?.split("@")[0] || "Instructor",
-          email: session.user.email || "",
-          role: meta.role || "Instructor · Computer Science",
-          preferences: meta.preferences || {},
-        };
-        setCurrentUser(profile);
-        setCachedUser(profile);
-      }
-    });
-
     return () => {
       mounted = false;
-      authListener?.subscription?.unsubscribe();
     };
   }, []);
 
-  const loadUser = async () => {
+  const loadUser = async (): Promise<boolean> => {
     try {
       const user = await api.auth.getMe();
       setCurrentUser(user);
+      return true;
     } catch {
-      // not logged in
+      clearAuthToken();
+      return false;
     }
   };
 
@@ -430,7 +397,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
 
   const handleLogout = async () => {
     try {
-      await supabase.auth.signOut();
+      await api.auth.logout();
     } catch {
       // ignore
     }
@@ -1152,7 +1119,7 @@ function Dashboard({
         <div className="mx-auto grid size-16 place-items-center rounded-2xl bg-lav-soft text-ink mb-6 shadow-sm">
           <GraduationCap className="size-8 text-amber-ink" />
         </div>
-        <p className="text-xs uppercase tracking-[0.2em] text-faint mb-2">Teacher Workspace · Live Supabase</p>
+        <p className="text-xs uppercase tracking-[0.2em] text-faint mb-2">Teacher Workspace · Live Database</p>
         <h1 className="font-display text-4xl text-ink">Welcome to Your Educator Console</h1>
         <p className="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-muted-ink">
           Live database connected with zero mock records. Start setting up your courses, student roll call rosters, and matrix rubrics to begin automated evaluations.
@@ -1204,10 +1171,10 @@ function Dashboard({
 
   const metrics = [
     { label: "Total Enrolled Students", value: `${students.length}`, note: course ? `${course.code} roll call` : "Active roll call", tone: "lav" },
-    { label: "Active Assignments", value: `${assignments.length}`, note: "Configured in Supabase", tone: "blue" },
+    { label: "Active Assignments", value: `${assignments.length}`, note: "Configured in Database", tone: "blue" },
     { label: "Submissions Pending Evaluation", value: `${pendingCount}`, note: "Teacher approval required", tone: "amber" },
     { label: "Matrix Rubrics", value: `${rubrics.length}`, note: "Tiered criteria matrices", tone: "sage" },
-    { label: "Active Classrooms", value: `${courses.length || classrooms.length}`, note: "Registered in Supabase", tone: "lav" },
+    { label: "Active Classrooms", value: `${courses.length || classrooms.length}`, note: "Registered in Database", tone: "lav" },
     { label: "Approved Grades", value: `${approvedCount}`, note: "Final stamped marks", tone: "sage" },
     { label: "Plagiarism Flags", value: `${highSimCount}`, note: "Similarity >= 85%", tone: "clay" },
   ];
@@ -1767,6 +1734,14 @@ function AssignmentsView({
         description="Provide a Reference Assignment (ground truth) and grading rubric. The AI engine compares each submission against the benchmark solution."
         action={
           <div className="flex flex-wrap gap-2">
+            {activeAssign && (
+              <Button asChild className="rounded-lg bg-teal-600 text-white hover:bg-teal-500 shadow-sm">
+                <Link to="/dashboard/assignments/$id/upload" params={{ id: activeAssign.id }}>
+                  <FileArchive className="mr-1.5 size-4" />
+                  Batch ZIP & Roll Matching
+                </Link>
+              </Button>
+            )}
             <Button onClick={onOpenAddAssignment} className="rounded-lg bg-ink text-card hover:bg-ink/90">
               <Plus className="mr-1.5 size-4" />
               New Assignment
@@ -2962,11 +2937,11 @@ function ReportsView({
         <div className="rounded-[14px] border border-line bg-card p-5">
           <h2 className="font-display text-xl">Audit Trail & Teacher Accountability</h2>
           <p className="mt-2 text-xs leading-relaxed text-muted-ink">
-            Every grade approval, threshold adjustment, and feedback modification produces an immutable audit record in PostgreSQL
-            and Supabase with timestamp, actor ID, and IP address.
+            Every grade approval, threshold adjustment, and feedback modification produces an immutable audit record in the database
+            with timestamp, actor ID, and IP address.
           </p>
           <div className="mt-4 rounded bg-lav-soft p-3 text-xs text-ink font-medium">
-            Active: Supabase Audit Logs & PostgreSQL Mirroring
+            Active: Database Audit Logs & Storage Mirroring
           </div>
         </div>
       </div>
@@ -3000,7 +2975,7 @@ function SettingsView({
           </div>
           <div>
             <label className="text-[11px] uppercase tracking-[0.14em] text-faint">Email</label>
-            <p className="text-muted-ink">{currentUser?.email || "Signed in via Supabase"}</p>
+            <p className="text-muted-ink">{currentUser?.email || "Signed in as Instructor"}</p>
           </div>
           <div>
             <label className="text-[11px] uppercase tracking-[0.14em] text-faint">Role</label>
@@ -3157,7 +3132,7 @@ function AuthModal({
         </form>
 
         <p className="mt-4 text-center text-[11px] text-faint">
-          Synced across PostgreSQL & Supabase Authentication tables.
+          Synced across Database & Authentication tables.
         </p>
       </div>
     </div>

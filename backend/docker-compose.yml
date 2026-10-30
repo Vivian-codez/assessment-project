@@ -1,7 +1,7 @@
 version: "3.8"
 
 services:
-  # 1. PostgreSQL Relational Database Layer
+  # 1. PostgreSQL – primary local database (replaces hosted Supabase)
   db:
     image: postgres:16-alpine
     container_name: verism_postgres
@@ -14,13 +14,15 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Run init.sql on first-start to create all tables
+      - ./init.sql:/docker-entrypoint-initdb.d/01_init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-verism_db}"]
       interval: 5s
       timeout: 5s
       retries: 5
 
-  # 2. Redis Message Broker & Result Backend
+  # 2. Redis – message broker & result backend for Celery
   redis:
     image: redis:7-alpine
     container_name: verism_redis
@@ -35,7 +37,7 @@ services:
       timeout: 3s
       retries: 5
 
-  # 3. Qdrant Vector Database (Assignment Embeddings & Plagiarism Detection)
+  # 3. Qdrant – vector database for assignment embeddings & plagiarism detection
   qdrant:
     image: qdrant/qdrant:v1.10.0
     container_name: verism_qdrant
@@ -61,14 +63,17 @@ services:
     environment:
       - APP_ENV=development
       - DEBUG=true
+      - USE_SUPABASE=false
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-verism_db}
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - QDRANT_URL=http://qdrant:6333
+      - UPLOADS_DIR=/app/uploads
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
       - FERPA_ENCRYPTION_KEY=${FERPA_ENCRYPTION_KEY:-MbGUys4qem_FHtZy_5zx8bBSrxkTI2UWrjnhrFAHcyY=}
+      - SECRET_KEY=${SECRET_KEY:-verism_super_secret_jwt_key_change_in_production_1234567890}
       - BACKEND_CORS_ORIGINS=["http://localhost:3000","http://localhost:5173","http://127.0.0.1:3000","http://127.0.0.1:5173","http://localhost:8080"]
     volumes:
       - .:/app
@@ -81,7 +86,7 @@ services:
       qdrant:
         condition: service_started
 
-  # 5. Celery Worker (Batch AI Evaluation Engine)
+  # 5. Celery Worker – batch AI evaluation engine
   celery_worker:
     build:
       context: .
@@ -91,14 +96,17 @@ services:
     command: celery -A app.workers.celery_app.celery_app worker --loglevel=info --concurrency=4
     environment:
       - APP_ENV=development
+      - USE_SUPABASE=false
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-verism_db}
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - QDRANT_URL=http://qdrant:6333
+      - UPLOADS_DIR=/app/uploads
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
       - FERPA_ENCRYPTION_KEY=${FERPA_ENCRYPTION_KEY:-MbGUys4qem_FHtZy_5zx8bBSrxkTI2UWrjnhrFAHcyY=}
+      - SECRET_KEY=${SECRET_KEY:-verism_super_secret_jwt_key_change_in_production_1234567890}
     volumes:
       - .:/app
       - uploads_data:/app/uploads

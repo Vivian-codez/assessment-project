@@ -273,7 +273,7 @@ export function RosterView({
             {classroom ? `${classroom.name} (${classroom.code})` : "Student Roll Call"}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Enrolled student registry synced directly with Supabase PostgreSQL.
+            Enrolled student registry synced directly with Database.
           </p>
         </div>
 
@@ -404,7 +404,7 @@ export function RosterView({
         {loading ? (
           <div className="flex items-center justify-center p-12 text-muted-foreground">
             <Loader2 className="mr-2 size-5 animate-spin" />
-            <span className="text-sm">Fetching student roster from Supabase...</span>
+            <span className="text-sm">Fetching student roster from database...</span>
           </div>
         ) : filteredStudents.length === 0 ? (
           <div className="p-12 text-center">

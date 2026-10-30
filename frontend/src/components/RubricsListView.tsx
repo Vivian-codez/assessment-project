@@ -90,7 +90,7 @@ export function RubricsListView({
       {loading ? (
         <div className="flex items-center justify-center p-12 text-muted-foreground">
           <Loader2 className="mr-2 size-5 animate-spin" />
-          <span className="text-sm">Loading matrix rubrics from Supabase...</span>
+          <span className="text-sm">Loading matrix rubrics from database...</span>
         </div>
       ) : rubrics.length === 0 ? (
         <div className="rounded-xl border border-line bg-card p-12 text-center">

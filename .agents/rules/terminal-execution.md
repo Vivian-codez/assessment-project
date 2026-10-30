@@ -1,5 +1,5 @@
 ---
-name: terminal-execution-policy
+trigger: model_decision
 description: Pre-approves autonomous terminal command execution for development tasks.
 ---
 

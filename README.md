@@ -2,6 +2,13 @@
 
 An enterprise-grade, FERPA-compliant assessment, grading, and plagiarism verification system built for higher education. Features 3-way plagiarism detection (peer-to-peer vector similarity, AI content probability, and public web grounding) with human-in-the-loop teacher review.
 
+
+---
+
+> 📖 **Notion Documentation Suite Available:**
+> Complete, Notion-formatted architecture, API, FERPA compliance, and engineering documentation is available in [`notion_docs/`](file:///c:/Users/alice/OneDrive/Desktop/Prototype/notion_docs/00_NOTION_WORKSPACE_HUB.md).
+> To auto-export directly to your Notion workspace via API, run `python scripts/export_to_notion.py`. See the [Notion Import Guide](file:///c:/Users/alice/OneDrive/Desktop/Prototype/notion_docs/10_NOTION_IMPORT_GUIDE.md).
+
 ---
 
 ## 🏛️ System Architecture

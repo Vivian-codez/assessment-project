@@ -5,8 +5,11 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.course import Course
+from app.models.classroom import Classroom
+from app.models.student import Student
 from app.models.assignment import Assignment
 from app.models.submission import Submission
 from app.models.draft_grade import DraftGrade
@@ -14,6 +17,7 @@ from app.models.similarity_match import SimilarityMatch
 from app.schemas.course import CourseCreate, CourseResponse, CourseDetailResponse
 from app.api.v1.auth import get_current_instructor
 from app.models.instructor import Instructor
+from app.core.logging import logger
 
 router = APIRouter(prefix="/courses", tags=["Courses"])
 
@@ -24,41 +28,45 @@ def get_courses(
     db: Session = Depends(get_db),
     instructor: Instructor = Depends(get_current_instructor),
 ):
-    """Retrieve all courses with aggregated metrics for the instructor dashboard."""
-    query = db.query(Course).filter(Course.instructor_id == instructor.id)
-    if search:
-        search_pattern = f"%{search}%"
-        query = query.filter(
-            (Course.name.ilike(search_pattern)) |
-            (Course.code.ilike(search_pattern)) |
-            (Course.section.ilike(search_pattern))
-        )
-    courses = query.all()
-    if not courses and not search:
-        # Fallback to Supabase courses
+    """Retrieve all courses for the instructor dashboard."""
+    # 1. If cloud Supabase is enabled, optionally sync courses
+    if settings.USE_SUPABASE:
         try:
             from app.core.supabase import supabase
-            res = supabase.table("courses").select("*").execute()
-            if res.data:
-                for c_data in res.data:
-                    if not db.query(Course).filter(Course.id == c_data["id"]).first():
-                        db.add(Course(
-                            id=c_data["id"],
-                            name=c_data["name"],
-                            code=c_data["code"],
-                            section=c_data.get("section", "A"),
-                            tone=c_data.get("tone", "lav"),
-                            students_count=c_data.get("students_count", 0),
-                            instructor_id=c_data.get("instructor_id"),
-                        ))
-                db.commit()
-                courses = query.all() or db.query(Course).all()
+            sb_res = supabase.table("courses").select("*").execute()
+            for s_data in (sb_res.data or []):
+                s_id = str(s_data["id"])
+                existing = db.query(Course).filter(Course.id == s_id).first()
+                if not existing:
+                    db.add(Course(
+                        id=s_id,
+                        name=s_data["name"],
+                        code=s_data["code"],
+                        section=s_data.get("section", "A"),
+                        tone=s_data.get("tone", "lav"),
+                        students_count=s_data.get("students_count", 0),
+                        instructor_id=s_data.get("instructor_id"),
+                    ))
+            db.commit()
         except Exception as e:
-            logger.warning(f"Supabase courses sync notice: {e}")
+            logger.debug(f"Cloud courses sync notice: {e}")
 
-    # Return empty list if no courses exist for this instructor (clean empty state)
-    if not courses:
-        return []
+    # 2. Query courses from local database
+    query = db.query(Course)
+    if instructor and instructor.id:
+        inst_courses = query.filter((Course.instructor_id == instructor.id) | (Course.instructor_id == None)).all()
+        courses = inst_courses if inst_courses else query.all()
+    else:
+        courses = query.all()
+
+    if search:
+        search_lower = search.lower()
+        courses = [
+            c for c in courses
+            if search_lower in (c.name or "").lower()
+            or search_lower in (c.code or "").lower()
+            or search_lower in (c.section or "").lower()
+        ]
 
     results = []
     for c in courses:
@@ -84,6 +92,10 @@ def get_courses(
                 .count()
             )
 
+        # Get live student count from Student table if enrolled
+        live_students = db.query(Student).filter(Student.classroom_id == c.id).count()
+        student_count = live_students if live_students > 0 else (c.students_count or 0)
+
         results.append(
             CourseResponse(
                 id=c.id,
@@ -91,8 +103,8 @@ def get_courses(
                 code=c.code,
                 section=c.section,
                 tone=c.tone,
-                students=c.students_count,
-                students_count=c.students_count,
+                students=student_count,
+                students_count=student_count,
                 assignments=assign_count,
                 assignments_count=assign_count,
                 reviews=pending_reviews,
@@ -108,6 +120,7 @@ def get_courses(
 def get_course_detail(
     course_id: str,
     db: Session = Depends(get_db),
+    instructor: Instructor = Depends(get_current_instructor),
 ):
     """Retrieve detailed metadata and health metrics for a course."""
     course = db.query(Course).filter(Course.id == course_id).first()
@@ -123,13 +136,16 @@ def get_course_detail(
         .count()
     ) if assignment_ids else 0
 
+    live_students = db.query(Student).filter(Student.classroom_id == course.id).count()
+    student_count = live_students if live_students > 0 else (course.students_count or 0)
+
     return CourseDetailResponse(
         id=course.id,
         name=course.name,
         code=course.code,
         section=course.section,
         tone=course.tone,
-        students=course.students_count,
+        students=student_count,
         assignments=len(course.assignments),
         reviews=pending_reviews,
         flags=0,
@@ -147,6 +163,7 @@ def create_course(
 ):
     """Add a new course."""
     course_id = str(uuid.uuid4())
+    inst_id = instructor.id if instructor else None
     new_course = Course(
         id=course_id,
         name=payload.name,
@@ -154,32 +171,41 @@ def create_course(
         section=payload.section,
         tone=payload.tone,
         students_count=payload.students_count,
-        instructor_id=instructor.id,
+        instructor_id=inst_id,
     )
     db.add(new_course)
+
+    # Ensure matching Classroom row exists
+    new_classroom = Classroom(
+        id=course_id,
+        name=payload.name,
+        code=payload.code,
+        instructor_id=inst_id,
+    )
+    db.add(new_classroom)
     db.commit()
     db.refresh(new_course)
 
-    try:
-        from app.core.supabase import supabase
-        supabase.table("courses").upsert({
-            "id": new_course.id,
-            "name": new_course.name,
-            "code": new_course.code,
-            "section": new_course.section,
-            "tone": new_course.tone,
-            "students_count": new_course.students_count,
-            "instructor_id": new_course.instructor_id,
-        }).execute()
-        # Also ensure classroom record exists in classrooms table
-        supabase.table("classrooms").upsert({
-            "id": new_course.id,
-            "name": new_course.name,
-            "code": new_course.code,
-            "instructor_id": new_course.instructor_id,
-        }).execute()
-    except Exception as e:
-        logger.warning(f"Supabase course/classroom sync notice: {e}")
+    if settings.USE_SUPABASE:
+        try:
+            from app.core.supabase import supabase
+            supabase.table("courses").upsert({
+                "id": new_course.id,
+                "name": new_course.name,
+                "code": new_course.code,
+                "section": new_course.section,
+                "tone": new_course.tone,
+                "students_count": new_course.students_count,
+                "instructor_id": new_course.instructor_id,
+            }).execute()
+            supabase.table("classrooms").upsert({
+                "id": new_course.id,
+                "name": new_course.name,
+                "code": new_course.code,
+                "instructor_id": new_course.instructor_id,
+            }).execute()
+        except Exception as e:
+            logger.warning(f"Cloud course/classroom sync notice: {e}")
 
     return CourseResponse(
         id=new_course.id,
@@ -205,14 +231,21 @@ def delete_course(
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
+    # Also delete corresponding classroom if exists
+    cl = db.query(Classroom).filter(Classroom.id == course_id).first()
+    if cl:
+        db.delete(cl)
+
     db.delete(course)
     db.commit()
 
-    try:
-        from app.core.supabase import supabase
-        supabase.table("courses").delete().eq("id", course_id).execute()
-    except Exception as e:
-        logger.warning(f"Supabase course delete notice: {e}")
+    if settings.USE_SUPABASE:
+        try:
+            from app.core.supabase import supabase
+            supabase.table("courses").delete().eq("id", course_id).execute()
+            supabase.table("classrooms").delete().eq("id", course_id).execute()
+        except Exception as e:
+            logger.warning(f"Cloud course delete notice: {e}")
 
     return None
 
@@ -221,8 +254,8 @@ def delete_course(
 def get_course_rubrics_alias(
     course_id: str,
     db: Session = Depends(get_db),
+    instructor: Instructor = Depends(get_current_instructor),
 ):
     """Retrieve all rubrics for a given course (alias for /rubrics/courses/{course_id}/rubrics)."""
-    from app.api.v1.rubrics import get_course_rubrics
-    return get_course_rubrics(course_id=course_id, db=db)
-
+    from app.api.v1.rubrics import list_rubrics
+    return list_rubrics(classroom_id=course_id, course_id=course_id, db=db, current_instructor=instructor)

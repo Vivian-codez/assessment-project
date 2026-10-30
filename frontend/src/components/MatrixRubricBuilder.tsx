@@ -155,7 +155,7 @@ export function MatrixRubricBuilder({
     setCriteriaRows((prev) => prev.filter((r) => r.id !== id));
   };
 
-  // Save Matrix Rubric to Backend & Supabase
+  // Save Matrix Rubric to Backend & Database
   const handleSave = async () => {
     if (!title.trim()) {
       showToast("Please provide a title for this rubric.");
@@ -193,7 +193,7 @@ export function MatrixRubricBuilder({
         criteria: criteriaPayload,
       });
 
-      showToast("Matrix Rubric successfully created and saved to Supabase!");
+      showToast("Matrix Rubric successfully created and saved to database!");
       onSaved();
     } catch (err: any) {
       showToast(`Failed to save rubric: ${err.message}`);

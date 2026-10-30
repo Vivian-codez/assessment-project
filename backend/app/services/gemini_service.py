@@ -25,6 +25,9 @@ from app.schemas.grading import (
     WebSourceItem,
     AIContentAssessment,
     FeedbackDetails,
+    EvaluationResult,
+    CriterionEvaluationItem,
+    PlagiarismReport,
 )
 
 try:
@@ -101,6 +104,91 @@ class GeminiEvaluationService:
                 return self._fallback_evaluate(submission_text, rubric_criteria, reference_assignment_text)
         else:
             return self._fallback_evaluate(submission_text, rubric_criteria, reference_assignment_text)
+
+    def evaluate_submission_result(
+        self,
+        submission_text: str,
+        rubric_criteria: List[Dict],
+        assignment_title: str = "Assignment",
+        reference_assignment_text: Optional[str] = None,
+        peer_matching_context: Optional[str] = None,
+        rubric_id: Optional[str] = None,
+    ) -> EvaluationResult:
+        """Calls gemini-2.5-flash / gemini-3.8-flash with the assignment prompt,
+        model solution, matrix rubric, and peer-matching context, using strict
+        JSON output schema EvaluationResult.
+        """
+        if self.client and settings.GEMINI_API_KEY:
+            # 1. Format rubric criteria
+            rubric_lines = []
+            max_total = 0.0
+            for idx, c in enumerate(rubric_criteria):
+                name = c.get("name") or c.get("criterion_name", f"Criterion {idx+1}")
+                weight = c.get("weight", 25)
+                max_s = float(c.get("max_score") or c.get("max") or c.get("max_points") or 25.0)
+                max_total += max_s
+                desc = c.get("description", "")
+                rubric_lines.append(f"- Criterion: {name} (Max: {max_s} pts, Weight: {weight}%): {desc}")
+            rubric_content = "\n".join(rubric_lines)
+            max_total = max_total if max_total > 0 else 100.0
+
+            prompt = (
+                f"<rubric>\nAssignment: {assignment_title} (Total Max Score: {max_total})\n{rubric_content}\n</rubric>\n\n"
+                f"<reference_assignment>\n{reference_assignment_text or 'No benchmark exemplar provided. Evaluate based on standard university standards.'}\n</reference_assignment>\n\n"
+                f"<peer_submissions_context>\n{peer_matching_context or 'No peer submissions matched for cross-similarity.'}\n</peer_submissions_context>\n\n"
+                f"<target_submission>\n{submission_text[:25000]}\n</target_submission>\n\n"
+                "Evaluate the target submission strictly against the rubric criteria and reference solution. "
+                "Assess peer-to-peer plagiarism against peer submissions context, public web similarity, and AI probability. "
+                "Output strictly formatted JSON conforming to EvaluationResult schema."
+            )
+
+            # Try candidate models
+            for model in ["gemini-3.8-flash", "gemini-flash-latest", "gemini-2.5-flash"]:
+                try:
+                    config = types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=EvaluationResult,
+                        temperature=0.2,
+                        http_options=types.HttpOptions(timeout=8000),
+                    )
+                    resp = self.client.models.generate_content(
+                        model=model,
+                        contents=prompt,
+                        config=config,
+                    )
+                    if resp and resp.text:
+                        parsed = EvaluationResult.model_validate_json(resp.text)
+                        logger.info(f"Successfully evaluated submission with Gemini model {model} (Score: {parsed.total_score}/{parsed.max_score})")
+                        return parsed
+                except Exception as e:
+                    logger.warning(f"Gemini call with EvaluationResult failed for {model}: {e}")
+
+        # Fallback to deterministic evaluation
+        logger.info("Engaging intelligent offline evaluator for EvaluationResult.")
+        structured = self._fallback_evaluate(submission_text, rubric_criteria, reference_assignment_text)
+        criteria_items = [
+            CriterionEvaluationItem(
+                criterion_name=item.criterion_name,
+                score=item.awarded_points,
+                max_score=item.max_points,
+                rationale=item.rationale,
+            )
+            for item in (structured.rubric_breakdown or [])
+        ]
+        plag_report = PlagiarismReport(
+            peer_to_peer_score=structured.peer_to_peer_plagiarism_pct or 0.0,
+            public_source_score=structured.web_plagiarism_pct or 0.0,
+            ai_probability=structured.ai_generated_probability or 0.0,
+            flagged_matches=structured.plagiarised_words or [],
+        )
+        return EvaluationResult(
+            total_score=structured.overall_score or 0.0,
+            max_score=100.0,
+            criteria_breakdown=criteria_items,
+            plagiarism_report=plag_report,
+            feedback=structured.feedback.summary if structured.feedback else "Evaluation completed against rubric benchmark.",
+        )
+
 
     def _evaluate_with_gemini(
         self,
@@ -221,6 +309,7 @@ class GeminiEvaluationService:
                     temperature=0.2,
                     system_instruction=system_instruction,
                     tools=search_tools,
+                    http_options=types.HttpOptions(timeout=5000),
                 )
                 response = self.client.models.generate_content(
                     model=model,
@@ -240,6 +329,7 @@ class GeminiEvaluationService:
                     response_mime_type="application/json",
                     temperature=0.2,
                     system_instruction=system_instruction,
+                    http_options=types.HttpOptions(timeout=5000),
                 )
                 response = self.client.models.generate_content(
                     model=model,
