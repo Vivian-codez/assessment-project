@@ -1,0 +1,139 @@
+# Workflow configuration name displayed in GitHub Actions console
+name: Verism AI CI/CD Pipeline
+
+# Event triggers defining when this workflow execution begins
+on:
+  # Execute automated pipeline checks on every push to the main branch
+  push:
+    # Target git branch specification
+    branches: [main]
+  # Execute automated pipeline checks on all incoming pull requests targeting main
+  pull_request:
+    # Target branch for PR merges
+    branches: [main]
+
+# Concurrency group configuration to cancel obsolete in-flight runs on the same branch
+concurrency:
+  # Group identifier combining workflow name and git branch or PR reference
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Automatically cancel any previously queued or executing job on new commit pushes
+  cancel-in-progress: true
+
+# Definition of automated execution jobs
+jobs:
+  # Job 1: Backend Automated Pytest Suite and Linting
+  backend-test:
+    # Human-readable label for GitHub Actions dashboard
+    name: Backend Pytest & Schema Validation
+    # Virtual host runner operating system environment
+    runs-on: ubuntu-latest
+
+    # Sequence of operational steps executed in order
+    steps:
+      # Step 1: Clone and checkout repository source code
+      - name: Checkout Source Code
+        # Official GitHub Action to clone git repository
+        uses: actions/checkout@v4
+
+      # Step 2: Configure Python runtime environment
+      - name: Set up Python 3.11
+        # Official GitHub Action to install specified Python version
+        uses: actions/setup-python@v5
+        # Configuration parameters for Python action
+        with:
+          # Target Python version specification
+          python-version: "3.11"
+          # Cache pip package dependencies between workflow runs for speed
+          cache: "pip"
+          # Path to pip dependencies specification file used for cache key
+          cache-dependency-path: "backend/requirements.txt"
+
+      # Step 3: Install backend Python packages and test dependencies
+      - name: Install Python Dependencies
+        # Shell command to upgrade pip and install required libraries
+        run: |
+          # Upgrade pip package installer to latest version
+          python -m pip install --upgrade pip
+          # Install core requirements including FastAPI, SQLAlchemy, Alembic, and google-genai
+          pip install -r backend/requirements.txt
+          # Install pytest test runner and anyio async testing plugins
+          pip install pytest pytest-asyncio anyio httpx
+
+      # Step 4: Run full 35-test Pytest test suite
+      - name: Run Pytest Test Suite
+        # Set dummy environment variables to allow test client execution without live external secrets
+        env:
+          # Cryptographic session secret key for JWT verification tests
+          SECRET_KEY: "ci-test-secret-key-for-automated-verification-32ch"
+          # Database connection string using local in-memory SQLite for test speed
+          DATABASE_URL: "sqlite:///./ci_test.db"
+          # Fallback Gemini API test key
+          GEMINI_API_KEY: "ci-dummy-gemini-key-for-test-mocking"
+          # Disable Supabase remote syncing in CI environment
+          USE_SUPABASE: "false"
+        # Run pytest across backend tests with verbose output
+        run: |
+          # Execute pytest test runner targeting the backend test suite
+          python -m pytest backend/tests/test_backend.py -v
+
+  # Job 2: Frontend TypeScript Verification and Vite Build
+  frontend-build:
+    # Human-readable label for frontend build job
+    name: Frontend TypeScript & Vite Production Build
+    # Virtual host runner operating system environment
+    runs-on: ubuntu-latest
+
+    # Sequence of operational steps
+    steps:
+      # Step 1: Clone and checkout repository source code
+      - name: Checkout Source Code
+        # Official GitHub Action to clone git repository
+        uses: actions/checkout@v4
+
+      # Step 2: Configure Node.js runtime environment
+      - name: Set up Node.js 20
+        # Official GitHub Action to install Node.js
+        uses: actions/setup-node@v4
+        # Configuration parameters for Node action
+        with:
+          # Target LTS Node.js version
+          node-version: 20
+          # Cache npm packages using package-lock.json for speed
+          cache: "npm"
+          # Path to frontend package-lock.json file
+          cache-dependency-path: "frontend/package-lock.json"
+
+      # Step 3: Install frontend dependencies
+      - name: Install Node Dependencies
+        # Install packages using clean install from lockfile
+        run: |
+          # Change directory to frontend and execute npm clean install
+          npm --prefix frontend ci
+
+      # Step 4: Execute production bundle build
+      - name: Build Frontend Application
+        # Compile TypeScript and bundle assets with Vite
+        run: |
+          # Execute vite build script via npm
+          npm --prefix frontend run build
+
+  # Job 3: Docker Configuration & Compose Linting
+  docker-lint:
+    # Human-readable label for Docker validation job
+    name: Dockerfile & Compose Verification
+    # Virtual host runner operating system environment
+    runs-on: ubuntu-latest
+
+    # Sequence of operational steps
+    steps:
+      # Step 1: Clone and checkout repository source code
+      - name: Checkout Source Code
+        # Official GitHub Action to clone git repository
+        uses: actions/checkout@v4
+
+      # Step 2: Validate docker-compose file syntax
+      - name: Validate Docker Compose Configuration
+        # Validate that docker-compose.yml parses cleanly without schema syntax errors
+        run: |
+          # Execute docker compose config command to validate syntax
+          docker compose config

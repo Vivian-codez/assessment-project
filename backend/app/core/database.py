@@ -174,6 +174,34 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+def ensure_schema_columns(target_engine):
+    """Ensure newly added columns exist in SQLite or PostgreSQL databases."""
+    try:
+        with target_engine.connect() as conn:
+            for col_sql in [
+                "ALTER TABLE courses ADD COLUMN deleted_at TIMESTAMP;",
+                "ALTER TABLE assignments ADD COLUMN deleted_at TIMESTAMP;",
+                "ALTER TABLE submissions ADD COLUMN deleted_at TIMESTAMP;",
+                "ALTER TABLE students ADD COLUMN deleted_at TIMESTAMP;",
+                "ALTER TABLE rubrics ADD COLUMN deleted_at TIMESTAMP;",
+                "ALTER TABLE draft_grades ADD COLUMN criteria_breakdown JSON DEFAULT '[]';",
+                "ALTER TABLE draft_grades ADD COLUMN plagiarism_report JSON DEFAULT '{}';",
+                "ALTER TABLE draft_grades ADD COLUMN feedback TEXT;",
+                "ALTER TABLE draft_grades ADD COLUMN confidence REAL DEFAULT 0.9;",
+            ]:
+                try:
+                    conn.execute(text(col_sql))
+                    conn.commit()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+# Ensure schema columns exist on startup
+ensure_schema_columns(engine)
+
+
 def get_db_pool_status() -> Dict[str, Any]:
     """Retrieve detailed runtime pool statistics and health parameters."""
     pool = engine.pool
@@ -247,6 +275,14 @@ def init_db():
     with engine.connect() as conn:
         for col_sql in [
             "ALTER TABLE users ADD COLUMN full_name VARCHAR(255);",
+            "ALTER TABLE users ADD COLUMN organization_id VARCHAR(36);",
+            "ALTER TABLE users ADD COLUMN email_verified BOOLEAN DEFAULT 0;",
+            "ALTER TABLE users ADD COLUMN verification_token VARCHAR(255);",
+            "ALTER TABLE users ADD COLUMN password_reset_token VARCHAR(255);",
+            "ALTER TABLE users ADD COLUMN password_reset_expires_at TIMESTAMP;",
+            "ALTER TABLE courses ADD COLUMN user_id VARCHAR(64);",
+            "ALTER TABLE courses ADD COLUMN organization_id VARCHAR(36);",
+            "ALTER TABLE rubrics ADD COLUMN user_id VARCHAR(64);",
             "ALTER TABLE assignments ADD COLUMN reference_assignment_text TEXT;",
             "ALTER TABLE submissions ADD COLUMN file_content TEXT;",
             "ALTER TABLE submissions ADD COLUMN file_url TEXT;",
@@ -261,6 +297,11 @@ def init_db():
             "ALTER TABLE rubric_criteria ADD COLUMN criterion_name VARCHAR(255);",
             "ALTER TABLE rubric_criteria ADD COLUMN max_points REAL DEFAULT 4.0;",
             "ALTER TABLE rubric_criteria ADD COLUMN levels JSON DEFAULT '[]';",
+            "ALTER TABLE assignments ADD COLUMN status VARCHAR(32) DEFAULT 'Draft';",
+            "ALTER TABLE assignments ADD COLUMN assignment_type VARCHAR(64) DEFAULT 'homework';",
+            "ALTER TABLE assignments ADD COLUMN similarity_threshold REAL DEFAULT 70.0;",
+            "ALTER TABLE assignments ADD COLUMN starter_code TEXT;",
+            "ALTER TABLE integrity_flags ADD COLUMN status VARCHAR(32) DEFAULT 'new';",
         ]:
             try:
                 conn.execute(text(col_sql))

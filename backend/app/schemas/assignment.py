@@ -25,6 +25,40 @@ class AssignmentCreate(BaseModel):
     rubric_id: Optional[str] = None
     # Optional exemplar or reference solution text used for AI evaluation
     reference_assignment_text: Optional[str] = None
+    # Lifecycle status: Draft, Open, Grading, Reviewed, Published
+    status: str = "Draft"
+    # Assignment category: homework, exam, lab, project
+    assignment_type: str = "homework"
+    # Configurable peer-to-peer similarity alert threshold percentage
+    similarity_threshold: float = 70.0
+    # Optional starter template or boilerplate code
+    starter_code: Optional[str] = None
+
+
+# Schema for updating existing assignments
+class AssignmentUpdate(BaseModel):
+    # Optional course identifier
+    course_id: Optional[str] = None
+    # Optional updated title
+    title: Optional[str] = None
+    # Optional updated instructions
+    description: Optional[str] = None
+    # Optional updated deadline
+    due_date: Optional[datetime] = None
+    # Optional updated maximum score
+    max_score: Optional[float] = None
+    # Optional updated rubric ID
+    rubric_id: Optional[str] = None
+    # Optional updated reference solution
+    reference_assignment_text: Optional[str] = None
+    # Optional updated lifecycle status
+    status: Optional[str] = None
+    # Optional updated assignment category
+    assignment_type: Optional[str] = None
+    # Optional updated similarity threshold
+    similarity_threshold: Optional[float] = None
+    # Optional updated starter code
+    starter_code: Optional[str] = None
 
 
 # Schema for returning assignment data in API responses
@@ -48,5 +82,13 @@ class AssignmentResponse(BaseModel):
     rubric_id: Optional[str] = None
     # Optional exemplar or reference text for grading context
     reference_assignment_text: Optional[str] = None
+    # Lifecycle status: Draft, Open, Grading, Reviewed, Published
+    status: str = "Draft"
+    # Assignment type
+    assignment_type: str = "homework"
+    # Similarity threshold percentage
+    similarity_threshold: float = 70.0
+    # Starter code
+    starter_code: Optional[str] = None
     # Timestamp indicating when the assignment was created
     created_at: datetime

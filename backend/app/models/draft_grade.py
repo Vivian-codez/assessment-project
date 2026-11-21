@@ -29,6 +29,8 @@ class DraftGrade(Base):
     max_score = Column(Float, nullable=True, default=100.0)
     # Official final grade stamped and awarded only upon formal teacher approval
     final_score = Column(Float, nullable=True)  # Populated only upon Teacher Approval
+    # Evaluation confidence score (0.0 to 1.0)
+    confidence = Column(Float, nullable=True, default=0.9)
 
     # Structured rubric breakdown:
     # [{"criterion_name": "Understanding", "score": 25, "max": 30, "rationale": "..."}]

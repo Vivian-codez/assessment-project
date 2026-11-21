@@ -40,8 +40,8 @@ export const Route = createFileRoute("/login")({
 function LoginPage() {
   // Hook providing programmatic page routing
   const navigate = useNavigate();
-  // State toggling between sign-in mode and account registration mode
-  const [tab, setTab] = useState<"signin" | "signup">("signin");
+  // State toggling between sign-in mode, sign-up mode, and forgot password mode
+  const [tab, setTab] = useState<"signin" | "signup" | "forgot">("signin");
   // Form input state for user email address
   const [email, setEmail] = useState("");
   // Form input state for user password
@@ -66,6 +66,44 @@ function LoginPage() {
     }
     // Run on mount or when navigate hook reference changes
   }, [navigate]);
+
+  // Handler processing forgot password form submission
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    // Prevent default browser form submission refresh
+    e.preventDefault();
+    // Enable loading state spinner
+    setLoading(true);
+    // Clear previous error messages
+    setErrorMsg("");
+    // Clear previous success messages
+    setSuccessMsg("");
+
+    // Trim and lower-case the input email address
+    const cleanEmail = email.trim().toLowerCase();
+    // Validate presence of email address
+    if (!cleanEmail) {
+      // Set error message prompting for email
+      setErrorMsg("Please enter your registered email address.");
+      // Disable loading state
+      setLoading(false);
+      // Exit early
+      return;
+    }
+
+    // Attempt forgot password request via backend REST API
+    try {
+      // Dispatch forgot password request with email
+      const res = await api.auth.forgotPassword(cleanEmail);
+      // Display success confirmation message
+      setSuccessMsg(res.message || "Password recovery instructions sent to your email.");
+    } catch (err: any) {
+      // Display error message
+      setErrorMsg(err.message || "Unable to send reset instructions. Please try again.");
+    } finally {
+      // Disable loading state
+      setLoading(false);
+    }
+  };
 
   // Handler processing sign-in form submissions
   const handleSignIn = async (e: React.FormEvent) => {
@@ -267,6 +305,21 @@ function LoginPage() {
             <div>
               <div className="flex items-center justify-between">
                 <label className="block text-xs font-medium text-gray-700">Password</label>
+                {/* Forgot password mode toggle button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Switch to forgot password tab
+                    setTab("forgot");
+                    // Clear error alert
+                    setErrorMsg("");
+                    // Clear success alert
+                    setSuccessMsg("");
+                  }}
+                  className="text-xs text-indigo-600 hover:text-indigo-800 hover:underline"
+                >
+                  Forgot password?
+                </button>
               </div>
               <div className="relative mt-1">
                 {/* Padlock icon placed inside the input box */}
@@ -299,7 +352,7 @@ function LoginPage() {
               )}
             </Button>
           </form>
-        ) : (
+        ) : tab === "signup" ? (
           /* Sign Up form displayed when active tab is 'signup' */
           <form onSubmit={handleSignUp} className="space-y-4">
             {/* Full legal name input field group */}
@@ -381,6 +434,64 @@ function LoginPage() {
                 </span>
               )}
             </Button>
+          </form>
+        ) : (
+          /* Forgot Password form displayed when active tab is 'forgot' */
+          <form onSubmit={handleForgotPassword} className="space-y-4">
+            {/* Informational description */}
+            <p className="text-xs text-gray-600">
+              Enter your registered academic email address. We will verify your account and provide password recovery instructions.
+            </p>
+            {/* Email address input field group */}
+            <div>
+              <label className="block text-xs font-medium text-gray-700">Registered Email Address</label>
+              <div className="relative mt-1">
+                {/* Mail envelope icon inside the input box */}
+                <Mail className="absolute top-2.5 left-3 size-4 text-gray-400" />
+                <Input
+                  type="email"
+                  required
+                  placeholder="instructor@university.edu"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="pl-9 text-sm"
+                />
+              </div>
+            </div>
+
+            {/* Submit button for requesting password recovery */}
+            <Button
+              type="submit"
+              disabled={loading}
+              className="mt-2 w-full bg-[#1e293b] py-2.5 text-xs font-medium text-white hover:bg-[#0f172a]"
+            >
+              {loading ? (
+                <span className="flex items-center justify-center gap-2">
+                  <Loader2 className="size-4 animate-spin" /> Sending Instructions...
+                </span>
+              ) : (
+                <span className="flex items-center justify-center gap-2">
+                  Send Recovery Link <ArrowRight className="size-4" />
+                </span>
+              )}
+            </Button>
+
+            {/* Back to sign in action button */}
+            <div className="pt-2 text-center">
+              <button
+                type="button"
+                onClick={() => {
+                  // Revert back to signin mode
+                  setTab("signin");
+                  // Clear alerts
+                  setErrorMsg("");
+                  setSuccessMsg("");
+                }}
+                className="text-xs font-medium text-gray-600 hover:text-gray-900 hover:underline"
+              >
+                ← Back to Sign In
+              </button>
+            </div>
           </form>
         )}
 

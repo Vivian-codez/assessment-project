@@ -35,7 +35,11 @@ from app.schemas.rubric import (
     RubricCriterionSchema,
     # Schema representing individual tiered scoring levels
     RubricLevel,
+    # Schema representing parsed rubric file with descending tiers
+    Phase3ParsedRubricResponse,
 )
+# Import Gemini service singleton for AI rubric parsing
+from app.services.gemini_service import gemini_service
 # Import authentication dependency resolving the current instructor
 from app.api.v1.auth import get_current_instructor
 # Import Instructor database model
@@ -313,6 +317,62 @@ def create_rubric(
     return _format_rubric(new_rubric)
 
 
+# Helper function to extract text from an uploaded file content of any format
+def extract_text_from_file_content(content: bytes, filename: str) -> str:
+    # Docstring explaining multi-format text extraction for rubrics
+    """Extracts raw text from any uploaded rubric file format (PDF, DOCX, XLSX, TXT, CSV, Markdown)."""
+    ext = filename.lower().split(".")[-1] if "." in filename else ""
+    if ext in ["txt", "csv", "md"]:
+        try:
+            return content.decode("utf-8", errors="ignore")
+        except Exception:
+            return ""
+    elif ext == "docx":
+        try:
+            import docx
+            doc = docx.Document(io.BytesIO(content))
+            return "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+        except Exception:
+            try:
+                with zipfile.ZipFile(io.BytesIO(content)) as z:
+                    xml_content = z.read("word/document.xml")
+                    tree = ET.fromstring(xml_content)
+                    return "".join(tree.itertext())
+            except Exception:
+                return f"Uploaded DOCX Rubric: {filename}"
+    elif ext == "pdf":
+        try:
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(content))
+            return "\n".join([p.extract_text() or "" for p in reader.pages if p.extract_text()])
+        except Exception:
+            return f"Uploaded PDF Rubric: {filename}"
+    elif ext in ["xlsx", "xls"]:
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as z:
+                shared = []
+                if "xl/sharedStrings.xml" in z.namelist():
+                    tree = ET.fromstring(z.read("xl/sharedStrings.xml"))
+                    shared = [elem.text for elem in tree.iter() if elem.text]
+                return " ".join(shared) if shared else f"Spreadsheet Rubric: {filename}"
+        except Exception:
+            return f"Spreadsheet Rubric: {filename}"
+    return f"Uploaded Rubric Asset: {filename} ({len(content)} bytes)"
+
+
+# HTTP POST route handler parsing any rubric file into structured criteria for teacher review
+@router.post("/parse-rubric-file", response_model=Phase3ParsedRubricResponse)
+async def parse_rubric_file(
+    file: UploadFile = File(...),
+    current_instructor: Instructor = Depends(get_current_instructor),
+):
+    """Universal rubric file parser: accepts PDF, DOCX, XLSX, TXT, CSV, or images and uses Gemini to parse into matrix criteria with descending points."""
+    content = await file.read()
+    filename = file.filename or "rubric_document"
+    extracted_text = extract_text_from_file_content(content, filename)
+    return gemini_service.parse_rubric_document(extracted_text, filename)
+
+
 # HTTP POST route handler uploading a rubric file (PDF, DOCX, XLSX, TXT, CSV, images)
 @router.post("/upload", response_model=RubricResponse)
 async def upload_rubric_file(
@@ -329,90 +389,18 @@ async def upload_rubric_file(
     base_name = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ").strip().title()
     rubric_title = (title or base_name or "Uploaded Matrix Rubric").strip()
     content = await file.read()
+    extracted_text = extract_text_from_file_content(content, filename)
 
-    extracted_text = ""
-    ext = filename.lower().split(".")[-1] if "." in filename else ""
+    # Use Gemini rubric parser to parse criteria from file content
+    parsed_rubric = gemini_service.parse_rubric_document(extracted_text, filename)
 
-    if ext in ["txt", "csv", "md"]:
-        try:
-            extracted_text = content.decode("utf-8", errors="ignore")
-        except Exception:
-            extracted_text = ""
-    elif ext == "docx":
-        try:
-            import docx
-            doc = docx.Document(io.BytesIO(content))
-            extracted_text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
-        except Exception:
-            try:
-                with zipfile.ZipFile(io.BytesIO(content)) as z:
-                    xml_content = z.read("word/document.xml")
-                    tree = ET.fromstring(xml_content)
-                    extracted_text = "".join(tree.itertext())
-            except Exception:
-                extracted_text = f"Uploaded DOCX Rubric: {filename}"
-    elif ext == "pdf":
-        try:
-            import pypdf
-            reader = pypdf.PdfReader(io.BytesIO(content))
-            extracted_text = "\n".join([p.extract_text() or "" for p in reader.pages if p.extract_text()])
-        except Exception:
-            extracted_text = f"Uploaded PDF Rubric: {filename}"
-    elif ext in ["xlsx", "xls"]:
-        try:
-            with zipfile.ZipFile(io.BytesIO(content)) as z:
-                shared = []
-                if "xl/sharedStrings.xml" in z.namelist():
-                    tree = ET.fromstring(z.read("xl/sharedStrings.xml"))
-                    shared = [elem.text for elem in tree.iter() if elem.text]
-                extracted_text = " ".join(shared) if shared else f"Spreadsheet Rubric: {filename}"
-        except Exception:
-            extracted_text = f"Spreadsheet Rubric: {filename}"
-    else:
-        extracted_text = f"Attached Rubric Asset: {filename} ({len(content)} bytes)"
-
-    # Default criteria blueprint adapted to extracted content
-    sample_text = (extracted_text[:200] + "...") if len(extracted_text) > 200 else extracted_text
-    criteria_definitions = [
-        {
-            "name": "Correctness & Functional Implementation",
-            "desc": f"Adherence to functional requirements defined in {filename}. {sample_text}",
-            "tiers": [
-                ("Exemplary", 4.0, "All functional requirements completely and cleanly satisfied without bugs."),
-                ("Proficient", 3.0, "Minor discrepancies or edge-case oversights, but core requirements met."),
-                ("Developing", 2.0, "Partially functional; substantial deviations from rubric specifications."),
-                ("Unsatisfactory", 0.0, "Core requirements missing or program fails to execute."),
-            ],
-        },
-        {
-            "name": "Design, Structure & Modularity",
-            "desc": "Proper architectural structure, modular code organization, and naming conventions.",
-            "tiers": [
-                ("Exemplary", 4.0, "Modular architecture, clean encapsulation, and industry standard conventions."),
-                ("Proficient", 3.0, "Generally well structured with occasional redundancy or naming lapses."),
-                ("Developing", 2.0, "Monolithic design with poor modularity or unclear organization."),
-                ("Unsatisfactory", 0.0, "Unorganized or disjointed implementation structure."),
-            ],
-        },
-        {
-            "name": "Quality, Efficiency & Documentation",
-            "desc": "Code comments, documentation, computational efficiency, and robust error handling.",
-            "tiers": [
-                ("Exemplary", 4.0, "Thorough inline documentation, optimized complexity, and proactive error checks."),
-                ("Proficient", 3.0, "Adequate comments and reasonable performance with minor oversights."),
-                ("Developing", 2.0, "Sparse documentation, inefficient algorithms, or unhandled exceptions."),
-                ("Unsatisfactory", 0.0, "Missing documentation; frequent unhandled crashes or infinite loops."),
-            ],
-        },
-    ]
-
-    total_marks = sum(max(t[1] for t in c["tiers"]) for c in criteria_definitions)
+    total_marks = parsed_rubric.total_marks or 100.0
     rubric_id = str(uuid.uuid4())
 
     new_rubric = Rubric(
         id=rubric_id,
-        title=rubric_title,
-        name=rubric_title,
+        title=rubric_title or parsed_rubric.title,
+        name=rubric_title or parsed_rubric.title,
         classroom_id=target_id,
         course_id=target_id,
         total_marks=total_marks,
@@ -420,21 +408,21 @@ async def upload_rubric_file(
     )
     db.add(new_rubric)
 
-    for idx, c_def in enumerate(criteria_definitions):
+    for idx, c_def in enumerate(parsed_rubric.criteria):
         crit_id = str(uuid.uuid4())
         levels_data = [
-            {"level_name": lvl[0], "points": lvl[1], "description": lvl[2]}
-            for lvl in c_def["tiers"]
+            {"level_name": lvl.level_name, "points": lvl.points, "description": lvl.description}
+            for lvl in c_def.levels
         ]
         new_crit = RubricCriterion(
             id=crit_id,
             rubric_id=rubric_id,
-            criterion_name=c_def["name"],
-            name=c_def["name"],
-            description=c_def["desc"],
-            weight=100.0 / len(criteria_definitions),
-            max_points=max(l["points"] for l in levels_data),
-            max_score=max(l["points"] for l in levels_data),
+            criterion_name=c_def.criterion_name or f"Criterion {idx+1}",
+            name=c_def.criterion_name or f"Criterion {idx+1}",
+            description=c_def.description or "",
+            weight=c_def.weight if c_def.weight is not None else (100.0 / len(parsed_rubric.criteria)),
+            max_points=max((l["points"] for l in levels_data), default=4.0),
+            max_score=max((l["points"] for l in levels_data), default=4.0),
             order_index=idx,
             levels=levels_data,
         )
@@ -442,6 +430,7 @@ async def upload_rubric_file(
 
     db.commit()
     db.refresh(new_rubric)
+    return _format_rubric(new_rubric)
 
     return _format_rubric(new_rubric)
 

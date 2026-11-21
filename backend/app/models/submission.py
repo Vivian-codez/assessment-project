@@ -79,6 +79,8 @@ class Submission(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     # UTC timestamp when the submission record was last updated
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Optional soft-deletion timestamp indicating retention in trash bin prior to permanent purge
+    deleted_at = Column(DateTime, nullable=True)
 
     # Relationships
     # Many-to-one relationship mapping the parent assignment

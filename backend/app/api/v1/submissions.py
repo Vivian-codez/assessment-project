@@ -365,31 +365,110 @@ def _create_single_submission(
         # Set extracted_text to file_content_str
         extracted_text = file_content_str
 
-    # 4. Student metadata parsing
-    if custom_name and custom_name.strip():
-        # Set student_name to custom_name.strip()
-        student_name = custom_name.strip()
-    # Handle alternative fallback path
-    else:
-        # Set clean_stem to os.path.splitext(filename)[0].replace("_", " ").replace("-", " ")
-        clean_stem = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ")
-        # Set parts to clean_stem.split()
-        parts = clean_stem.split()
-        # Verify condition: len(parts) >= 2
-        if len(parts) >= 2:
-            # Set student_name to f"{parts[1].capitalize()} {parts[0].capitalize()}"
-            student_name = f"{parts[1].capitalize()} {parts[0].capitalize()}"
-        # Handle alternative fallback path
-        else:
-            # Set student_name to clean_stem.capitalize() or "Anonymous Student"
-            student_name = clean_stem.capitalize() or "Anonymous Student"
+    # 4. Student metadata parsing & matching against course roll call
+    student_id = None
+    is_unmatched = False
 
-    # Import the random module for system utilities
-    import random
-    # Set roll to custom_roll.strip() if (custom_roll and custom_roll.strip()) else f"2024-{random.randint(10, 99):03d}"
-    roll = custom_roll.strip() if (custom_roll and custom_roll.strip()) else f"2024-{random.randint(10, 99):03d}"
-    # Set email to custom_email.strip() if (custom_email and custom_email.strip()) else f"{student_name.lower().replace(' ', '.')}@university.edu"
-    email = custom_email.strip() if (custom_email and custom_email.strip()) else f"{student_name.lower().replace(' ', '.')}@university.edu"
+    if custom_name and custom_name.strip():
+        student_name = custom_name.strip()
+        roll = custom_roll.strip() if (custom_roll and custom_roll.strip()) else "UNMATCHED"
+        email = custom_email.strip() if (custom_email and custom_email.strip()) else f"{student_name.lower().replace(' ', '.')}@university.edu"
+    else:
+        # Load enrolled students for this assignment's course/classroom
+        enrolled_students = []
+        try:
+            from app.models.student import Student
+            assign = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+            if assign:
+                enrolled_students = db.query(Student).filter(
+                    (Student.classroom_id == assign.course_id) | 
+                    (Student.classroom_id == getattr(assign, "classroom_id", None))
+                ).all()
+        except Exception as e:
+            logger.warning(f"Could not load enrolled students for submission matching: {e}")
+
+        import re
+        clean_stem = os.path.splitext(filename)[0]
+        matched_student = None
+
+        # Pass 1: Direct roll number match against enrolled students
+        for s in enrolled_students:
+            s_roll = s.roll_number.strip()
+            if s_roll and re.search(r'(?i)(?:\b|[_\-\.\s])' + re.escape(s_roll) + r'(?:\b|[_\-\.\s])', clean_stem):
+                matched_student = s
+                break
+
+        # Pass 2: Student full name or first+last name match
+        if not matched_student:
+            for s in enrolled_students:
+                s_name = s.full_name.strip()
+                if s_name:
+                    name_clean = s_name.lower().replace("_", " ").replace("-", " ")
+                    stem_clean = clean_stem.lower().replace("_", " ").replace("-", " ")
+                    if name_clean in stem_clean:
+                        matched_student = s
+                        break
+                    parts = name_clean.split()
+                    if len(parts) >= 2 and parts[0] in stem_clean and parts[-1] in stem_clean:
+                        matched_student = s
+                        break
+
+        # Pass 3: Extract roll-like token with regex and match
+        if not matched_student:
+            roll_candidates = re.findall(r'(?i)\b([a-z0-9]+[_\-][0-9]+|\d{2,8}|[a-z]{1,4}\d{2,6})\b', clean_stem)
+            for cand in roll_candidates:
+                if cand.lower() not in {"assignment", "assign", "sub", "submission", "task", "project", "homework", "hw", "final", "doc", "pdf"}:
+                    for s in enrolled_students:
+                        if s.roll_number.strip().lower() == cand.strip().lower():
+                            matched_student = s
+                            break
+                    if matched_student:
+                        break
+
+        if matched_student:
+            student_id = matched_student.id
+            student_name = matched_student.full_name
+            roll = matched_student.roll_number
+            email = matched_student.email or f"{matched_student.full_name.lower().replace(' ', '.')}@university.edu"
+            is_unmatched = False
+        else:
+            # Fallback regex extraction or unmatched
+            candidate = None
+            roll_candidates = re.findall(r'(?i)\b([a-z0-9]+[_\-][0-9]+|\d{2,8}|[a-z]{1,4}\d{2,6})\b', clean_stem)
+            for cand in roll_candidates:
+                if cand.lower() not in {"assignment", "assign", "sub", "submission", "task", "project", "homework", "hw", "final", "doc", "pdf"}:
+                    candidate = cand
+                    break
+            roll = candidate if candidate else "UNMATCHED"
+            # Filter out non-alphabetic tokens and common assignment/programming task words
+            task_keywords = {
+                "assignment", "submission", "doc", "project", "hw", "task", "final",
+                "sort", "bubble", "search", "tree", "graph", "code", "lab", "test",
+                "solution", "impl", "algorithm", "exercise", "ex", "homework"
+            }
+            # Extract name words excluding digits and assignment task tokens
+            words = [w for w in clean_stem.replace("_", " ").replace("-", " ").split() if not any(c.isdigit() for c in w) and w.lower() not in task_keywords]
+            
+            # Common surnames to detect Last_First academic naming convention
+            common_surnames = {
+                "sharma", "singh", "kumar", "patel", "rao", "verma", "gupta", "das", "reddy",
+                "smith", "johnson", "williams", "brown", "jones", "garcia", "miller", "davis",
+                "rodriguez", "martinez", "hernandez", "lopez", "gonzalez", "wilson", "anderson",
+                "thomas", "taylor", "moore", "jackson", "martin", "lee", "perez", "thompson",
+                "white", "harris", "sanchez", "clark", "ramirez", "lewis", "robinson", "walker"
+            }
+            # Reconstruct standard First Last display name
+            if len(words) == 2 and words[0].lower() in common_surnames:
+                # Format as First Name then Last Name when uploaded as Last_First
+                student_name = f"{words[1].capitalize()} {words[0].capitalize()}"
+            elif words:
+                # Format capitalized words in extracted order
+                student_name = " ".join([w.capitalize() for w in words])
+            else:
+                # Default unmatched placeholder name
+                student_name = f"Unmatched Student ({filename})"
+            email = f"{clean_stem.lower().replace(' ', '.')}@university.edu"
+            is_unmatched = (roll == "UNMATCHED")
 
     # Set sub to Submission(
     sub = Submission(
@@ -397,6 +476,10 @@ def _create_single_submission(
         id=f"sub_{uuid.uuid4().hex[:8]}",
         # Execute statement: assignment_id=assignment_id
         assignment_id=assignment_id,
+        # Execute statement: student_id=student_id
+        student_id=student_id,
+        # Execute statement: student_identifier=f"{roll} - {student_name}"
+        student_identifier=f"{roll} - {student_name}",
         # Execute statement: file_name=filename
         file_name=filename,
         # Execute statement: file_path=file_path
@@ -411,9 +494,8 @@ def _create_single_submission(
         content=extracted_text or file_content_str,
         # Execute statement: file_content=file_content_str
         file_content=file_content_str,
-        # Execute statement: status="pending"
+        # Execute statement: status="pending",
         status="pending",
-    # Execute statement: )
     )
     # Uses FERPA transparent encryption setters
     sub.student_name = student_name
@@ -1706,6 +1788,7 @@ def get_assignment_submissions(
                 file_url=s.file_url,
                 # Execute statement: criteria_scores=crit
                 criteria_scores=crit,
+                is_unmatched=bool(not s.student_id or s.student_roll == "UNMATCHED"),
                 # Execute statement: feedback=fb
                 feedback=fb,
                 # Execute statement: plagiarism_report=plag

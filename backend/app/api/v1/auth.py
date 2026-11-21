@@ -1,128 +1,125 @@
-# Module docstring explaining authentication, user signup/signin, profile, and preference endpoints
-"""Authentication, User Sign-Up/Sign-In, Profile & Preferences API endpoints.
+# Module docstring explaining authentication, user lifecycle, and token security API endpoints
+"""Authentication, User Registration, Session Lifecycle & Token Management.
 
-Refactored to use standard, self-contained JWT authentication with direct
-PostgreSQL persistence via SQLAlchemy, fully decoupled from Supabase Auth.
+Provides enterprise-grade authentication with:
+- Bcrypt password hashing (cost factor 12)
+- Short-lived JWT access tokens (15 minutes)
+- Long-lived rotating refresh tokens in httpOnly, Secure, SameSite cookies
+- Redis token deny-list for instant revocation on logout
+- Sliding-window rate limiting on login attempts
+- Comprehensive lifecycle: signup/register, login, refresh, logout, email verification,
+  forgot password, reset password, change password, profile and preferences
+- Role-based authorization dependencies: get_current_user, require_teacher, require_admin
 """
 
-# Import uuid library to generate cryptographically unique random identifiers for entities
+# Import uuid library to generate cryptographically unique random identifiers
 import uuid
-# Import datetime, timedelta, and timezone from datetime module for UTC timestamps and expiration calculations
+# Import datetime, timedelta, and timezone from datetime module for UTC timestamping
 from datetime import datetime, timedelta, timezone
-# Import Optional type annotation for nullable function parameters and variables
-from typing import Optional
-# Import FastAPI core routing, dependency injection, HTTP exceptions, status codes, and request objects
-from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
+# Import typing annotations for optional values, dictionaries, and any types
+from typing import Optional, Dict, Any, Union, Tuple
+# Import FastAPI core routing, dependencies, HTTP exceptions, status codes, cookies, and request/response
+from fastapi import APIRouter, Depends, HTTPException, status, Header, Request, Response, Cookie
 # Import Session class from SQLAlchemy ORM for database transaction management
 from sqlalchemy.orm import Session
 
-# Import application settings singleton containing configuration constants
+# Import application configuration settings singleton
 from app.core.config import settings
-# Import database session dependency injector for yielding database connections
+# Import database session dependency injector
 from app.core.database import get_db
-# Import cryptographic password hashing, verification, and JWT generation/decoding utilities
+# Import security utilities for password hashing, token creation, verification, and refresh tokens
 from app.core.security import (
-    # Function to verify plaintext password against stored cryptographic hash
     verify_password,
-    # Function to hash plaintext password using bcrypt with 12 rounds
     get_password_hash,
-    # Function to generate signed JWT access tokens
     create_access_token,
-    # Function to decode and validate JWT access tokens
     decode_access_token,
-    # OAuth2 password bearer scheme instance for extracting bearer tokens
+    create_refresh_token,
+    hash_token,
     oauth2_scheme,
 )
-# Import application logger for logging diagnostic messages
+# Import Redis client utilities for token deny-list and sliding window rate limiting
+from app.core.redis_client import is_token_denylisted, add_token_to_denylist, check_rate_limit
+# Import application logger for security audit tracing
 from app.core.logging import logger
-# Import User and UserSession SQLAlchemy database models
+# Import User and UserSession models
 from app.models.user import User, UserSession
-# Import Instructor SQLAlchemy database model for instructional relation mapping
+# Import RefreshToken model for rotating sessions
+from app.models.refresh_token import RefreshToken
+# Import Instructor model for backward-compatible relational mapping
 from app.models.instructor import Instructor
-# Import Course SQLAlchemy database model for course management
+# Import Course model for course preferences
 from app.models.course import Course
-# Import Pydantic validation schemas for authentication request and response serialization
+# Import validation schemas for authentication request and response serialization
 from app.schemas.auth import (
-    # Schema validating user registration payload
     UserSignUp,
-    # Schema validating user login credentials payload
     UserLogin,
-    # Schema serializing user profile response data
     UserResponse,
-    # Schema validating educator preference update payloads
     TeacherPreferencesUpdate,
-    # Schema serializing combined token and user profile responses
     AuthResponse,
+    TokenRefreshRequest,
+    TokenRefreshResponse,
+    ChangePasswordRequest,
+    ForgotPasswordRequest,
+    ResetPasswordRequest,
+    VerifyEmailRequest,
 )
 
-# Initialize FastAPI API router instance for authentication and profile routes with prefix /auth
+# Initialize FastAPI API router instance for authentication with prefix /auth
 router = APIRouter(prefix="/auth", tags=["Authentication & Profile"])
 
 
 # Authentication dependency resolving authenticated User model from Bearer token
 def get_current_user(
-    # Extract access token string via OAuth2 password bearer dependency
     token: Optional[str] = Depends(oauth2_scheme),
-    # Optional raw Authorization header string fallback
     authorization: Optional[str] = Header(None),
-    # Inject active SQLAlchemy database session dependency
     db: Session = Depends(get_db),
 ) -> User:
-    # Function docstring explaining user resolution behavior
     """Authenticates request via JWT access token and returns PostgreSQL User.
 
     Extracts token from OAuth2 Bearer scheme or Authorization header,
-    validates the signature and expiration using local SECRET_KEY/HS256,
-    and retrieves the user record from the local database.
+    checks the Redis deny-list for revoked tokens, validates the signature
+    and expiration using HS256, and retrieves the active user from the database.
     """
-    # Assign extracted OAuth2 token to local variable
     raw_token = token
-    # Check if raw token is missing but Authorization header starts with Bearer prefix
+    # Check if raw token is missing but Authorization header has Bearer prefix
     if not raw_token and authorization and authorization.startswith("Bearer "):
-        # Extract token substring following the Bearer prefix and strip whitespace
         raw_token = authorization.split(" ")[1].strip()
 
-    # Check if no token was resolved from either source
+    # Reject request if no bearer token is present
     if not raw_token:
-        # Raise HTTP 401 Unauthorized exception requiring valid credentials
         raise HTTPException(
-            # Specify HTTP 401 status code
             status_code=status.HTTP_401_UNAUTHORIZED,
-            # Provide descriptive error explanation message
             detail="Authentication required. Please provide a valid Bearer token.",
-            # Include WWW-Authenticate header with Bearer realm
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Check if the access token has been explicitly revoked or placed on the deny-list
+    if is_token_denylisted(raw_token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked or session terminated. Please sign in again.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
     # Decode and verify JWT token payload using secret key and HS256 algorithm
     payload = decode_access_token(raw_token)
-    # Validate that payload is a non-empty dictionary
     if not payload or not isinstance(payload, dict):
-        # Raise HTTP 401 Unauthorized exception for invalid or expired token
         raise HTTPException(
-            # Specify HTTP 401 status code
             status_code=status.HTTP_401_UNAUTHORIZED,
-            # Provide descriptive message to prompt re-authentication
             detail="Invalid or expired authentication token. Please sign in again.",
-            # Include WWW-Authenticate header with Bearer realm
             headers={"WWW-Authenticate": "Bearer"},
         )
 
     # Extract user identifier from token subject claim
     user_id = payload.get("sub")
-    # Verify that subject claim exists in decoded token payload
     if not user_id:
-        # Raise HTTP 401 Unauthorized exception for malformed token
         raise HTTPException(
-            # Specify HTTP 401 status code
             status_code=status.HTTP_401_UNAUTHORIZED,
-            # Provide error explanation
             detail="Token payload missing subject identifier.",
-            # Include WWW-Authenticate header with Bearer realm
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Check session revocation / invalidation status in database
+    # Check session revocation status in database
     session = db.query(UserSession).filter(UserSession.token == raw_token).first()
     if session and session.expires_at:
         now_dt = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -136,446 +133,557 @@ def get_current_user(
 
     # Query PostgreSQL User table matching either user id or email address
     user = db.query(User).filter((User.id == str(user_id)) | (User.email == str(user_id))).first()
-    # Check if user record was not found in users table
     if not user:
-        # Check if legacy instructor record exists with this id or email
+        # Check backward-compatible instructor mirror
         instructor = db.query(Instructor).filter((Instructor.id == str(user_id)) | (Instructor.email == str(user_id))).first()
-        # Check if matching instructor record was found
         if instructor:
-            # Instantiate new User record mirroring instructor data
             user = User(
-                # Mirror instructor id as user primary key
                 id=instructor.id,
-                # Mirror instructor display name
                 name=instructor.name,
-                # Mirror full name attribute
                 full_name=instructor.name,
-                # Mirror email address
                 email=instructor.email,
-                # Mirror user role
                 role=instructor.role,
-                # Mirror password hash
                 hashed_password=instructor.hashed_password,
-                # Mirror existing preference dictionary or default to empty dict
                 preferences=instructor.preferences or {},
             )
-            # Stage new user entity into database session
             db.add(user)
-            # Commit transaction to persist user record to PostgreSQL
             db.commit()
-            # Refresh user instance to load generated timestamps
             db.refresh(user)
-        # Handle case where neither user nor instructor record exists
         else:
-            # Raise HTTP 401 Unauthorized indicating user does not exist
             raise HTTPException(
-                # Specify HTTP 401 status code
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                # Provide descriptive error detail message
                 detail="User account not found or deactivated.",
-                # Include WWW-Authenticate header with Bearer realm
                 headers={"WWW-Authenticate": "Bearer"},
             )
 
-    # Return authenticated User database model instance
     return user
 
 
-# Relational dependency resolving or synchronizing Instructor model from authenticated User
+# Role-based dependency ensuring authenticated user has educator privileges
+def require_teacher(current_user: User = Depends(get_current_user)) -> User:
+    """Dependency verifying the authenticated user possesses teacher or instructor role."""
+    role_lower = (current_user.role or "").lower()
+    allowed_keywords = {"instructor", "teacher", "professor", "faculty", "educator", "admin"}
+    if not any(k in role_lower for k in allowed_keywords):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Educator or faculty access permissions required.",
+        )
+    return current_user
+
+
+# Role-based dependency ensuring authenticated user has institutional administrative privileges
+def require_admin(current_user: User = Depends(get_current_user)) -> User:
+    """Dependency verifying the authenticated user possesses administrator role."""
+    role_lower = (current_user.role or "").lower()
+    if "admin" not in role_lower:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Institutional administrator access permissions required.",
+        )
+    return current_user
+
+
+# Backward-compatible dependency resolving Instructor model for legacy routes
 def get_current_instructor(
-    # Resolve authenticated User entity from get_current_user dependency
     user: User = Depends(get_current_user),
-    # Inject active SQLAlchemy database session dependency
     db: Session = Depends(get_db),
 ) -> Instructor:
-    # Function docstring explaining instructor resolution behavior
     """Dependency that returns the current Instructor model for course/grading relations."""
-    # Query database for Instructor record matching user id or email
     instructor = db.query(Instructor).filter((Instructor.id == user.id) | (Instructor.email == user.email)).first()
-    # Check if corresponding Instructor record does not exist
     if not instructor:
-        # Compute display name from full_name, name, or capitalized email username prefix
         display_name = user.full_name or user.name or user.email.split("@")[0].capitalize()
-        # Instantiate new Instructor entity mirroring user attributes
         instructor = Instructor(
-            # Assign user id as instructor identifier
             id=user.id,
-            # Assign resolved display name
             name=display_name,
-            # Assign user email address
             email=user.email,
-            # Assign user academic role
             role=user.role,
-            # Mirror hashed password
             hashed_password=user.hashed_password,
-            # Mirror user preferences or default to empty dictionary
             preferences=user.preferences or {},
         )
-        # Stage new instructor record in database session
         db.add(instructor)
-        # Commit transaction to PostgreSQL database
         db.commit()
-        # Refresh instructor instance from database
         db.refresh(instructor)
-    # Return resolved Instructor database model instance
     return instructor
 
 
-# HTTP POST route handler for registering new user accounts
+def _issue_tokens_and_set_cookies(
+    response: Optional[Response],
+    user: User,
+    db: Session,
+    request: Optional[Request] = None,
+) -> Tuple[str, str, UserResponse]:
+    """Helper creating access token, rotating refresh token, and setting secure httpOnly cookie."""
+    # Generate short-lived JWT access token
+    access_token = create_access_token({"sub": str(user.id)})
+
+    # Generate cryptographically secure random refresh token and its SHA-256 hash
+    raw_refresh_token, refresh_hash = create_refresh_token(str(user.id))
+
+    # Calculate refresh token expiration timestamp
+    refresh_expires = datetime.now(timezone.utc) + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+
+    # Extract client IP and User Agent for session audit
+    client_ip = request.client.host if request and request.client else None
+    user_agent = request.headers.get("user-agent") if request else None
+
+    # Persist refresh token hash to database
+    refresh_record = RefreshToken(
+        id=str(uuid.uuid4()),
+        user_id=str(user.id),
+        token_hash=refresh_hash,
+        expires_at=refresh_expires,
+        revoked=False,
+        ip_address=client_ip,
+        user_agent=user_agent,
+    )
+    db.add(refresh_record)
+
+    # Also record in active user sessions
+    user_session = UserSession(
+        id=f"sess_{uuid.uuid4().hex[:12]}",
+        user_id=str(user.id),
+        token=access_token,
+        user_agent=user_agent,
+        ip_address=client_ip,
+        expires_at=datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
+    db.add(user_session)
+    db.commit()
+
+    # Set httpOnly cookie on response if response object is available
+    if response:
+        response.set_cookie(
+            key="verism_refresh_token",
+            value=raw_refresh_token,
+            httponly=True,
+            secure=settings.COOKIE_SECURE,
+            samesite=settings.COOKIE_SAMESITE,
+            max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+            path="/",
+        )
+
+    # Construct serialized user profile response
+    display_name = user.full_name or user.name or user.email.split("@")[0].capitalize()
+    user_resp = UserResponse(
+        id=str(user.id),
+        name=display_name,
+        full_name=display_name,
+        email=user.email,
+        role=user.role,
+        preferences=user.preferences or {},
+    )
+
+    return access_token, raw_refresh_token, user_resp
+
+
+# HTTP POST route handler for registering new user accounts (aliased to /signup and /register)
 @router.post("/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-def sign_up(
-    # Validate incoming JSON registration payload using UserSignUp schema
+@router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
+def register_user(
     signup_data: UserSignUp,
-    # Inject active SQLAlchemy database session dependency
+    response: Response,
+    request: Request,
     db: Session = Depends(get_db),
 ):
-    # Route docstring describing signup functionality
-    """Register a new user account with direct PostgreSQL persistence and issue JWT."""
-    # Clean, normalize, and lowercase registration email address
+    """Register a new user account with direct PostgreSQL persistence, issuing access token & httpOnly cookie."""
     email_clean = signup_data.email.lower().strip()
-    # Check if an existing user already exists with this email address
     existing_user = db.query(User).filter(User.email == email_clean).first()
-    # Check if query returned an existing user
     if existing_user:
-        # Raise HTTP 400 Bad Request exception to prevent duplicate accounts
         raise HTTPException(
-            # Specify HTTP 400 status code
             status_code=status.HTTP_400_BAD_REQUEST,
-            # Return human-readable message instructing user to sign in
             detail="An account with this email address already exists. Please sign in.",
         )
 
-    # Resolve display name from full_name or legacy name field
     display_name = (signup_data.full_name or signup_data.name or "").strip()
-    # Fallback to email username prefix if display name is empty
     if not display_name:
-        # Capitalize email username prefix as fallback name
         display_name = email_clean.split("@")[0].capitalize()
 
-    # Generate cryptographically unique UUID string identifier for new user
     user_id = str(uuid.uuid4())
-    # Hash plaintext password using bcrypt with 12 rounds
     hashed_pwd = get_password_hash(signup_data.password)
-    # Define default educator UI and grading preferences dictionary
     default_prefs = {
-        # Enable showing similarity context cards by default
         "show_similarity_context": True,
-        # Do not require mandatory notes for score overrides by default
         "require_teacher_notes_on_overrides": False,
-        # Enable displaying AI content indicator probability flag
         "include_ai_content_indicator": True,
     }
 
-    # Instantiate new User model instance with sanitized user credentials
     new_user = User(
-        # Set generated unique user UUID
         id=user_id,
-        # Set full name attribute
         full_name=display_name,
-        # Set legacy name attribute
         name=display_name,
-        # Set validated email address
         email=email_clean,
-        # Set academic role or fallback to default Computer Science title
         role=signup_data.role or "Instructor · Computer Science",
-        # Set securely hashed bcrypt password
         hashed_password=hashed_pwd,
-        # Set default educator preferences dictionary
         preferences=default_prefs,
+        email_verified=False,
+        verification_token=uuid.uuid4().hex,
     )
-    # Stage new user entity into database session
     db.add(new_user)
 
-    # Mirror as Instructor entity to satisfy foreign key relationships in courses and assignments
+    # Mirror as Instructor entity for backward-compatible relations
     new_instructor = Instructor(
-        # Match instructor primary key with user id
         id=user_id,
-        # Set instructor display name
         name=display_name,
-        # Set instructor email address
         email=email_clean,
-        # Set instructor academic role
         role=signup_data.role or "Instructor · Computer Science",
-        # Set securely hashed bcrypt password
         hashed_password=hashed_pwd,
-        # Set default educator preferences dictionary
         preferences=default_prefs,
     )
-    # Stage new instructor entity into database session
     db.add(new_instructor)
-    # Commit transaction to PostgreSQL database
     db.commit()
-    # Refresh new_user instance to populate database default fields
     db.refresh(new_user)
 
-    # Generate signed JWT Bearer access token containing user id in sub claim
-    token = create_access_token({"sub": str(new_user.id)})
-    # Generate unique alphanumeric session identifier
-    session_id = f"sess_{uuid.uuid4().hex[:12]}"
-    # Calculate session expiration datetime in UTC
-    expires = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    # Instantiate UserSession entity to track active login session in PostgreSQL
-    user_session = UserSession(
-        # Set unique session identifier
-        id=session_id,
-        # Link session to newly created user id
-        user_id=new_user.id,
-        # Store issued JWT access token string
-        token=token,
-        # Store absolute expiration timestamp
-        expires_at=expires,
-    )
-    # Stage new session entity into database session
-    db.add(user_session)
-    # Commit session transaction to PostgreSQL database
-    db.commit()
-
-    # Construct serialized UserResponse schema representation
-    user_resp = UserResponse(
-        # Convert user id to string
-        id=str(new_user.id),
-        # Set display name
-        name=display_name,
-        # Set full name
-        full_name=display_name,
-        # Set email address
-        email=new_user.email,
-        # Set academic role
-        role=new_user.role,
-        # Return user preferences dictionary or fallback to defaults
-        preferences=new_user.preferences or default_prefs,
-    )
-    # Return AuthResponse containing issued JWT access token and user profile
-    return AuthResponse(access_token=token, token_type="bearer", user=user_resp)
+    # Issue tokens and set secure rotating refresh cookie
+    access_token, _, user_resp = _issue_tokens_and_set_cookies(response, new_user, db, request)
+    return AuthResponse(access_token=access_token, token_type="bearer", user=user_resp)
 
 
-# HTTP POST route handler for authenticating existing users and issuing JWT tokens
+# HTTP POST route handler for authenticating existing users and issuing tokens
 @router.post("/login", response_model=AuthResponse)
 async def login(
-    # Inject FastAPI raw Request object to handle JSON and form data uniformly
     request: Request,
-    # Inject active SQLAlchemy database session dependency
+    response: Response,
     db: Session = Depends(get_db),
 ):
-    # Route docstring describing login credentials processing
-    """Authenticate credentials via PostgreSQL and issue standard JWT Bearer token.
-
-    Accepts both JSON payloads (`{ "email": "...", "password": "..." }`) and
-    standard OAuth2 password form data (`username` and `password`).
-    """
-    # Extract Content-Type header string from incoming HTTP request
+    """Authenticate credentials via PostgreSQL, enforce rate limiting, and issue tokens."""
     content_type = request.headers.get("content-type", "")
-    # Initialize email variable to None
     email = None
-    # Initialize password variable to None
     password = None
 
-    # Check if incoming request body is formatted as JSON
     if "application/json" in content_type:
-        # Wrap JSON parsing in try block to handle malformed JSON bodies gracefully
         try:
-            # Asynchronously parse incoming JSON request body dictionary
             body = await request.json()
-            # Extract email or username key from parsed JSON dictionary
             email = body.get("email") or body.get("username")
-            # Extract password string from parsed JSON dictionary
             password = body.get("password")
-        # Catch JSON decoding errors
         except Exception:
-            # Pass to allow fallback checks
             pass
-    # Check if incoming request body is formatted as URL-encoded or multipart form data
     elif "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
-        # Wrap form parsing in try block
         try:
-            # Asynchronously parse form data fields
             form = await request.form()
-            # Extract username or email field from form data
             email = form.get("username") or form.get("email")
-            # Extract password field from form data
             password = form.get("password")
-        # Catch form parsing exceptions
         except Exception:
-            # Pass to allow fallback checks
             pass
-    # Handle requests with missing or alternative content-type headers
     else:
-        # Attempt fallback JSON parsing first
         try:
-            # Parse body as JSON
             body = await request.json()
-            # Extract email or username
             email = body.get("email") or body.get("username")
-            # Extract password
             password = body.get("password")
-        # Handle non-JSON payload fallback
         except Exception:
-            # Attempt fallback form data parsing
             try:
-                # Parse body as form data
                 form = await request.form()
-                # Extract username or email
                 email = form.get("username") or form.get("email")
-                # Extract password
                 password = form.get("password")
-            # Catch all parsing exceptions
             except Exception:
-                # Pass gracefully
                 pass
 
-    # Validate that both email and password were provided
     if not email or not password:
-        # Raise HTTP 400 Bad Request exception for missing credentials
         raise HTTPException(
-            # Specify HTTP 400 status code
             status_code=status.HTTP_400_BAD_REQUEST,
-            # Provide error detail message
             detail="Email and password credentials are required.",
         )
 
-    # Normalize, clean, and lowercase provided email address string
     email_clean = str(email).lower().strip()
-    # Query PostgreSQL User table matching cleaned email address
-    user = db.query(User).filter(User.email == email_clean).first()
-    # Query PostgreSQL Instructor table matching cleaned email address
-    instructor = db.query(Instructor).filter(Instructor.email == email_clean).first()
+    client_ip = request.client.host if request.client else "unknown"
 
-    # Identify primary matched database record from user or instructor tables
-    matched_record = user or instructor
-    # Verify that matched record exists and plain password matches stored bcrypt hash
-    if not matched_record or not verify_password(str(password), matched_record.hashed_password):
-        # Raise HTTP 401 Unauthorized exception on credential mismatch
+    # Enforce sliding-window rate limit on email and IP to thwart brute-force attacks
+    allowed_email, _ = check_rate_limit(f"login:email:{email_clean}", max_attempts=5, window_seconds=300)
+    allowed_ip, _ = check_rate_limit(f"login:ip:{client_ip}", max_attempts=20, window_seconds=300)
+    if not allowed_email or not allowed_ip:
         raise HTTPException(
-            # Specify HTTP 401 status code
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed login attempts. Please try again in 5 minutes.",
+        )
+
+    # Query user account matching cleaned email address
+    user = db.query(User).filter(User.email == email_clean).first()
+    instructor = db.query(Instructor).filter(Instructor.email == email_clean).first()
+    matched_record = user or instructor
+
+    if not matched_record or not verify_password(str(password), matched_record.hashed_password):
+        raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            # Provide security error detail message
             detail="Invalid email or password. Please verify your credentials.",
-            # Include WWW-Authenticate header with Bearer realm
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    # Check if user record exists without a corresponding instructor record
-    if user and not instructor:
-        # Compute display name from user attributes
-        display_name = user.full_name or user.name or user.email.split("@")[0].capitalize()
-        # Instantiate mirrored Instructor record
-        instructor = Instructor(
-            # Mirror user id
-            id=user.id,
-            # Mirror display name
-            name=display_name,
-            # Mirror email address
-            email=user.email,
-            # Mirror academic role
-            role=user.role,
-            # Mirror hashed password
-            hashed_password=user.hashed_password,
-            # Mirror preferences or default to empty dict
-            preferences=user.preferences or {},
-        )
-        # Stage new instructor record into database session
-        db.add(instructor)
-        # Commit transaction to PostgreSQL
-        db.commit()
-    # Check if instructor record exists without a corresponding user record
-    elif instructor and not user:
-        # Instantiate mirrored User record
+    # Ensure User record exists
+    if not user and instructor:
         user = User(
-            # Mirror instructor id
             id=instructor.id,
-            # Mirror name
             name=instructor.name,
-            # Mirror full name
             full_name=instructor.name,
-            # Mirror email address
             email=instructor.email,
-            # Mirror academic role
             role=instructor.role,
-            # Mirror hashed password
             hashed_password=instructor.hashed_password,
-            # Mirror preferences or default to empty dict
             preferences=instructor.preferences or {},
         )
-        # Stage new user record into database session
         db.add(user)
-        # Commit transaction to PostgreSQL
         db.commit()
+        db.refresh(user)
 
-    # Generate signed JWT Bearer access token containing authenticated user id
-    token = create_access_token({"sub": str(matched_record.id)})
-    # Generate unique alphanumeric session identifier
-    session_id = f"sess_{uuid.uuid4().hex[:12]}"
-    # Calculate session expiration datetime in UTC
-    expires = datetime.now(timezone.utc) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    # Instantiate UserSession record to track active session
-    user_session = UserSession(
-        # Set session identifier
-        id=session_id,
-        # Link session to matched user id
-        user_id=matched_record.id,
-        # Store issued JWT access token string
-        token=token,
-        # Store expiration timestamp
-        expires_at=expires,
+    # Issue tokens and set secure rotating refresh cookie
+    access_token, _, user_resp = _issue_tokens_and_set_cookies(response, user, db, request)
+    return AuthResponse(access_token=access_token, token_type="bearer", user=user_resp)
+
+
+# HTTP POST route handler for rotating refresh tokens and issuing new access tokens
+@router.post("/refresh", response_model=TokenRefreshResponse)
+def refresh_token_endpoint(
+    request: Request,
+    response: Response,
+    payload: Optional[TokenRefreshRequest] = None,
+    verism_refresh_token: Optional[str] = Cookie(None),
+    db: Session = Depends(get_db),
+):
+    """Rotates refresh token and issues a new short-lived access token."""
+    # Extract raw refresh token from cookie or payload fallback
+    raw_refresh = verism_refresh_token
+    if not raw_refresh and payload and payload.refresh_token:
+        raw_refresh = payload.refresh_token
+
+    if not raw_refresh:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token required in cookie or request body.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Compute SHA-256 hash of provided refresh token
+    target_hash = hash_token(raw_refresh)
+    # Query matching token in database
+    token_record = db.query(RefreshToken).filter(RefreshToken.token_hash == target_hash).first()
+
+    if not token_record or token_record.revoked:
+        # Clear invalid cookie on failure
+        response.delete_cookie(key="verism_refresh_token", path="/")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or revoked refresh token. Please sign in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Capture current UTC time for expiry comparison
+    now_utc = datetime.now(timezone.utc)
+    # Extract token expiration timestamp
+    expires_at = token_record.expires_at
+    # Ensure expiration timestamp has UTC timezone awareness for comparison
+    if expires_at and expires_at.tzinfo is None:
+        # Attach UTC timezone to naive timestamp
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    # Check if refresh token has passed its expiration timestamp
+    if expires_at < now_utc:
+        # Mark expired token as revoked and delete cookie
+        token_record.revoked = True
+        # Persist revoked status in database
+        db.commit()
+        # Instruct browser client to remove refresh cookie
+        response.delete_cookie(key="verism_refresh_token", path="/")
+        # Raise 401 Unauthorized indicating expired token
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Refresh token has expired. Please sign in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Revoke current refresh token to enforce single-use rotation
+    token_record.revoked = True
+
+    # Retrieve user
+    user = db.query(User).filter(User.id == token_record.user_id).first()
+    if not user:
+        response.delete_cookie(key="verism_refresh_token", path="/")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account no longer exists.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Issue new access token and new rotated refresh token
+    new_access_token = create_access_token({"sub": str(user.id)})
+    new_raw_refresh, new_refresh_hash = create_refresh_token(str(user.id))
+    new_expires = now_utc + timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
+
+    client_ip = request.client.host if request.client else None
+    user_agent = request.headers.get("user-agent")
+
+    new_refresh_record = RefreshToken(
+        id=str(uuid.uuid4()),
+        user_id=str(user.id),
+        token_hash=new_refresh_hash,
+        expires_at=new_expires,
+        revoked=False,
+        ip_address=client_ip,
+        user_agent=user_agent,
     )
-    # Stage new session entity into database session
-    db.add(user_session)
-    # Commit session transaction to PostgreSQL
+    db.add(new_refresh_record)
     db.commit()
 
-    # Resolve display name across user, instructor, and email fallback
-    display_name = (
-        # Check user full_name attribute
-        getattr(user, "full_name", None)
-        # Check user name attribute
-        or getattr(user, "name", None)
-        # Check instructor name attribute
-        or getattr(matched_record, "name", "")
-        # Fallback to capitalized email prefix
-        or email_clean.split("@")[0].capitalize()
+    # Update httpOnly cookie with rotated refresh token
+    response.set_cookie(
+        key="verism_refresh_token",
+        value=new_raw_refresh,
+        httponly=True,
+        secure=settings.COOKIE_SECURE,
+        samesite=settings.COOKIE_SAMESITE,
+        max_age=settings.REFRESH_TOKEN_EXPIRE_DAYS * 86400,
+        path="/",
     )
-    # Construct serialized UserResponse schema representation
-    user_resp = UserResponse(
-        # Convert user id to string
-        id=str(matched_record.id),
-        # Set display name
-        name=display_name,
-        # Set full name
-        full_name=display_name,
-        # Set email address
-        email=matched_record.email,
-        # Set academic role
-        role=matched_record.role,
-        # Retrieve user preferences or default to empty dictionary
-        preferences=getattr(matched_record, "preferences", {}) or {},
-    )
-    # Return AuthResponse containing issued JWT access token and user profile
-    return AuthResponse(access_token=token, token_type="bearer", user=user_resp)
+
+    return TokenRefreshResponse(access_token=new_access_token, token_type="bearer")
+
+
+# HTTP POST route handler for revoking user session tokens and clearing cookies upon sign out
+@router.post("/logout")
+def logout(
+    response: Response,
+    request: Request,
+    authorization: Optional[str] = Header(None),
+    token: Optional[str] = Depends(oauth2_scheme),
+    verism_refresh_token: Optional[str] = Cookie(None),
+    db: Session = Depends(get_db),
+):
+    """Log out user, revoke refresh token, clear cookies, and add access token to Redis deny-list."""
+    raw_token = token
+    if not raw_token and authorization and authorization.startswith("Bearer "):
+        raw_token = authorization.split(" ")[1].strip()
+
+    # Revoke access token in Redis deny-list
+    if raw_token:
+        add_token_to_denylist(raw_token, ttl_seconds=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+        # Terminate active UserSession in database
+        past_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
+        session = db.query(UserSession).filter(UserSession.token == raw_token).first()
+        if session:
+            session.expires_at = past_time
+            db.commit()
+
+    # Revoke refresh token in database if cookie present
+    if verism_refresh_token:
+        rf_hash = hash_token(verism_refresh_token)
+        rf_record = db.query(RefreshToken).filter(RefreshToken.token_hash == rf_hash).first()
+        if rf_record:
+            rf_record.revoked = True
+            db.commit()
+
+    # Clear refresh token cookie from browser client
+    response.delete_cookie(key="verism_refresh_token", path="/")
+    return {"message": "Signed out successfully. Session invalidated."}
+
+
+# HTTP POST route handler for verifying user email addresses
+@router.post("/verify-email")
+def verify_email(
+    payload: VerifyEmailRequest,
+    db: Session = Depends(get_db),
+):
+    """Verify user email address using verification token."""
+    user = db.query(User).filter(User.verification_token == payload.token).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired email verification token.",
+        )
+
+    user.email_verified = True
+    user.verification_token = None
+    db.commit()
+    return {"message": "Email verified successfully."}
+
+
+# HTTP POST route handler for initiating password reset requests
+@router.post("/forgot-password")
+def forgot_password(
+    payload: ForgotPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    """Generate password reset token and send instructions (prevents user enumeration)."""
+    email_clean = payload.email.lower().strip()
+    user = db.query(User).filter(User.email == email_clean).first()
+
+    if user:
+        user.password_reset_token = uuid.uuid4().hex
+        user.password_reset_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+        db.commit()
+        logger.info(f"[AUTH] Generated password reset token for user {user.id}")
+
+    # Always return success message to avoid leaking registered user addresses
+    return {"message": "If this email is registered, password reset instructions have been sent."}
+
+
+# HTTP POST route handler for resetting password with cryptographic token
+@router.post("/reset-password")
+def reset_password(
+    payload: ResetPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    """Reset user password using valid, unexpired reset token."""
+    # Capture current UTC time for comparison
+    now_utc = datetime.now(timezone.utc)
+    # Query user by reset token
+    user = db.query(User).filter(User.password_reset_token == payload.token).first()
+    # Extract reset expiration timestamp if user found
+    reset_expiry = user.password_reset_expires_at if user else None
+    # Ensure expiration timestamp has UTC timezone awareness for comparison
+    if reset_expiry and reset_expiry.tzinfo is None:
+        # Attach UTC timezone to naive timestamp
+        reset_expiry = reset_expiry.replace(tzinfo=timezone.utc)
+
+    # Check if user was not found or token has expired
+    if not user or not reset_expiry or reset_expiry < now_utc:
+        # Raise 400 Bad Request for invalid or expired token
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired password reset token.",
+        )
+
+    # Hash new password with bcrypt
+    user.hashed_password = get_password_hash(payload.new_password)
+    user.password_reset_token = None
+    user.password_reset_expires_at = None
+
+    # Revoke all existing refresh tokens for security
+    db.query(RefreshToken).filter(RefreshToken.user_id == user.id).update({"revoked": True})
+    db.commit()
+
+    return {"message": "Password reset successfully. Please sign in with your new password."}
+
+
+# HTTP POST route handler for authenticated password changes
+@router.post("/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Change account password for currently authenticated user."""
+    if not verify_password(payload.current_password, current_user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password verification failed.",
+        )
+
+    current_user.hashed_password = get_password_hash(payload.new_password)
+    # Revoke all existing refresh tokens
+    db.query(RefreshToken).filter(RefreshToken.user_id == current_user.id).update({"revoked": True})
+    db.commit()
+
+    return {"message": "Password updated successfully."}
 
 
 # HTTP GET route handler returning currently authenticated user profile
 @router.get("/me", response_model=UserResponse)
 def get_current_user_profile(
-    # Resolve authenticated user entity from get_current_user dependency
     current_user: User = Depends(get_current_user),
 ):
-    # Route docstring describing profile retrieval functionality
     """Retrieve the current logged-in user's profile and UI preferences."""
-    # Resolve user display name from full_name, name, or email prefix
     display_name = current_user.full_name or current_user.name or current_user.email.split("@")[0].capitalize()
-    # Construct and return UserResponse schema representation
     return UserResponse(
-        # Convert user id to string
         id=str(current_user.id),
-        # Set display name
         name=display_name,
-        # Set full name
         full_name=display_name,
-        # Set email address
         email=current_user.email,
-        # Set academic role
         role=current_user.role,
-        # Set user UI preferences dictionary
         preferences=current_user.preferences or {},
     )
 
@@ -583,152 +691,61 @@ def get_current_user_profile(
 # HTTP PUT route handler updating educator profile settings and UI preferences
 @router.put("/preferences", response_model=UserResponse)
 def update_preferences(
-    # Validate incoming preferences update payload using TeacherPreferencesUpdate schema
     payload: TeacherPreferencesUpdate,
-    # Inject active SQLAlchemy database session dependency
     db: Session = Depends(get_db),
-    # Resolve currently authenticated user dependency
     current_user: User = Depends(get_current_user),
 ):
-    # Route docstring describing preference update functionality
     """Update user review preferences and profile settings in PostgreSQL."""
-    # Extract updated display name from full_name or name fields
     display_name = payload.full_name or payload.name
-    # Check if a new display name was provided in the update payload
     if display_name:
-        # Update user name attribute
         current_user.name = display_name
-        # Update user full_name attribute
         current_user.full_name = display_name
-    # Check if a new academic role was provided in the update payload
     if payload.role:
-        # Update user role attribute
         current_user.role = payload.role
 
-    # Create shallow copy of current preferences dictionary or initialize new dictionary
     prefs = dict(current_user.preferences or {})
-    # Check if show_similarity_context flag was updated
     if payload.show_similarity_context is not None:
-        # Update preference flag in dictionary
         prefs["show_similarity_context"] = payload.show_similarity_context
-    # Check if require_teacher_notes_on_overrides flag was updated
     if payload.require_teacher_notes_on_overrides is not None:
-        # Update preference flag in dictionary
         prefs["require_teacher_notes_on_overrides"] = payload.require_teacher_notes_on_overrides
-    # Check if include_ai_content_indicator flag was updated
     if payload.include_ai_content_indicator is not None:
-        # Update preference flag in dictionary
         prefs["include_ai_content_indicator"] = payload.include_ai_content_indicator
 
-    # Persist updated preferences dictionary to User model instance
     current_user.preferences = prefs
 
-    # Query matching Instructor entity to maintain synchronicity
     instructor = db.query(Instructor).filter(Instructor.id == current_user.id).first()
-    # Check if matching instructor record exists in database
     if instructor:
-        # Synchronize preferences to instructor record
         instructor.preferences = prefs
-        # Check if display name was changed
         if display_name:
-            # Update instructor name attribute
             instructor.name = display_name
-        # Check if role was changed
         if payload.role:
-            # Update instructor role attribute
             instructor.role = payload.role
 
-    # Commit all pending attribute modifications to PostgreSQL
     db.commit()
-    # Refresh current user model instance from database
     db.refresh(current_user)
 
-    # Determine final response display name string
     res_name = current_user.full_name or current_user.name or ""
-    # Construct and return updated UserResponse schema representation
     return UserResponse(
-        # Convert user id to string
         id=str(current_user.id),
-        # Set display name
         name=res_name,
-        # Set full name
         full_name=res_name,
-        # Set email address
         email=current_user.email,
-        # Set academic role
         role=current_user.role,
-        # Set updated preferences dictionary
         preferences=current_user.preferences or {},
     )
-
-
-# HTTP POST route handler for revoking user session tokens upon sign out
-@router.post("/logout")
-def logout(
-    # Optional raw Authorization header string
-    authorization: Optional[str] = Header(None),
-    # Optional token resolved from OAuth2 password bearer scheme
-    token: Optional[str] = Depends(oauth2_scheme),
-    # Inject active SQLAlchemy database session dependency
-    db: Session = Depends(get_db),
-):
-    # Route docstring describing logout functionality
-    """Log out user and invalidate current session in PostgreSQL."""
-    # Assign extracted OAuth2 token
-    raw_token = token
-    # Fallback to Authorization header if OAuth2 token was omitted
-    if not raw_token and authorization and authorization.startswith("Bearer "):
-        # Extract bearer token substring
-        raw_token = authorization.split(" ")[1].strip()
-
-    # Check if a valid token string was resolved
-    if raw_token:
-        # Invalidate active UserSession in database by terminating its validity timestamp
-        past_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=1)
-        session = db.query(UserSession).filter(UserSession.token == raw_token).first()
-        if session:
-            session.expires_at = past_time
-            db.commit()
-            logger.info(f"[AUTH] Invalided active session token {raw_token[:10]}... upon explicit user logout.")
-        else:
-            try:
-                payload = decode_access_token(raw_token)
-                sub = payload.get("sub", "unknown") if payload else "unknown"
-            except Exception:
-                sub = "unknown"
-            revoked_session = UserSession(
-                id=str(uuid.uuid4()),
-                user_id=str(sub),
-                token=raw_token,
-                expires_at=past_time,
-            )
-            db.add(revoked_session)
-            db.commit()
-            logger.info(f"[AUTH] Created revoked session entry for token {raw_token[:10]}... upon explicit logout.")
-    # Return success confirmation response dictionary
-    return {"message": "Signed out successfully. Session invalidated."}
 
 
 # HTTP POST route handler for purging demo mock courses from test accounts
 @router.post("/clear-mock-data")
 def clear_mock_data(
-    # Inject active SQLAlchemy database session dependency
     db: Session = Depends(get_db),
-    # Require authentication dependency to protect endpoint
     current_user: User = Depends(get_current_user),
 ):
-    # Route docstring describing mock data purge behavior
     """Purge seeded sample mock courses and submissions from database."""
-    # Query all courses belonging to mock instructor ID inst_priya_rao
     mock_courses = db.query(Course).filter(Course.instructor_id == "inst_priya_rao").all()
-    # Count total number of mock courses found
     count = len(mock_courses)
-    # Iterate through each mock course entity
     for c in mock_courses:
-        # Delete mock course from database session
         db.delete(c)
-    # Commit deletion transaction to PostgreSQL
     db.commit()
 
-    # Return confirmation dictionary with count of purged records
     return {"message": f"Successfully removed {count} mock courses and associated records."}

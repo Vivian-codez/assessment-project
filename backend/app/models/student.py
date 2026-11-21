@@ -31,6 +31,8 @@ class Student(Base):
     email = Column(String(255), nullable=True)
     # UTC timestamp recording when this student entry was added to the roster
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Optional soft-deletion timestamp indicating retention in trash bin prior to permanent purge
+    deleted_at = Column(DateTime, nullable=True)
 
     # Composite table constraints enforcing uniqueness per classroom
     __table_args__ = (

@@ -49,6 +49,43 @@ class DatabaseResilienceMiddleware:
             await response(scope, receive, send)
 
 
+class SecurityHeadersMiddleware:
+    """Pure ASGI middleware injecting standard HTTP security and privacy compliance headers."""
+
+    def __init__(self, app):
+        # Store inner ASGI application
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        # Ignore non-HTTP scopes
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # Wrapper function intercepting response start to inject compliance headers
+        async def send_with_security_headers(message):
+            # Check for response start event
+            if message["type"] == "http.response.start":
+                # Convert headers to list
+                headers_list = list(message.get("headers", []))
+                # Append standard security and privacy compliance headers
+                headers_list.extend([
+                    (b"x-content-type-options", b"nosniff"),
+                    (b"x-frame-options", b"DENY"),
+                    (b"x-xss-protection", b"1; mode=block"),
+                    (b"strict-transport-security", b"max-age=31536000; includeSubDomains"),
+                    (b"referrer-policy", b"strict-origin-when-cross-origin"),
+                ])
+                # Assign augmented headers
+                message["headers"] = headers_list
+
+            # Forward message
+            await send(message)
+
+        # Delegate execution with wrapped send callback
+        await self.app(scope, receive, send_with_security_headers)
+
+
 # Define asynchronous lifespan context manager managing application startup and shutdown hooks
 @asynccontextmanager
 # Function definition accepting FastAPI instance and yielding runtime context
@@ -105,6 +142,18 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE draft_grades ADD COLUMN plagiarism_report JSON DEFAULT '{}';",
                 # Add final feedback text column to draft grades table
                 "ALTER TABLE draft_grades ADD COLUMN feedback TEXT;",
+                # Add confidence score column to draft grades table
+                "ALTER TABLE draft_grades ADD COLUMN confidence REAL DEFAULT 0.9;",
+                # Add deleted_at soft-deletion timestamp column to courses table
+                "ALTER TABLE courses ADD COLUMN deleted_at TIMESTAMP;",
+                # Add deleted_at soft-deletion timestamp column to assignments table
+                "ALTER TABLE assignments ADD COLUMN deleted_at TIMESTAMP;",
+                # Add deleted_at soft-deletion timestamp column to submissions table
+                "ALTER TABLE submissions ADD COLUMN deleted_at TIMESTAMP;",
+                # Add deleted_at soft-deletion timestamp column to students table
+                "ALTER TABLE students ADD COLUMN deleted_at TIMESTAMP;",
+                # Add deleted_at soft-deletion timestamp column to rubrics table
+                "ALTER TABLE rubrics ADD COLUMN deleted_at TIMESTAMP;",
             ]:
                 # Wrap each individual column migration in try block to handle existing columns
                 try:
@@ -181,6 +230,8 @@ combined_origins = list(dict.fromkeys(origins + (cors_origins or [])))
 
 # Add Database Resilience Middleware to catch transient connection drops
 app.add_middleware(DatabaseResilienceMiddleware)
+# Add Security and Privacy Headers Middleware
+app.add_middleware(SecurityHeadersMiddleware)
 
 # Add CORS middleware to the FastAPI application pipeline
 app.add_middleware(

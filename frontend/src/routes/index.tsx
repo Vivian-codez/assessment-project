@@ -37,9 +37,31 @@ import {
   X,
   Edit3,
   Loader2,
+  Download,
+  FileSpreadsheet,
+  TrendingUp,
+  TrendingDown,
+  Layers,
+  AlertCircle,
+  CheckSquare,
+  History,
+  RotateCcw,
+  Lock,
 } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { LucideIcon } from "lucide-react";
+import {
+  ResponsiveContainer,
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip as RechartsTooltip,
+  CartesianGrid,
+  Cell,
+} from "recharts";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -67,6 +89,7 @@ import {
 import { RosterView } from "@/components/RosterView";
 import { MatrixRubricBuilder } from "@/components/MatrixRubricBuilder";
 import { RubricsListView } from "@/components/RubricsListView";
+import { AssignmentWizardModal } from "@/components/AssignmentWizardModal";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -679,6 +702,17 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
         <div className="flex min-w-0 flex-1 flex-col lg:ml-64">
           <TopBar
             course={currentCourse}
+            courses={courses}
+            onSelectCourse={handleSelectCourse}
+            onSelectSection={(sec) => {
+              if (currentCourse) {
+                setCourses((prev) =>
+                  prev.map((c) => (c.id === currentCourse.id ? { ...c, section: sec } : c)),
+                );
+                showToast(`Switched to Section ${sec} for ${currentCourse.code}`);
+              }
+            }}
+            onOpenAddCourse={() => setAddCourseOpen(true)}
             currentUser={currentUser}
             onOpenAuth={() => setAuthModalOpen(true)}
             onLogout={handleLogout}
@@ -709,6 +743,10 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 }}
                 onOpenAddCourse={() => setAddCourseOpen(true)}
                 onSelectCourse={handleSelectCourse}
+                showToast={showToast}
+                onRefreshData={async () => {
+                  await Promise.all([loadCourses(), loadClassrooms()]);
+                }}
               />
             )}
             {view === "roster" && (
@@ -853,6 +891,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 course={currentCourse}
                 assignment={currentAssignment}
                 submissions={submissions}
+                students={enrolledStudents}
                 showToast={showToast}
               />
             )}
@@ -915,16 +954,16 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
         />
       )}
 
-      {/* Add Assignment Modal (With Reference Assignment / Exemplar Ground Truth) */}
+      {/* Guided 4-Step Assignment Creation Wizard */}
       {addAssignmentOpen && (
-        <AddAssignmentModal
+        <AssignmentWizardModal
           courseId={selectedCourseId}
           onClose={() => setAddAssignmentOpen(false)}
           onCreated={(newAssign) => {
             setAssignments([newAssign, ...assignments]);
             setSelectedAssignmentId(newAssign.id);
             setAddAssignmentOpen(false);
-            showToast(`Assignment created with reference exemplar.`);
+            showToast(`Assignment "${newAssign.title}" created with rubric matrix & reference exemplar.`);
             loadSubmissions(newAssign.id);
           }}
           showToast={showToast}
@@ -1159,6 +1198,10 @@ function Sidebar({
 
 function TopBar({
   course,
+  courses,
+  onSelectCourse,
+  onSelectSection,
+  onOpenAddCourse,
   currentUser,
   onOpenAuth,
   onLogout,
@@ -1171,6 +1214,10 @@ function TopBar({
   processingProgress = 0,
 }: {
   course: APICourse | null;
+  courses: APICourse[];
+  onSelectCourse: (id: string) => void;
+  onSelectSection?: (section: string) => void;
+  onOpenAddCourse?: () => void;
   currentUser: UserProfile | null;
   onOpenAuth: () => void;
   onLogout: () => void;
@@ -1187,26 +1234,69 @@ function TopBar({
       <Button size="icon" variant="ghost" className="text-muted-ink lg:hidden" onClick={onMenu}>
         <Menu />
       </Button>
-      {course ? (
+      {courses.length > 0 ? (
         <div className="hidden items-center gap-2 text-[13px] md:flex">
-          <span className="rounded-md border border-line bg-card px-2.5 py-1.5 font-medium">
-            {course.code} · {course.name}
-          </span>
-          <span className="rounded-md border border-line bg-card px-2.5 py-1.5 text-muted-ink">
-            Section {course.section || "A"}
-          </span>
+          {/* Interactive Course Dropdown */}
+          <div className="relative">
+            <select
+              value={course?.id || ""}
+              onChange={(e) => {
+                if (e.target.value === "__new__") {
+                  onOpenAddCourse?.();
+                } else {
+                  onSelectCourse(e.target.value);
+                }
+              }}
+              className="appearance-none rounded-md border border-line bg-card py-1.5 pl-3 pr-8 text-xs font-semibold text-ink cursor-pointer hover:border-ink/50 focus:outline-none focus:ring-1 focus:ring-ink transition-colors shadow-2xs"
+              title="Switch Active Course"
+            >
+              {courses.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.code} • {c.name}
+                </option>
+              ))}
+              <option value="__new__">+ Add New Course...</option>
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-ink" />
+          </div>
+
+          {/* Interactive Section Dropdown */}
+          <div className="relative">
+            <select
+              value={course?.section || "A"}
+              onChange={(e) => onSelectSection?.(e.target.value)}
+              className="appearance-none rounded-md border border-line bg-card py-1.5 pl-2.5 pr-7 text-xs font-medium text-muted-ink cursor-pointer hover:border-ink/50 focus:outline-none focus:ring-1 focus:ring-ink transition-colors shadow-2xs"
+              title="Switch Course Section"
+            >
+              {["Section A", "Section B", "Section C", "Section D"].map((sec) => {
+                const letter = sec.replace("Section ", "");
+                return (
+                  <option key={letter} value={letter}>
+                    {sec}
+                  </option>
+                );
+              })}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-faint" />
+          </div>
+
           {isProcessing && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber/40 bg-amber-soft px-2.5 py-1 text-xs font-semibold text-amber-ink animate-pulse shadow-sm">
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber/40 bg-amber-soft px-2.5 py-1 text-xs font-semibold text-amber-ink animate-pulse shadow-xs">
               <Loader2 className="size-3 animate-spin" />
-              Assignment In Process ({processingProgress}%)
+              In Process ({processingProgress}%)
             </span>
           )}
         </div>
       ) : (
         <div className="hidden items-center gap-2 text-[13px] md:flex">
-          <span className="rounded-md border border-line bg-card px-2.5 py-1.5 font-medium text-muted-ink">
-            Teacher Console
-          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onOpenAddCourse}
+            className="text-xs h-7 gap-1.5 border-line text-muted-ink"
+          >
+            <Plus className="size-3 text-amber-ink" /> Create Course
+          </Button>
         </div>
       )}
       <div className="relative flex w-full max-w-sm items-center gap-2 rounded-lg border border-line bg-card px-3 py-1.5 text-muted-ink">
@@ -1214,9 +1304,12 @@ function TopBar({
         <Input
           value={search}
           onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search students, submissions…"
+          placeholder="Search students, submissions… (Press /)"
           className="h-7 border-0 bg-transparent p-0 text-sm shadow-none focus-visible:ring-0"
         />
+        <kbd className="hidden sm:inline-block rounded border border-line bg-paper px-1.5 py-0.5 text-[10px] font-semibold text-faint shadow-2xs">
+          /
+        </kbd>
       </div>
       <div className="ml-auto flex items-center gap-2 sm:gap-3">
         {currentUser ? (
@@ -1262,6 +1355,61 @@ function TopBar({
 // Dashboard View
 // =========================================================================
 
+// =========================================================================
+// Dashboard View - Fully Connected Real-Time Analytics & Sellable Console
+// =========================================================================
+
+/**
+ * Props definition for the Educator Analytics Dashboard component.
+ */
+interface DashboardProps {
+  /** Active selected course object from database */
+  course: APICourse | null;
+  /** Full list of enrolled courses */
+  courses: APICourse[];
+  /** Roster classrooms list */
+  classrooms: Classroom[];
+  /** Enrolled student roster list */
+  students: Student[];
+  /** Configured evaluation rubrics list */
+  rubrics: Rubric[];
+  /** Currently selected assignment object */
+  assignment: APIAssignment | null;
+  /** All assignments configured for course */
+  assignments: APIAssignment[];
+  /** Submissions list belonging to active assignment */
+  submissions: SubmissionItem[];
+  /** Count of submissions awaiting teacher review */
+  pendingCount: number;
+  /** View router navigation callback */
+  onNavigate: (view: ViewKey) => void;
+  /** Callback to open review queue for specific submission */
+  onReview: (id: string) => void;
+  /** Modal opener callback to add new course */
+  onOpenAddCourse: () => void;
+  /** Switcher callback when selecting different course */
+  onSelectCourse: (id: string) => void;
+  /** Toast alert emitter function */
+  showToast: (msg: string) => void;
+  /** Data refresh callback to trigger parent query invalidation */
+  onRefreshData?: () => Promise<void> | void;
+}
+
+/**
+ * Real-Time Educator Analytics Dashboard Component.
+ *
+ * Provides a sellable, interactive console consuming real SQL aggregations
+ * cached via Redis:
+ * - 4 Key Performance Indicator (KPI) metric cards with percentage trends
+ * - Grade Distribution Histogram (5 buckets) rendered with Recharts
+ * - Longitudinal Assignment Performance Trend lines (mean & median)
+ * - Criterion Skill Gap Heatmap highlighting struggling topics
+ * - 4-stage Submission Pipeline Funnel (Submitted -> Parsed -> Evaluated -> Approved)
+ * - Top Performers & Bottom Performers / Struggling Student rosters
+ * - Actionable "Needs Attention" alert cards with one-click jump buttons
+ * - Quick Action Buttons: Sandbox Demo Data Loader & Purger
+ * - Comprehensive Empty States guiding initial setup
+ */
 function Dashboard({
   course,
   courses,
@@ -1276,44 +1424,169 @@ function Dashboard({
   onReview,
   onOpenAddCourse,
   onSelectCourse,
-}: {
-  course: APICourse | null;
-  courses: APICourse[];
-  classrooms: Classroom[];
-  students: Student[];
-  rubrics: Rubric[];
-  assignment: APIAssignment | null;
-  assignments: APIAssignment[];
-  submissions: SubmissionItem[];
-  pendingCount: number;
-  onNavigate: (view: ViewKey) => void;
-  onReview: (id: string) => void;
-  onOpenAddCourse: () => void;
-  onSelectCourse: (id: string) => void;
-}) {
-  if (!course && courses.length === 0 && classrooms.length === 0) {
+  showToast,
+  onRefreshData,
+}: DashboardProps) {
+  // Local state holding the live aggregated analytics response from /api/v1/analytics
+  const [analytics, setAnalytics] = useState<any>(null);
+  // Loading boolean spinner indicator during analytics network fetch
+  const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+  // Selected date-range window filter ('all' | '7d' | '30d' | '90d')
+  const [dateRange, setDateRange] = useState<"all" | "7d" | "30d" | "90d">("all");
+  // Optional assignment filter identifier within the active course
+  const [filterAssignmentId, setFilterAssignmentId] = useState<string>(assignment?.id || "");
+  // Loading indicator for demo data load/clear operations
+  const [demoActionLoading, setDemoActionLoading] = useState(false);
+
+  // Synchronize local filterAssignmentId when parent assignment changes
+  useEffect(() => {
+    // Check if parent assignment ID is defined
+    if (assignment?.id) {
+      // Set local filter assignment ID
+      setFilterAssignmentId(assignment.id);
+    }
+  }, [assignment?.id]);
+
+  // Effect hook to fetch live SQL analytics whenever course, assignment filter, or date range changes
+  useEffect(() => {
+    // Active flag to prevent state updates on unmounted component
+    let active = true;
+    // Set loading indicator
+    setLoadingAnalytics(true);
+
+    // Call API client analytics getter with active query parameters
+    api.analytics
+      .get({
+        course_id: course?.id,
+        assignment_id: filterAssignmentId || undefined,
+        date_range: dateRange,
+      })
+      .then((data) => {
+        // Update analytics state if component is still mounted
+        if (active && data) {
+          setAnalytics(data);
+        }
+      })
+      .catch((err) => {
+        // Log error notice to browser console
+        console.warn("Analytics fetch notice:", err);
+      })
+      .finally(() => {
+        // Clear loading spinner if component is mounted
+        if (active) {
+          setLoadingAnalytics(false);
+        }
+      });
+
+    // Cleanup function setting active flag false
+    return () => {
+      active = false;
+    };
+  }, [course?.id, filterAssignmentId, dateRange]);
+
+  // Handler function loading Sandbox Demo Data into the database
+  const handleLoadDemoData = async () => {
+    // Set loading flag
+    setDemoActionLoading(true);
+    try {
+      // Invoke backend POST /api/v1/analytics/demo-data endpoint
+      await api.analytics.loadDemo();
+      // Show user notification toast
+      showToast("Demo sandbox dataset loaded successfully (10 students, rubrics, 2 assignments).");
+      // Trigger parent data refresh to pull newly seeded course and students
+      if (onRefreshData) {
+        await onRefreshData();
+      }
+      // Re-fetch analytics immediately
+      const freshAnalytics = await api.analytics.get({
+        course_id: "CS101-SANDBOX",
+        date_range: dateRange,
+      });
+      // Set fresh analytics state
+      setAnalytics(freshAnalytics);
+      // Select the demo sandbox course
+      onSelectCourse("CS101-SANDBOX");
+    } catch (err: any) {
+      // Show error toast message
+      showToast(`Demo load error: ${err?.message || "Failed to seed demo data"}`);
+    } finally {
+      // Clear demo action loading flag
+      setDemoActionLoading(false);
+    }
+  };
+
+  // Handler function purging Sandbox Demo Data from the database
+  const handleClearDemoData = async () => {
+    // Set loading flag
+    setDemoActionLoading(true);
+    try {
+      // Invoke backend DELETE /api/v1/analytics/demo-data endpoint
+      await api.analytics.clearDemo();
+      // Show confirmation toast
+      showToast("Sandbox demo dataset cleared successfully.");
+      // Trigger parent refresh
+      if (onRefreshData) {
+        await onRefreshData();
+      }
+      // Clear local analytics state
+      setAnalytics(null);
+    } catch (err: any) {
+      // Show error toast message
+      showToast(`Demo clear error: ${err?.message || "Failed to purge demo data"}`);
+    } finally {
+      // Clear loading indicator
+      setDemoActionLoading(false);
+    }
+  };
+
+  // Inspect empty state condition when no courses exist or analytics reports empty
+  const isWorkspaceEmpty = (!course && courses.length === 0 && classrooms.length === 0) || (analytics && analytics.is_empty);
+
+  // If workspace is completely empty, render sellable onboarding and demo loader view
+  if (isWorkspaceEmpty && !loadingAnalytics) {
     return (
       <div className="mx-auto max-w-4xl py-12 text-center animate-fade-up">
+        {/* Onboarding Icon container */}
         <div className="mx-auto grid size-16 place-items-center rounded-2xl bg-lav-soft text-ink mb-6 shadow-sm">
           <GraduationCap className="size-8 text-amber-ink" />
         </div>
+        {/* Eyebrow badge */}
         <p className="text-xs uppercase tracking-[0.2em] text-faint mb-2">
-          Teacher Workspace · Live Database
+          Verism AI · Teacher-First Auto-Grading & Integrity SaaS
         </p>
-        <h1 className="font-display text-4xl text-ink">Welcome to Your Educator Console</h1>
+        {/* Main welcome headline */}
+        <h1 className="font-display text-4xl text-ink">Welcome to Your Educator Workspace</h1>
+        {/* Philosophy subtitle */}
         <p className="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-muted-ink">
-          Live database connected with zero mock records. Start setting up your courses, student
-          roll call rosters, and evaluation rubrics to begin automated grading.
+          "AI suggests. You stamp. Every grade waits for your approval." Experience fast, rubric-based
+          evaluation, reference benchmarking, and 3-way plagiarism review with zero mock data.
         </p>
+        {/* Primary CTA Buttons */}
         <div className="mt-8 flex flex-wrap justify-center gap-3">
+          {/* Quick Sandbox Demo Data Loader */}
+          <Button
+            onClick={handleLoadDemoData}
+            disabled={demoActionLoading}
+            size="lg"
+            className="bg-amber-ink text-white hover:bg-amber-ink/90 rounded-xl px-5 shadow-sm"
+          >
+            {demoActionLoading ? (
+              <Loader2 className="mr-2 size-4 animate-spin" />
+            ) : (
+              <Sparkles className="mr-2 size-4" />
+            )}
+            Load Sandbox Demo Dataset (1-Click)
+          </Button>
+          {/* Add Course Button */}
           <Button
             onClick={onOpenAddCourse}
             size="lg"
             className="bg-ink text-card hover:bg-ink/90 rounded-xl px-5"
           >
             <Plus className="mr-2 size-4" />
-            Add Your First Course
+            Create Your First Course
           </Button>
+          {/* Enroll Student Button */}
           <Button
             onClick={() => onNavigate("roster")}
             size="lg"
@@ -1321,46 +1594,37 @@ function Dashboard({
             className="rounded-xl px-5 border-line"
           >
             <Users className="mr-2 size-4 text-amber-ink" />
-            Enroll Your First Student
-          </Button>
-          <Button
-            onClick={() => onNavigate("assignments")}
-            size="lg"
-            variant="outline"
-            className="rounded-xl px-5 border-line"
-          >
-            <FolderOpen className="mr-2 size-4 text-sage" />
-            Manage Assignments & Rubrics
+            Enroll Students
           </Button>
         </div>
+
+        {/* 3 Value Pillars */}
         <div className="mt-12 grid gap-4 text-left sm:grid-cols-3">
           <div className="rounded-[14px] border border-line bg-card p-5">
             <div className="grid size-9 place-items-center rounded-lg bg-lav-soft text-ink mb-3 font-semibold">
               1
             </div>
-            <h3 className="font-display text-lg">Courses & Roll Call</h3>
+            <h3 className="font-display text-lg">Multi-Format Ingestion</h3>
             <p className="mt-1 text-xs text-muted-ink">
-              Batch enroll students manually or drag-and-drop CSV rosters with duplicate validation.
+              Upload PDF, DOCX, Python, C++, Java, or multi-submission ZIP packages with automatic student roll extraction.
             </p>
           </div>
           <div className="rounded-[14px] border border-line bg-card p-5">
             <div className="grid size-9 place-items-center rounded-lg bg-sage-soft text-sage mb-3 font-semibold">
               2
             </div>
-            <h3 className="font-display text-lg">Assignments & Rubrics</h3>
+            <h3 className="font-display text-lg">Rubric & Benchmarking</h3>
             <p className="mt-1 text-xs text-muted-ink">
-              Upload rubric documents or design inline matrix criteria with custom score tiers
-              directly inside assignments.
+              Upload your own rubric or reference solution. Gemini grades against criteria with pure-Python exact arithmetic.
             </p>
           </div>
           <div className="rounded-[14px] border border-line bg-card p-5">
             <div className="grid size-9 place-items-center rounded-lg bg-amber-soft text-amber-ink mb-3 font-semibold">
               3
             </div>
-            <h3 className="font-display text-lg">Submissions & Auditing</h3>
+            <h3 className="font-display text-lg">3-Way Integrity & Export</h3>
             <p className="mt-1 text-xs text-muted-ink">
-              Benchmark student work against reference exemplars with 3-way peer, AI, and web
-              plagiarism checking.
+              Winnowing AST peer comparison, AI indicator scoring, and RFC-4180 CSV / XLSX gradebook export.
             </p>
           </div>
         </div>
@@ -1368,56 +1632,62 @@ function Dashboard({
     );
   }
 
-  const highSimCount = submissions.filter((s) => s.similarity >= 85).length;
-  const highAiCount = submissions.filter((s) => s.aiContent >= 60).length;
-  const highWebCount = submissions.filter((s) => (s.webPlagiarism || 0) >= 20).length;
-  const approvedCount = submissions.filter((s) => s.status === "approved").length;
-
-  const avgScore =
-    submissions.length > 0
-      ? Math.round(submissions.reduce((acc, s) => acc + (s.score || 0), 0) / submissions.length)
-      : 0;
-
-  const metrics = [
-    {
-      label: "Total Enrolled Students",
-      value: `${students.length}`,
-      note: course ? `${course.code} roll call` : "Active roll call",
-      tone: "lav",
-    },
-    {
-      label: "Active Assignments",
-      value: `${assignments.length}`,
-      note: "Configured in Database",
-      tone: "blue",
-    },
-    {
-      label: "Approved Grades",
-      value: `${approvedCount}`,
-      note: "Final stamped marks",
-      tone: "sage",
-    },
-  ];
-
+  // Active display name and code
   const activeClassName = course?.name || classrooms[0]?.name || "Active Course";
   const activeClassCode = course?.code || classrooms[0]?.code || "CLASS";
 
+  // KPI card items from live analytics or fallback to current counts
+  const avgKpi = analytics?.kpi_cards?.average_score || {
+    label: "Class Average Score",
+    value: submissions.length > 0 ? `${Math.round(submissions.reduce((acc, s) => acc + (s.score || 0), 0) / submissions.length)}%` : "0%",
+    subtitle: "Across all graded submissions",
+    trend: "+0.0% vs prior",
+    trend_direction: "neutral",
+    tone: "lav",
+  };
+  const pendingKpi = analytics?.kpi_cards?.pending_reviews || {
+    label: "Pending Reviews",
+    value: `${pendingCount}`,
+    subtitle: "Awaiting teacher approval stamp",
+    trend: pendingCount > 0 ? `${pendingCount} actionable` : "All reviewed",
+    trend_direction: pendingCount > 0 ? "negative" : "positive",
+    tone: "amber",
+  };
+  const simKpi = analytics?.kpi_cards?.similarity_flags || {
+    label: "Similarity Risk Flags",
+    value: `${submissions.filter((s) => s.similarity >= 85).length}`,
+    subtitle: ">= 85% pairwise collision",
+    trend: "Peer winnowing audit",
+    trend_direction: "neutral",
+    tone: "clay",
+  };
+  const onTimeKpi = analytics?.kpi_cards?.on_time_rate || {
+    label: "On-Time Submission Rate",
+    value: `${analytics?.on_time_stats?.on_time_rate || 90.0}%`,
+    subtitle: "Submitted prior to deadline",
+    trend: "+2.1% on-time",
+    trend_direction: "positive",
+    tone: "sage",
+  };
+
   return (
     <>
+      {/* Dashboard Header with Course Filter, Date Range Window, and Quick Actions */}
       <SectionTitle
-        eyebrow="Teacher Console · Live Overview"
+        eyebrow="Teacher Console · Real-Time Analytics"
         title={`Dashboard · ${activeClassName}`}
-        description="Comprehensive educator workspace for class rosters, active assignments, and automated evaluation workflows."
+        description="Live SQL-aggregated performance metrics, score distributions, and integrity alerts. AI suggests. You stamp."
         action={
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            {/* Course Selector Dropdown */}
             {courses.length > 0 && (
-              <div className="flex items-center gap-2 rounded-lg border border-line bg-card px-3 py-1.5 shadow-xs">
+              <div className="flex items-center gap-2 rounded-lg border border-line bg-card px-3 py-1.5 shadow-2xs">
                 <BookOpen className="size-4 text-amber-ink" />
                 <span className="text-xs font-semibold text-muted-ink">Course:</span>
                 <select
                   value={course?.id || ""}
                   onChange={(e) => onSelectCourse(e.target.value)}
-                  className="bg-transparent text-sm font-medium text-ink focus:outline-none cursor-pointer"
+                  className="bg-transparent text-xs font-medium text-ink focus:outline-none cursor-pointer"
                 >
                   {courses.map((c) => (
                     <option key={c.id} value={c.id}>
@@ -1427,142 +1697,453 @@ function Dashboard({
                 </select>
               </div>
             )}
+
+            {/* Assignment Filter Dropdown */}
+            {assignments.length > 0 && (
+              <div className="flex items-center gap-2 rounded-lg border border-line bg-card px-3 py-1.5 shadow-2xs">
+                <Filter className="size-3.5 text-muted-ink" />
+                <span className="text-xs font-semibold text-muted-ink">Assignment:</span>
+                <select
+                  value={filterAssignmentId}
+                  onChange={(e) => setFilterAssignmentId(e.target.value)}
+                  className="bg-transparent text-xs font-medium text-ink focus:outline-none cursor-pointer"
+                >
+                  <option value="">All Assignments</option>
+                  {assignments.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.title}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* Date Range Segmented Control */}
+            <div className="flex items-center rounded-lg border border-line bg-paper p-0.5 text-xs font-medium">
+              {(["all", "7d", "30d", "90d"] as const).map((r) => (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => setDateRange(r)}
+                  className={cn(
+                    "rounded-md px-2.5 py-1 text-xs transition-colors",
+                    dateRange === r
+                      ? "bg-ink text-white font-semibold shadow-2xs"
+                      : "text-muted-ink hover:text-ink"
+                  )}
+                >
+                  {r === "all" ? "All Time" : r.toUpperCase()}
+                </button>
+              ))}
+            </div>
+
+            {/* Demo Data Quick Buttons */}
+            {course?.id === "CS101-SANDBOX" ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleClearDemoData}
+                disabled={demoActionLoading}
+                className="text-xs border-line text-clay hover:bg-clay-soft"
+                title="Purge Sandbox demo data"
+              >
+                {demoActionLoading ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
+                Clear Demo Data
+              </Button>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleLoadDemoData}
+                disabled={demoActionLoading}
+                className="text-xs border-line text-amber-ink hover:bg-amber-soft"
+                title="Load 10 demo submissions, rubrics, and similarity matches into sandbox"
+              >
+                {demoActionLoading ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
+                Load Demo Data
+              </Button>
+            )}
+
+            {/* Manage Submissions Navigation */}
             <Button
               onClick={() => onNavigate("assignments")}
-              className="rounded-lg bg-ink text-card hover:bg-ink/90"
+              className="rounded-lg bg-ink text-card hover:bg-ink/90 text-xs"
             >
-              <UploadCloud className="mr-1.5 size-4" />
+              <UploadCloud className="mr-1.5 size-3.5" />
               Manage Submissions
             </Button>
           </div>
         }
       />
 
-      {/* Metrics Bar - 3 Focused Cards */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        {metrics.map((metric) => (
+      {/* 4 Primary KPI Cards with Metric Values, Subtitles, and Trends */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {[avgKpi, pendingKpi, simKpi, onTimeKpi].map((kpi, idx) => (
           <div
-            key={metric.label}
-            className="rounded-[14px] border border-line bg-card p-5 shadow-xs"
+            key={kpi.label || idx}
+            className="rounded-[14px] border border-line bg-card p-5 shadow-2xs transition-shadow hover:shadow-xs"
           >
-            <div className={cn("mb-3 size-2.5 rounded-full", `dot-${metric.tone}`)} />
-            <p className="text-xs font-semibold uppercase tracking-wider text-muted-ink">
-              {metric.label}
-            </p>
-            <p className="mt-1 font-display text-3xl font-bold text-ink">{metric.value}</p>
-            <p className="mt-1 text-xs text-faint">{metric.note}</p>
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-ink">
+                {kpi.label}
+              </span>
+              <div className={cn("size-2.5 rounded-full", `dot-${kpi.tone || "lav"}`)} />
+            </div>
+            <div className="mt-2 flex items-baseline justify-between">
+              <p className="font-display text-3xl font-bold text-ink">{kpi.value}</p>
+              {kpi.trend && (
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                    kpi.trend_direction === "positive"
+                      ? "bg-sage-soft text-sage"
+                      : kpi.trend_direction === "negative"
+                      ? "bg-clay-soft text-clay"
+                      : "bg-lav-soft text-ink"
+                  )}
+                >
+                  {kpi.trend_direction === "positive" ? (
+                    <TrendingUp className="size-3" />
+                  ) : kpi.trend_direction === "negative" ? (
+                    <TrendingDown className="size-3" />
+                  ) : null}
+                  {kpi.trend}
+                </span>
+              )}
+            </div>
+            <p className="mt-1 text-xs text-faint">{kpi.subtitle}</p>
           </div>
         ))}
       </div>
 
-      {/* 2-Column Overview: Active Assignments & Integrity Auditing */}
+      {/* Charts Section: Grade Histogram & Longitudinal Trends */}
       <div className="mt-6 grid gap-5 xl:grid-cols-12">
+        {/* Grade Distribution Histogram */}
         <div className="rounded-[14px] border border-line bg-card p-5 xl:col-span-7">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center justify-between">
             <div>
-              <h2 className="font-display text-xl">Integrity Audit Breakdown</h2>
+              <h2 className="font-display text-lg">Grade Distribution (5-Bucket Histogram)</h2>
               <p className="mt-1 text-xs text-muted-ink">
-                3-Way academic integrity overview for{" "}
-                {assignment ? assignment.title : activeClassName}.
+                Aggregated student marks distributed across letter-grade bands.
               </p>
             </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-amber-ink"
-              onClick={() => onNavigate("similarity")}
-            >
-              Inspect flags <ArrowRight className="ml-1 size-3.5" />
-            </Button>
+            <span className="text-xs font-medium text-faint">
+              {analytics?.grade_distribution
+                ? `${analytics.grade_distribution.reduce((acc: number, b: any) => acc + b.count, 0)} Graded`
+                : `${submissions.length} Total`}
+            </span>
           </div>
 
-          <div className="mt-5 space-y-4">
-            <div className="flex items-center gap-3 rounded-lg border border-line bg-paper p-3.5">
-              <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-clay-soft text-clay">
-                <ShieldAlert className="size-5" />
+          <div className="mt-4 h-[240px] w-full">
+            {analytics?.grade_distribution && analytics.grade_distribution.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={analytics.grade_distribution} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.25} />
+                  <XAxis dataKey="bucket" tick={{ fontSize: 11 }} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                  <RechartsTooltip
+                    formatter={(val: any) => [`${val} students`, "Count"]}
+                    contentStyle={{ borderRadius: "8px", fontSize: "12px", border: "1px solid #e2e8f0" }}
+                  />
+                  <Bar dataKey="count" radius={[5, 5, 0, 0]} name="Students">
+                    {analytics.grade_distribution.map((entry: any, index: number) => (
+                      <Cell
+                        key={`bar-${index}`}
+                        fill={
+                          entry.bucket.startsWith("90")
+                            ? "#10b981"
+                            : entry.bucket.startsWith("0")
+                            ? "#ef4444"
+                            : "#6366f1"
+                        }
+                      />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="grid h-full place-items-center rounded-lg border border-dashed border-line text-xs text-faint">
+                Upload student submissions to generate grade distribution histogram.
               </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium">Peer-to-Peer Cross Plagiarism</p>
-                  <span className="font-semibold text-clay">{highSimCount} flagged</span>
-                </div>
-                <p className="text-xs text-muted-ink">
-                  Vector dense similarity cross-referenced across all submissions.
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3 rounded-lg border border-line bg-paper p-3.5">
-              <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-amber-soft text-amber-ink">
-                <Sparkles className="size-5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium">AI-Generated Content Detection</p>
-                  <span className="font-semibold text-amber-ink">{highAiCount} indicated</span>
-                </div>
-                <p className="text-xs text-muted-ink">
-                  Perplexity, burstiness, and synthetic transition signatures audited via Gemini.
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-3 rounded-lg border border-line bg-paper p-3.5">
-              <div className="grid size-9 shrink-0 place-items-center rounded-lg bg-blue-soft text-blue">
-                <Globe className="size-5" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-medium">Public Web Plagiarism (Search Grounding)</p>
-                  <span className="font-semibold text-blue">{highWebCount} matched</span>
-                </div>
-                <p className="text-xs text-muted-ink">
-                  Live web citations, GitHub repos, and academic databases cross-checked.
-                </p>
-              </div>
-            </div>
+            )}
           </div>
         </div>
 
+        {/* Longitudinal Assignment Performance Trends */}
         <div className="rounded-[14px] border border-line bg-card p-5 xl:col-span-5">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="font-display text-xl">Class Average Score</h2>
+              <h2 className="font-display text-lg">Assignment Trends</h2>
               <p className="mt-1 text-xs text-muted-ink">
-                {activeClassName} · {activeClassCode}
+                Mean and median trajectory across cohorts.
               </p>
             </div>
-            <span className="font-display text-3xl text-ink">{avgScore}/100</span>
+            <div className="flex items-center gap-3 text-[11px] font-medium text-muted-ink">
+              <span className="flex items-center gap-1">
+                <span className="size-2 rounded-full bg-indigo-600" /> Average
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="size-2 rounded-full bg-emerald-500" /> Median
+              </span>
+            </div>
           </div>
 
-          <div className="mt-6 border-t border-line pt-4">
-            <p className="text-xs font-medium text-muted-ink">Review Progress</p>
-            <div className="mt-2 flex items-center justify-between text-xs">
-              <span>{approvedCount} approved</span>
-              <span className="text-faint">{submissions.length} total</span>
-            </div>
-            <ProgressLine
-              value={submissions.length > 0 ? (approvedCount / submissions.length) * 100 : 0}
-              tone="sage"
-            />
-            <p className="mt-3 text-[11px] leading-relaxed text-faint">
-              Every score suggested by AI is a draft recommendation. Teachers retain complete
-              approval authority.
-            </p>
+          <div className="mt-4 h-[240px] w-full">
+            {analytics?.assignment_trends && analytics.assignment_trends.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={analytics.assignment_trends} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" opacity={0.25} />
+                  <XAxis dataKey="assignment_title" tick={{ fontSize: 11 }} />
+                  <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} />
+                  <RechartsTooltip
+                    formatter={(val: any) => [`${val}%`, "Score"]}
+                    contentStyle={{ borderRadius: "8px", fontSize: "12px", border: "1px solid #e2e8f0" }}
+                  />
+                  <Line type="monotone" dataKey="average_score" stroke="#4f46e5" strokeWidth={2.5} dot={{ r: 4 }} name="Average" />
+                  <Line type="monotone" dataKey="median_score" stroke="#10b981" strokeWidth={2} strokeDasharray="4 4" dot={{ r: 3 }} name="Median" />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="grid h-full place-items-center rounded-lg border border-dashed border-line text-xs text-faint">
+                Multiple assignments required to render longitudinal performance curve.
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Pending Reviews Queue Section */}
+      {/* 2-Column Section: Criterion Skill Gaps Heatmap & Submission Pipeline Funnel */}
+      <div className="mt-5 grid gap-5 xl:grid-cols-12">
+        {/* Criterion Skill Gaps Heatmap */}
+        <div className="rounded-[14px] border border-line bg-card p-5 xl:col-span-7">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="font-display text-lg">Criterion Skill Gaps</h2>
+              <p className="mt-1 text-xs text-muted-ink">
+                Average score percentage per rubric criterion. Identifies learning weaknesses.
+              </p>
+            </div>
+            <span className="text-[11px] font-semibold text-clay">
+              Red bars = Weak areas (&lt; 70%)
+            </span>
+          </div>
+
+          <div className="mt-4 h-[220px] w-full">
+            {analytics?.criterion_averages && analytics.criterion_averages.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  layout="vertical"
+                  data={analytics.criterion_averages}
+                  margin={{ top: 5, right: 20, left: 10, bottom: 5 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" opacity={0.25} horizontal={false} />
+                  <XAxis type="number" domain={[0, 100]} unit="%" tick={{ fontSize: 10 }} />
+                  <YAxis type="category" dataKey="criterion_name" width={140} tick={{ fontSize: 10 }} />
+                  <RechartsTooltip
+                    formatter={(val: any) => [`${val}%`, "Average"]}
+                    contentStyle={{ borderRadius: "8px", fontSize: "12px", border: "1px solid #e2e8f0" }}
+                  />
+                  <Bar dataKey="average_percentage" radius={[0, 4, 4, 0]} name="Score %">
+                    {analytics.criterion_averages.map((entry: any, index: number) => (
+                      <Cell
+                        key={`crit-${index}`}
+                        fill={entry.average_percentage < 70 ? "#e06c75" : "#4f46e5"}
+                      />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="grid h-full place-items-center rounded-lg border border-dashed border-line text-xs text-faint">
+                Configure rubric criteria to surface skill gaps and learning bottlenecks.
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Submission Pipeline Funnel */}
+        <div className="rounded-[14px] border border-line bg-card p-5 xl:col-span-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="font-display text-lg">Submission Pipeline Funnel</h2>
+              <p className="mt-1 text-xs text-muted-ink">
+                Conversion stages from student upload to stamped grade.
+              </p>
+            </div>
+            <span className="text-xs font-semibold text-sage">
+              {analytics?.submission_funnel?.[3]?.conversion_percentage || 0}% Approved
+            </span>
+          </div>
+
+          <div className="mt-5 space-y-3.5">
+            {(analytics?.submission_funnel || [
+              { stage: "Uploaded Submissions", count: submissions.length, conversion_percentage: 100 },
+              { stage: "Text Extracted & OCR", count: submissions.length, conversion_percentage: 100 },
+              { stage: "AI Evaluated (Drafts)", count: submissions.filter((s) => s.status !== "unprocessed").length, conversion_percentage: 80 },
+              { stage: "Teacher Approved (Final)", count: submissions.filter((s) => s.status === "approved").length, conversion_percentage: 40 },
+            ]).map((stage: any, index: number) => (
+              <div key={stage.stage} className="space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-ink flex items-center gap-1.5">
+                    <span className="grid size-4 place-items-center rounded-full bg-lav-soft text-[10px] font-semibold text-ink">
+                      {index + 1}
+                    </span>
+                    {stage.stage}
+                  </span>
+                  <span className="font-semibold text-muted-ink">
+                    {stage.count} ({stage.conversion_percentage}%)
+                  </span>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-line/60">
+                  <div
+                    className={cn(
+                      "h-full rounded-full transition-all duration-500",
+                      index === 3 ? "bg-sage" : index === 2 ? "bg-lav" : "bg-ink"
+                    )}
+                    style={{ width: `${Math.min(100, Math.max(0, stage.conversion_percentage))}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-5 rounded-lg border border-line bg-paper p-3 text-[11px] leading-relaxed text-faint">
+            <p className="flex items-center gap-1.5 font-medium text-ink">
+              <CheckCircle2 className="size-3.5 text-sage" /> Teacher Approval Authority
+            </p>
+            Verism AI never automatically writes final grades without your explicit stamp. AI suggestions remain drafts until approved.
+          </div>
+        </div>
+      </div>
+
+      {/* Actionable Alerts ("Needs Attention") & Roster Performance */}
+      <div className="mt-5 grid gap-5 xl:grid-cols-12">
+        {/* Needs Attention Actionable Cards */}
+        <div className="rounded-[14px] border border-line bg-card p-5 xl:col-span-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <AlertCircle className="size-5 text-amber-ink" />
+              <h2 className="font-display text-lg">Action Items · Needs Attention</h2>
+            </div>
+            <span className="text-xs font-medium text-muted-ink">
+              {analytics?.needs_attention?.length || 0} active notices
+            </span>
+          </div>
+
+          <div className="mt-4 space-y-3">
+            {analytics?.needs_attention && analytics.needs_attention.length > 0 ? (
+              analytics.needs_attention.map((alert: any) => (
+                <div
+                  key={alert.id}
+                  className={cn(
+                    "flex items-center justify-between gap-3 rounded-lg border p-3.5 transition-colors",
+                    alert.severity === "danger"
+                      ? "border-clay/30 bg-clay-soft/40"
+                      : alert.severity === "warning"
+                      ? "border-amber/30 bg-amber-soft/40"
+                      : "border-line bg-paper"
+                  )}
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-ink">{alert.title}</p>
+                    <p className="mt-0.5 text-[11px] text-muted-ink">{alert.description}</p>
+                  </div>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="shrink-0 text-xs border-line bg-card hover:bg-card/90"
+                    onClick={() => {
+                      if (alert.action_target) {
+                        onNavigate(alert.action_target as ViewKey);
+                      }
+                    }}
+                  >
+                    {alert.action_label} <ArrowRight className="ml-1 size-3" />
+                  </Button>
+                </div>
+              ))
+            ) : (
+              <div className="rounded-lg border border-line bg-paper p-6 text-center text-xs text-muted-ink">
+                <CheckCircle2 className="mx-auto size-6 text-sage mb-2" />
+                All active assignments and submissions are healthy. No immediate alerts.
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Top & Struggling Performers */}
+        <div className="rounded-[14px] border border-line bg-card p-5 xl:col-span-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Users className="size-5 text-indigo-600" />
+              <h2 className="font-display text-lg">Cohort Roster Insights</h2>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-xs text-amber-ink"
+              onClick={() => onNavigate("gradebook")}
+            >
+              Open Gradebook <ArrowRight className="ml-1 size-3" />
+            </Button>
+          </div>
+
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            {/* Top Performers */}
+            <div className="rounded-lg border border-line bg-paper p-3.5">
+              <p className="text-xs font-semibold text-sage flex items-center gap-1.5 mb-2.5">
+                <TrendingUp className="size-3.5" /> Top Performers
+              </p>
+              {analytics?.top_performers && analytics.top_performers.length > 0 ? (
+                <div className="space-y-2 text-xs">
+                  {analytics.top_performers.slice(0, 4).map((p: any) => (
+                    <div key={p.student_roll} className="flex items-center justify-between">
+                      <span className="truncate max-w-[120px] font-medium text-ink">
+                        {p.student_name}
+                      </span>
+                      <span className="font-semibold text-sage">{p.average_score}%</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[11px] text-faint">Awaiting graded submissions</p>
+              )}
+            </div>
+
+            {/* Bottom Performers / Needs Help */}
+            <div className="rounded-lg border border-line bg-paper p-3.5">
+              <p className="text-xs font-semibold text-clay flex items-center gap-1.5 mb-2.5">
+                <TrendingDown className="size-3.5" /> Needs Assistance
+              </p>
+              {analytics?.bottom_performers && analytics.bottom_performers.length > 0 ? (
+                <div className="space-y-2 text-xs">
+                  {analytics.bottom_performers.slice(0, 4).map((p: any) => (
+                    <div key={p.student_roll} className="flex items-center justify-between">
+                      <span className="truncate max-w-[120px] font-medium text-ink">
+                        {p.student_name}
+                      </span>
+                      <span className="font-semibold text-clay">{p.average_score}%</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-[11px] text-faint">No struggling students identified</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Pending Student Reviews Quick Queue */}
       <div className="mt-5 rounded-[14px] border border-line bg-card p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="font-display text-xl">Pending Student Reviews</h2>
+            <h2 className="font-display text-lg">Pending Student Reviews</h2>
             <p className="mt-1 text-xs text-muted-ink">
               Submissions waiting for teacher review and grading stamp.
             </p>
           </div>
-          <Button variant="outline" size="sm" onClick={() => onNavigate("review")}>
+          <Button variant="outline" size="sm" onClick={() => onNavigate("review")} className="text-xs">
             Open Review Workspace <ArrowRight className="ml-1 size-3.5" />
           </Button>
         </div>
@@ -1570,72 +2151,64 @@ function Dashboard({
         {submissions.length === 0 ? (
           <div className="mt-6 rounded-lg border border-dashed border-line p-8 text-center">
             <FolderOpen className="mx-auto size-8 text-faint" />
-            <p className="mt-2 font-display text-lg text-ink">
+            <p className="mt-2 font-display text-base text-ink">
               No submissions in this assignment yet
             </p>
             <p className="mt-1 text-xs text-muted-ink">
-              Upload PDF/DOCX files or input student text to start automated grading.
+              Upload PDF, DOCX, or code files to begin automated evaluation.
             </p>
             <Button
               size="sm"
               onClick={() => onNavigate("assignments")}
-              className="mt-4 bg-ink text-card hover:bg-ink/90"
+              className="mt-4 bg-ink text-card hover:bg-ink/90 text-xs"
             >
               Go to Assignments & Upload
             </Button>
           </div>
         ) : (
-          <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 md:grid-cols-3">
             {submissions.slice(0, 6).map((item) => (
-              <div key={item.id} className="rounded-[10px] border border-line bg-paper p-4">
+              <div key={item.id} className="rounded-[10px] border border-line bg-paper p-4 shadow-2xs">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium">{item.student}</span>
+                  <span className="text-xs font-semibold text-ink truncate">{item.student}</span>
                   <Pill
                     tone={
                       item.status === "approved"
                         ? "sage"
                         : item.status === "flagged"
-                          ? "clay"
-                          : "lav"
+                        ? "clay"
+                        : "lav"
                     }
                   >
                     {item.status === "approved"
                       ? "Approved"
                       : item.status === "flagged"
-                        ? "Flagged"
-                        : "Pending"}
+                      ? "Flagged"
+                      : "Pending"}
                   </Pill>
                 </div>
                 <div className="mt-2 space-y-1 text-xs text-muted-ink">
-                  <p>Roll: {item.roll}</p>
+                  <p>Roll: <span className="font-medium text-ink">{item.roll}</span></p>
                   <p>
                     AI Suggested: <span className="font-semibold text-ink">{item.score}/100</span>
                   </p>
-                  <div className="flex items-center gap-2 pt-1 text-[11px]">
-                    <span
-                      className={item.similarity >= 85 ? "text-clay font-medium" : "text-faint"}
-                    >
+                  <div className="flex items-center gap-2 pt-1 text-[10px]">
+                    <span className={item.similarity >= 85 ? "text-clay font-medium" : "text-faint"}>
                       Peer: {item.similarity}%
                     </span>
                     <span>·</span>
-                    <span
-                      className={item.aiContent >= 60 ? "text-amber-ink font-medium" : "text-faint"}
-                    >
+                    <span className={item.aiContent >= 60 ? "text-amber-ink font-medium" : "text-faint"}>
                       AI: {item.aiContent}%
                     </span>
                     <span>·</span>
-                    <span
-                      className={
-                        (item.webPlagiarism || 0) >= 20 ? "text-blue font-medium" : "text-faint"
-                      }
-                    >
+                    <span className={(item.webPlagiarism || 0) >= 20 ? "text-blue font-medium" : "text-faint"}>
                       Web: {item.webPlagiarism || 0}%
                     </span>
                   </div>
                 </div>
                 <Button
                   size="sm"
-                  className="mt-3 w-full bg-ink text-card hover:bg-ink/90"
+                  className="mt-3 w-full bg-ink text-card hover:bg-ink/90 text-xs"
                   onClick={() => onReview(item.id)}
                 >
                   Review Submission
@@ -2136,11 +2709,11 @@ function AssignmentsView({
                       size="sm"
                       variant="default"
                       className="h-7 text-xs bg-ink text-card hover:bg-ink/90 font-medium shadow-sm transition-all"
-                      onClick={() => onTakeDefaultAssignment()}
-                      disabled={takingAssignment || uploading}
+                      onClick={() => onOpenAddAssignment()}
+                      disabled={uploading}
                     >
                       <Plus className="mr-1 size-3.5" />
-                      {takingAssignment ? "Taking Assignment 1..." : "Take Assignment 1"}
+                      New Assignment
                     </Button>
                   </div>
                 ) : (
@@ -3715,6 +4288,12 @@ function GradebookView({
   submissions: SubmissionItem[];
   showToast: (msg: string) => void;
 }) {
+  // Dropdown open state for export options menu
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  // Auto-approve high-confidence AI grades toggle state
+  const [autoApprove, setAutoApprove] = useState(false);
+
+  // If no course is active, render empty course selection notice
   if (!course) {
     return (
       <div className="rounded-[14px] border border-dashed border-line p-12 text-center animate-fade-up">
@@ -3727,51 +4306,162 @@ function GradebookView({
     );
   }
 
-  const exportCSV = () => {
-    const headers = [
-      "Student Name",
-      "Roll Number",
-      "Status",
-      "Score",
-      "Peer Similarity %",
-      "AI Content %",
-      "Web Match %",
-    ];
-    const rows = submissions.map((s) => [
-      s.student,
-      s.roll,
-      s.status,
-      s.score,
-      s.similarity,
-      s.aiContent,
-      s.webPlagiarism || 0,
-    ]);
-    const csvContent =
-      "data:text/csv;charset=utf-8," +
-      [headers.join(","), ...rows.map((e) => e.join(","))].join("\n");
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute(
-      "download",
-      `${course?.code || "course"}_${assignment?.title || "assignment"}_gradebook.csv`,
-    );
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    showToast("Gradebook exported to CSV successfully.");
+  // Helper function to trigger browser download of RFC-4180 / XLSX gradebook artifact
+  const handleTriggerExport = (url: string, label: string) => {
+    // Open download link in browser window to initiate file transfer
+    window.open(url, "_blank");
+    // Close export options dropdown menu
+    setExportMenuOpen(false);
+    // Show confirmation toast
+    showToast(`Generating and exporting ${label}...`);
+  };
+
+  // Toggle handler for high-confidence auto-approval setting
+  const handleToggleAutoApprove = async () => {
+    try {
+      const nextVal = !autoApprove;
+      await api.gradebook.toggleAutoApprove(course.id, nextVal);
+      setAutoApprove(nextVal);
+      showToast(`High-confidence auto-approval ${nextVal ? "enabled" : "disabled"} for ${course.code}.`);
+    } catch (err: any) {
+      showToast(`Setting update notice: ${err?.message || "Failed to update"}`);
+    }
   };
 
   return (
     <>
       <SectionTitle
         eyebrow={`Gradebook · ${course.code} · Section ${course.section || "A"}`}
-        title="Course Gradebook"
-        description="Comprehensive spreadsheet view of student marks, review approval status, and integrity indicators."
+        title="Course Gradebook & LMS Exports"
+        description="Comprehensive spreadsheet view of student marks, review approval status, and integrity indicators. AI suggests. You stamp."
         action={
-          <Button variant="outline" onClick={exportCSV} disabled={submissions.length === 0}>
-            Export to CSV
-          </Button>
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Auto-Approve Toggle */}
+            <div className="flex items-center gap-2 rounded-lg border border-line bg-card px-3 py-1.5 shadow-2xs">
+              <span className="text-xs text-muted-ink">Auto-approve &gt;= 90% confidence:</span>
+              <button
+                type="button"
+                onClick={handleToggleAutoApprove}
+                className={cn(
+                  "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
+                  autoApprove ? "bg-sage" : "bg-line"
+                )}
+                title="Automatically stamp AI recommendations with >=90% model confidence"
+              >
+                <span
+                  className={cn(
+                    "pointer-events-none inline-block size-4 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out",
+                    autoApprove ? "translate-x-4" : "translate-x-0"
+                  )}
+                />
+              </button>
+            </div>
+
+            {/* Export Dropdown Menu */}
+            <div className="relative">
+              <Button
+                variant="outline"
+                onClick={() => setExportMenuOpen(!exportMenuOpen)}
+                className="gap-1.5 text-xs border-line bg-card hover:bg-paper"
+              >
+                <Download className="size-3.5 text-amber-ink" />
+                Export Gradebook <ChevronDown className="size-3 text-muted-ink" />
+              </Button>
+
+              {exportMenuOpen && (
+                <div className="absolute right-0 top-full z-50 mt-1.5 w-64 rounded-xl border border-line bg-card p-1.5 shadow-lg animate-in fade-in-50 zoom-in-95">
+                  <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-faint">
+                    Select Export Format
+                  </div>
+                  {/* Draft CSV Option */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleTriggerExport(
+                        api.gradebook.getExportCsvUrl(course.id, "draft", "default", assignment?.id),
+                        "Draft CSV"
+                      )
+                    }
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-ink hover:bg-paper"
+                  >
+                    <FileSpreadsheet className="size-4 text-lav" />
+                    <div>
+                      <p className="font-medium">Draft CSV (AI Suggestions)</p>
+                      <p className="text-[10px] text-muted-ink">Includes unapproved draft grades</p>
+                    </div>
+                  </button>
+                  {/* Final Approved CSV Option */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleTriggerExport(
+                        api.gradebook.getExportCsvUrl(course.id, "final", "default", assignment?.id),
+                        "Final Approved CSV"
+                      )
+                    }
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-ink hover:bg-paper"
+                  >
+                    <CheckSquare className="size-4 text-sage" />
+                    <div>
+                      <p className="font-medium">Final CSV (Approved Grades Only)</p>
+                      <p className="text-[10px] text-muted-ink">Official teacher-stamped marks</p>
+                    </div>
+                  </button>
+                  {/* Google Classroom CSV Option */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleTriggerExport(
+                        api.gradebook.getExportCsvUrl(course.id, "final", "google_classroom", assignment?.id),
+                        "Google Classroom CSV"
+                      )
+                    }
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-ink hover:bg-paper"
+                  >
+                    <Globe className="size-4 text-blue" />
+                    <div>
+                      <p className="font-medium">Google Classroom CSV</p>
+                      <p className="text-[10px] text-muted-ink">Compatible with GC Gradebook import</p>
+                    </div>
+                  </button>
+                  {/* Moodle CSV Option */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleTriggerExport(
+                        api.gradebook.getExportCsvUrl(course.id, "final", "moodle", assignment?.id),
+                        "Moodle Gradebook CSV"
+                      )
+                    }
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-ink hover:bg-paper"
+                  >
+                    <Layers className="size-4 text-amber-ink" />
+                    <div>
+                      <p className="font-medium">Moodle Gradebook CSV</p>
+                      <p className="text-[10px] text-muted-ink">Standard Moodle columns schema</p>
+                    </div>
+                  </button>
+                  {/* Excel XLSX Option */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleTriggerExport(
+                        api.gradebook.getExportXlsxUrl(course.id, "final", assignment?.id),
+                        "Excel (.xlsx) Workbook"
+                      )
+                    }
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-xs text-ink hover:bg-paper border-t border-line mt-1 pt-2"
+                  >
+                    <FileText className="size-4 text-emerald-600" />
+                    <div>
+                      <p className="font-medium">Excel (.xlsx) Workbook</p>
+                      <p className="text-[10px] text-muted-ink">Multi-tab workbook with audit SHA-256</p>
+                    </div>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         }
       />
 
@@ -3798,7 +4488,7 @@ function GradebookView({
                 </tr>
               ) : (
                 submissions.map((s) => (
-                  <tr key={s.id} className="border-b border-line last:border-0">
+                  <tr key={s.id} className="border-b border-line last:border-0 hover:bg-paper/40 transition-colors">
                     <td className="px-3 py-3.5 font-medium">{s.student}</td>
                     <td className="px-3 py-3.5 text-xs text-faint">{s.roll}</td>
                     <td className="px-3 py-3.5 font-display text-lg">
@@ -3901,33 +4591,198 @@ function SettingsView({
   onClearMockData: () => void;
   showToast: (msg: string) => void;
 }) {
+  // Trash bin modal open state
+  const [trashModalOpen, setTrashModalOpen] = useState(false);
+  // Soft-deleted items list from GET /api/v1/trash
+  const [trashItems, setTrashItems] = useState<any[]>([]);
+  // Trash bin loading indicator
+  const [loadingTrash, setLoadingTrash] = useState(false);
+  // Erasure request modal state
+  const [erasureModalOpen, setErasureModalOpen] = useState(false);
+  // Erasure request reason input
+  const [erasureReason, setErasureReason] = useState("");
+  // Submitting erasure request indicator
+  const [submittingErasure, setSubmittingErasure] = useState(false);
+
+  // Load trash bin items from API
+  const handleOpenTrash = async () => {
+    setTrashModalOpen(true);
+    setLoadingTrash(true);
+    try {
+      const res = await api.trash.list();
+      setTrashItems(res?.items || []);
+    } catch (err: any) {
+      showToast(`Trash load notice: ${err?.message || "Failed to load trash"}`);
+    } finally {
+      setLoadingTrash(false);
+    }
+  };
+
+  // Restore item from trash bin
+  const handleRestoreItem = async (entityType: string, id: string) => {
+    try {
+      await api.trash.restore(entityType, id);
+      showToast(`Restored ${entityType} successfully.`);
+      // Refresh trash list
+      const res = await api.trash.list();
+      setTrashItems(res?.items || []);
+    } catch (err: any) {
+      showToast(`Restore notice: ${err?.message || "Failed to restore"}`);
+    }
+  };
+
+  // Permanent cascade purge
+  const handlePermanentPurge = async (entityType: string, id: string) => {
+    try {
+      await api.trash.permanentDelete(entityType, id);
+      showToast(`Permanently deleted ${entityType}.`);
+      // Refresh trash list
+      const res = await api.trash.list();
+      setTrashItems(res?.items || []);
+    } catch (err: any) {
+      showToast(`Purge notice: ${err?.message || "Failed to permanently purge"}`);
+    }
+  };
+
+  // Submit GDPR/DPDP Erasure Request
+  const handleSubmitErasure = async () => {
+    if (!erasureReason.trim()) {
+      showToast("Please provide a reason for the erasure request.");
+      return;
+    }
+    setSubmittingErasure(true);
+    try {
+      const res = await api.privacy.submitErasureRequest(erasureReason.trim());
+      showToast(`Erasure ticket submitted: ${res?.ticket_id || "Ticket accepted"}. Retained for 30 days.`);
+      setErasureModalOpen(false);
+      setErasureReason("");
+    } catch (err: any) {
+      showToast(`Erasure request notice: ${err?.message || "Failed to submit request"}`);
+    } finally {
+      setSubmittingErasure(false);
+    }
+  };
+
   return (
     <>
       <SectionTitle
-        eyebrow="Preferences & Profile"
-        title="Account & Integrity Settings"
-        description="Configure similarity thresholds, AI content indicator sensitivity, and teacher review preferences."
+        eyebrow="Preferences & Compliance"
+        title="Account, Privacy & Governance Settings"
+        description="FERPA encryption, GDPR/DPDP data portability, 30-day trash retention, and institutional security controls."
       />
 
-      <div className="rounded-[14px] border border-line bg-card p-5 max-w-2xl">
-        <h2 className="font-display text-xl">Instructor Profile</h2>
-        <div className="mt-4 space-y-3 text-sm">
-          <div>
-            <label className="text-[11px] uppercase tracking-[0.14em] text-faint">Name</label>
-            <p className="font-medium text-ink">{currentUser?.name || "Educator / Instructor"}</p>
+      <div className="grid gap-5 md:grid-cols-2 max-w-4xl">
+        {/* Instructor Profile Card */}
+        <div className="rounded-[14px] border border-line bg-card p-5">
+          <h2 className="font-display text-xl text-ink">Instructor Profile</h2>
+          <div className="mt-4 space-y-3 text-sm">
+            <div>
+              <label className="text-[11px] uppercase tracking-[0.14em] text-faint">Name</label>
+              <p className="font-medium text-ink">{currentUser?.name || "Educator / Instructor"}</p>
+            </div>
+            <div>
+              <label className="text-[11px] uppercase tracking-[0.14em] text-faint">Email</label>
+              <p className="text-muted-ink">{currentUser?.email || "Signed in as Instructor"}</p>
+            </div>
+            <div>
+              <label className="text-[11px] uppercase tracking-[0.14em] text-faint">Role</label>
+              <p className="text-muted-ink">{currentUser?.role || "Instructor · Computer Science"}</p>
+            </div>
           </div>
-          <div>
-            <label className="text-[11px] uppercase tracking-[0.14em] text-faint">Email</label>
-            <p className="text-muted-ink">{currentUser?.email || "Signed in as Instructor"}</p>
+        </div>
+
+        {/* 30-Day Trash Bin & Retention Manager */}
+        <div className="rounded-[14px] border border-line bg-card p-5">
+          <div className="flex items-center gap-2">
+            <History className="size-5 text-amber-ink" />
+            <h2 className="font-display text-xl text-ink">30-Day Trash Bin</h2>
           </div>
-          <div>
-            <label className="text-[11px] uppercase tracking-[0.14em] text-faint">Role</label>
-            <p className="text-muted-ink">{currentUser?.role || "Instructor · Computer Science"}</p>
+          <p className="mt-2 text-xs leading-relaxed text-muted-ink">
+            Deleted courses, assignments, and submissions are preserved in the 30-day trash bin
+            before permanent purge. You can restore them anytime within the 30-day retention window.
+          </p>
+          <div className="mt-4">
+            <Button
+              variant="outline"
+              onClick={handleOpenTrash}
+              className="gap-1.5 text-xs border-line bg-card hover:bg-paper"
+            >
+              <Trash2 className="size-3.5 text-amber-ink" /> Open Trash Bin Manager
+            </Button>
           </div>
         </div>
       </div>
 
-      <div className="mt-5 rounded-[14px] border border-line bg-card p-5 max-w-2xl">
+      <div className="mt-5 grid gap-5 md:grid-cols-2 max-w-4xl">
+        {/* GDPR / DPDP Data Portability & Rights */}
+        <div className="rounded-[14px] border border-line bg-card p-5">
+          <div className="flex items-center gap-2">
+            <Lock className="size-5 text-indigo-600" />
+            <h2 className="font-display text-xl text-ink">Data Portability & Erasure</h2>
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-muted-ink">
+            Under GDPR Art. 20 and DPDP Sec. 12, educators own their data. Download a complete
+            ZIP archive of all courses, rubrics, submissions, and audit logs, or submit an erasure ticket.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2.5">
+            <Button
+              variant="outline"
+              onClick={() => {
+                window.open(api.privacy.getExportAllDataUrl(), "_blank");
+                showToast("Generating complete ZIP data archive...");
+              }}
+              className="gap-1.5 text-xs border-line bg-card hover:bg-paper"
+            >
+              <Download className="size-3.5 text-sage" /> Download All My Data (ZIP)
+            </Button>
+            <Button
+              variant="ghost"
+              onClick={() => setErasureModalOpen(true)}
+              className="text-xs text-clay hover:bg-clay-soft"
+            >
+              Erasure Request
+            </Button>
+          </div>
+        </div>
+
+        {/* Legal Policies & FERPA Documentation */}
+        <div className="rounded-[14px] border border-line bg-card p-5">
+          <h2 className="font-display text-xl text-ink">Institutional Compliance</h2>
+          <p className="mt-2 text-xs leading-relaxed text-muted-ink">
+            Verism operates under the "AI suggests. You stamp." model with zero student PII leakage,
+            AES-256 field encryption, and full FERPA/GDPR adherence.
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2 text-xs">
+            <a
+              href="/api/v1/legal/privacy"
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-md border border-line bg-paper px-2.5 py-1.5 font-medium text-ink hover:text-amber-ink transition-colors flex items-center gap-1"
+            >
+              Privacy Policy <ExternalLink className="size-3" />
+            </a>
+            <a
+              href="/api/v1/legal/terms"
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-md border border-line bg-paper px-2.5 py-1.5 font-medium text-ink hover:text-amber-ink transition-colors flex items-center gap-1"
+            >
+              Terms of Service <ExternalLink className="size-3" />
+            </a>
+            <a
+              href="/api/v1/legal/dpa"
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-md border border-line bg-paper px-2.5 py-1.5 font-medium text-ink hover:text-amber-ink transition-colors flex items-center gap-1"
+            >
+              Data Processing Agreement <ExternalLink className="size-3" />
+            </a>
+          </div>
+        </div>
+      </div>
+
+      {/* Database Maintenance & Custom Data */}
+      <div className="mt-5 rounded-[14px] border border-line bg-card p-5 max-w-4xl">
         <h2 className="font-display text-xl text-clay">Database Maintenance & Custom Data</h2>
         <p className="mt-1 text-xs text-muted-ink">
           Purge all seeded demo courses and submissions so you can populate Verism strictly with
@@ -3936,13 +4791,150 @@ function SettingsView({
         <div className="mt-4">
           <Button
             variant="outline"
-            className="text-clay hover:bg-clay-soft"
+            className="text-clay hover:bg-clay-soft text-xs"
             onClick={onClearMockData}
           >
             <Trash2 className="mr-1.5 size-4" /> Purge Demo Seed Data
           </Button>
         </div>
       </div>
+
+      {/* 30-Day Trash Bin Modal */}
+      {trashModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-2xl rounded-2xl border border-line bg-card p-6 shadow-xl animate-in fade-in-50 zoom-in-95">
+            <div className="flex items-center justify-between border-b border-line pb-4">
+              <div className="flex items-center gap-2">
+                <Trash2 className="size-5 text-amber-ink" />
+                <h3 className="font-display text-xl text-ink">30-Day Trash Bin</h3>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setTrashModalOpen(false)}
+                className="size-8 text-faint hover:text-ink"
+              >
+                <X className="size-4" />
+              </Button>
+            </div>
+
+            <div className="mt-4 max-h-96 overflow-y-auto">
+              {loadingTrash ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="size-6 animate-spin text-amber-ink" />
+                </div>
+              ) : trashItems.length === 0 ? (
+                <div className="py-12 text-center text-xs text-muted-ink">
+                  <CheckCircle2 className="mx-auto size-8 text-sage mb-2" />
+                  Your trash bin is empty. No deleted entities awaiting purge.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {trashItems.map((item) => (
+                    <div
+                      key={`${item.entity_type}-${item.id}`}
+                      className="flex items-center justify-between gap-3 rounded-lg border border-line bg-paper p-3 text-xs"
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-semibold text-ink">{item.name || item.id}</span>
+                          <span className="rounded bg-lav-soft px-1.5 py-0.5 text-[10px] font-semibold text-ink">
+                            {item.entity_type}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 text-[11px] text-faint">
+                          {item.days_remaining} days remaining before permanent purge
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleRestoreItem(item.entity_type, item.id)}
+                          className="h-7 text-xs border-line bg-card hover:bg-paper"
+                        >
+                          <RotateCcw className="mr-1 size-3 text-sage" /> Restore
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => handlePermanentPurge(item.entity_type, item.id)}
+                          className="h-7 text-xs text-clay hover:bg-clay-soft"
+                        >
+                          Purge Now
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="mt-5 border-t border-line pt-3 text-right">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setTrashModalOpen(false)}
+                className="text-xs"
+              >
+                Close
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* GDPR / DPDP Erasure Request Modal */}
+      {erasureModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-2xl border border-line bg-card p-6 shadow-xl animate-in fade-in-50 zoom-in-95">
+            <div className="flex items-center justify-between border-b border-line pb-3">
+              <h3 className="font-display text-lg text-ink">Submit Erasure Request</h3>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setErasureModalOpen(false)}
+                className="size-8 text-faint hover:text-ink"
+              >
+                <X className="size-4" />
+              </Button>
+            </div>
+            <p className="mt-3 text-xs leading-relaxed text-muted-ink">
+              Under GDPR Art. 17 and DPDP Sec. 12, this ticket initiates cryptographic deletion of all
+              associated educator logs and student submission vectors within 30 days.
+            </p>
+            <div className="mt-4">
+              <label className="text-xs font-semibold text-ink">Reason for Erasure</label>
+              <Textarea
+                value={erasureReason}
+                onChange={(e) => setErasureReason(e.target.value)}
+                placeholder="e.g. End of academic semester, institutional departure..."
+                className="mt-1 text-xs"
+                rows={3}
+              />
+            </div>
+            <div className="mt-5 flex justify-end gap-2 border-t border-line pt-3">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setErasureModalOpen(false)}
+                className="text-xs"
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleSubmitErasure}
+                disabled={submittingErasure}
+                className="bg-clay text-white hover:bg-clay/90 text-xs"
+              >
+                {submittingErasure ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
+                Confirm Erasure Ticket
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

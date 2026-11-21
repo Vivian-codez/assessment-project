@@ -5,8 +5,9 @@
 import uuid
 # Import datetime and timezone utilities for UTC timestamping
 from datetime import datetime, timezone
-# Import SQLAlchemy column and data type primitives for table definitions
-from sqlalchemy import Column, String, DateTime, JSON
+# Import SQLAlchemy column, boolean, and data type primitives for table definitions
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, JSON
+# Import ORM relationship utility
 from sqlalchemy.orm import relationship
 
 # Import declarative Base class from app.core.database to register ORM models
@@ -15,11 +16,19 @@ from app.core.database import Base
 
 # Database model representing local user accounts for JWT authentication
 class User(Base):
+    """Database model representing local user accounts.
+
+    Maintains faculty, administrator, and instructor profiles, credentials,
+    tenant organization membership, and console preferences.
+    """
+
     # Specify target physical table name in PostgreSQL
     __tablename__ = "users"
 
     # Alphanumeric unique user identifier acting as primary key
     id = Column(String(64), primary_key=True, index=True, default=lambda: str(uuid.uuid4()))
+    # Optional foreign key referencing parent institutional organization
+    organization_id = Column(String(36), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True, index=True)
     # Full name of the user
     full_name = Column(String(255), nullable=True)
     # Full display name of the user (alias for full_name)
@@ -30,6 +39,14 @@ class User(Base):
     role = Column(String(128), default="Instructor · Computer Science")
     # Bcrypt-hashed password string for identity verification
     hashed_password = Column(String(255), nullable=False)
+    # Boolean flag tracking email verification status
+    email_verified = Column(Boolean, default=False, nullable=False)
+    # Cryptographic verification token sent via email confirmation
+    verification_token = Column(String(255), nullable=True)
+    # Cryptographic password reset token for account recovery
+    password_reset_token = Column(String(255), nullable=True)
+    # Timezone-aware UTC timestamp when password reset token expires
+    password_reset_expires_at = Column(DateTime(timezone=True), nullable=True)
     # JSON dictionary storing user preferences for console thresholds and display flags
     preferences = Column(JSON, default=lambda: {
         # Display matching context snippets alongside similarity percentages
@@ -45,7 +62,15 @@ class User(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     # Relationships
+    # Many-to-one relationship mapping the tenant organization
+    organization = relationship("Organization", back_populates="users")
+    # One-to-many relationship linking active refresh tokens
+    refresh_tokens = relationship("RefreshToken", back_populates="user", cascade="all, delete-orphan")
+    # One-to-many relationship linking courses managed by this user
+    courses = relationship("Course", back_populates="teacher", foreign_keys="[Course.user_id]", cascade="all, delete-orphan")
+    # One-to-many relationship linking assignment folders
     assignment_folders = relationship("AssignmentFolder", back_populates="user", cascade="all, delete-orphan")
+    # One-to-many relationship linking monthly usage meters
     monthly_usages = relationship("MonthlyUsage", back_populates="user", cascade="all, delete-orphan")
 
     # Constructor method synchronizing full_name and legacy name keyword arguments
@@ -64,6 +89,8 @@ class User(Base):
 
 # Database model representing active JWT authentication sessions and tokens
 class UserSession(Base):
+    """Database model tracking active user authentication sessions."""
+
     # Specify target physical table name in PostgreSQL
     __tablename__ = "user_sessions"
 

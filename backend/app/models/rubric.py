@@ -37,6 +37,8 @@ class Rubric(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     # UTC timestamp automatically updated whenever rubric settings are modified
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Optional soft-deletion timestamp indicating retention in trash bin prior to permanent purge
+    deleted_at = Column(DateTime, nullable=True)
 
     # Relationships
     # Many-to-one relationship mapping the classroom section assigned to this rubric

@@ -248,6 +248,8 @@ export interface SubmissionItem {
   aiContent: number;
   // Specify webPlagiarism? property (number)
   webPlagiarism?: number;
+  // Specify is_unmatched? property (boolean)
+  is_unmatched?: boolean | undefined;
   // Specify file_url? property (string)
   file_url?: string;
   // Specify criteria_scores? property (Array<)
@@ -472,68 +474,115 @@ export function setCachedUser(user: UserProfile): void {
   }
 }
 
-// Define function request<T>
+// Define function request<T> executing authenticated HTTP requests with token rotation
 async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
-  // Declare url variable
+  // Construct absolute API endpoint URL
   const url = `${API_BASE_URL}${endpoint}`;
-  // Declare token variable
-  const token = getAuthToken();
+  // Retrieve active JWT access token from browser storage
+  let token = getAuthToken();
 
-  // Declare headers variable
+  // Initialize request headers dictionary
   const headers: Record<string, string> = {
-    // Invoke method: ...(options.headers as Record<string, string>)
+    // Spread any custom headers supplied in options
     ...(options.headers as Record<string, string>),
   };
 
-  // Evaluate condition: if (!(options.body instanceof FormData))
+  // Set Content-Type to JSON when body is not multipart FormData
   if (!(options.body instanceof FormData)) {
-    // Execute statement: headers["Content-Type"] = "application/json"
+    // Assign JSON content type header
     headers["Content-Type"] = "application/json";
   }
 
-  // Evaluate condition: if (token)
-  if (token) {
-    // Execute statement: headers["Authorization"] = `Bearer ${token}`
+  // Attach bearer authorization header when token exists and header not already set
+  if (token && !headers["Authorization"]) {
+    // Set Authorization header with Bearer token
     headers["Authorization"] = `Bearer ${token}`;
   }
 
-  // Declare response variable
-  const response = await fetch(url, {
-    // Execute statement: ...options
+  // Configure fetch options with credentials included for secure httpOnly refresh cookie
+  const fetchOptions: RequestInit = {
+    // Include credentials (cookies) in cross-origin and same-origin requests
+    credentials: "include",
+    // Spread remaining caller options
     ...options,
-    // Execute statement: headers
+    // Provide computed request headers
     headers,
-  });
+  };
 
-  // Evaluate condition: if (!response.ok)
-  if (!response.ok) {
-    // Declare errorMsg variable
-    let errorMsg = `HTTP Error ${response.status}${response.statusText ? `: ${response.statusText}` : ""}`;
-    // Begin try block to handle operations safely
+  // Perform HTTP request using browser fetch
+  let response = await fetch(url, fetchOptions);
+
+  // Check if response is 401 Unauthorized and not on an authentication endpoint
+  if (
+    response.status === 401 &&
+    !endpoint.startsWith("/auth/login") &&
+    !endpoint.startsWith("/auth/signup") &&
+    !endpoint.startsWith("/auth/register") &&
+    !endpoint.startsWith("/auth/refresh")
+  ) {
+    // Attempt automatic refresh token rotation
     try {
-      // Declare errorJson variable
+      // Call backend refresh endpoint with credentials included
+      const refreshRes = await fetch(`${API_BASE_URL}/auth/refresh`, {
+        // Specify HTTP POST method
+        method: "POST",
+        // Send httpOnly cookies with request
+        credentials: "include",
+        // Specify JSON content type header
+        headers: { "Content-Type": "application/json" },
+      });
+
+      // Check if token refresh succeeded
+      if (refreshRes.ok) {
+        // Parse refreshed token payload
+        const refreshData = await refreshRes.json();
+        // Check if new access token was returned
+        if (refreshData.access_token) {
+          // Persist rotated access token to storage
+          setAuthToken(refreshData.access_token);
+          // Update Authorization header for retry
+          headers["Authorization"] = `Bearer ${refreshData.access_token}`;
+          // Retry original request with newly issued access token
+          response = await fetch(url, { ...fetchOptions, headers });
+        }
+      } else {
+        // Clear cached credentials when refresh token is invalid or expired
+        clearAuthToken();
+      }
+    } catch {
+      // Clear cached credentials on network failure during refresh
+      clearAuthToken();
+    }
+  }
+
+  // Check if HTTP response status indicates an error
+  if (!response.ok) {
+    // Initialize default error message with status code and text
+    let errorMsg = `HTTP Error ${response.status}${response.statusText ? `: ${response.statusText}` : ""}`;
+    // Begin try block to extract backend JSON error details
+    try {
+      // Parse JSON response body
       const errorJson = await response.json();
-      // Evaluate condition: if (errorJson.detail)
+      // Check if standard detail field is provided
       if (errorJson.detail) {
-        // Specify errorMsg = typeof errorJson.detail === "string" ? errorJson.detail property (JSON.stringify(errorJson.detail))
+        // Format string or serialize object detail
         errorMsg =
           typeof errorJson.detail === "string"
             ? errorJson.detail
             : JSON.stringify(errorJson.detail);
       }
-      // Catch and handle error: } catch
     } catch {
-      // Evaluate condition: if (response.status === 404)
+      // Provide actionable message for 404 Not Found errors
       if (response.status === 404) {
-        // Execute statement: errorMsg = `Endpoint not found (404) at ${url}. Verify backend URL configuration.`
+        // Format descriptive 404 error string
         errorMsg = `Endpoint not found (404) at ${url}. Verify backend URL configuration.`;
       }
     }
-    // Invoke method: throw new Error(errorMsg)
+    // Throw descriptive Error exception
     throw new Error(errorMsg);
   }
 
-  // Return value: response.json() as Promise<T>
+  // Return parsed JSON payload typed as T
   return response.json() as Promise<T>;
 }
 
@@ -601,6 +650,59 @@ export const api = {
       setCachedUser(res.user);
       // Return value: res
       return res;
+    },
+    // Alias register for signUp endpoint
+    register: async (data: {
+      name?: string;
+      full_name?: string;
+      email: string;
+      password: string;
+      role?: string;
+    }): Promise<AuthResponse> => {
+      // Delegate registration to signUp method
+      return api.auth.signUp(data);
+    },
+    // Explicit refresh token invocation
+    refreshToken: async (): Promise<{ access_token: string; token_type: string }> => {
+      // Request refreshed access token using httpOnly cookie
+      const res = await request<{ access_token: string; token_type: string }>("/auth/refresh", {
+        // Specify HTTP POST method
+        method: "POST",
+      });
+      // Update stored access token
+      setAuthToken(res.access_token);
+      // Return refreshed token response
+      return res;
+    },
+    // Forgot password request sending recovery instructions
+    forgotPassword: async (email: string): Promise<{ message: string }> => {
+      // Dispatch forgot password request with email
+      return request<{ message: string }>("/auth/forgot-password", {
+        // Specify HTTP POST method
+        method: "POST",
+        // Send email payload in JSON
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+      });
+    },
+    // Reset password using verified cryptographic token
+    resetPassword: async (token: string, newPassword: string): Promise<{ message: string }> => {
+      // Dispatch reset password request with token and new password
+      return request<{ message: string }>("/auth/reset-password", {
+        // Specify HTTP POST method
+        method: "POST",
+        // Send token and new password payload
+        body: JSON.stringify({ token, new_password: newPassword }),
+      });
+    },
+    // Change password for currently authenticated user
+    changePassword: async (currentPassword: string, newPassword: string): Promise<{ message: string }> => {
+      // Dispatch password update request with current and new password
+      return request<{ message: string }>("/auth/change-password", {
+        // Specify HTTP POST method
+        method: "POST",
+        // Send password update payload
+        body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+      });
     },
     // Specify logout property (async (): Promise<{ message: string }> =>)
     logout: async (): Promise<{ message: string }> => {
@@ -784,6 +886,86 @@ export const api = {
         method: "DELETE",
       });
     },
+    // Auto-save draft assignment
+    saveDraft: async (data: Record<string, any>): Promise<any> => {
+      return request<any>("/assignments/draft", {
+        method: "POST",
+        body: JSON.stringify(data),
+      });
+    },
+    // Upload reference solution file or pasted text
+    uploadReferenceSolution: async (
+      assignmentId: string,
+      file?: File,
+      solutionText?: string,
+    ): Promise<{
+      assignment_id: string;
+      filename: string;
+      file_size: number;
+      reference_solution_text: string;
+      extracted_preview: string;
+    }> => {
+      const formData = new FormData();
+      if (file) {
+        formData.append("file", file);
+      }
+      if (solutionText) {
+        formData.append("solution_text", solutionText);
+      }
+      return request<any>(`/assignments/${assignmentId}/reference-solution`, {
+        method: "POST",
+        body: formData,
+      });
+    },
+    // Upload batch submissions with roll-number matching table
+    uploadBatchSubmissions: async (
+      assignmentId: string,
+      files: File[],
+    ): Promise<{
+      assignment_id: string;
+      total_files: number;
+      matched: Array<{ filename: string; file_size: number; student_id: string; student_name: string; student_roll: string; confidence: number }>;
+      unmatched: Array<{ filename: string; file_size: number }>;
+      duplicates: Array<{ filename: string; file_size: number; student_id: string; student_name: string; student_roll: string }>;
+      roster: Array<{ id: string; name: string; roll: string }>;
+    }> => {
+      const formData = new FormData();
+      for (const f of files) {
+        formData.append("files", f);
+      }
+      return request<any>(`/assignments/${assignmentId}/submissions/upload-batch`, {
+        method: "POST",
+        body: formData,
+      });
+    },
+    // Get live grading progress
+    getGradingProgress: async (
+      assignmentId: string,
+    ): Promise<{
+      assignment_id: string;
+      status: string;
+      total: number;
+      processed: number;
+      current_stage: string;
+      progress_pct: number;
+      eta_seconds: number;
+      failed_count: number;
+      errors: string[];
+    }> => {
+      return request<any>(`/assignments/${assignmentId}/grading-progress`);
+    },
+    // Cancel active grading job
+    cancelGrading: async (assignmentId: string): Promise<any> => {
+      return request<any>(`/assignments/${assignmentId}/cancel-grading`, {
+        method: "POST",
+      });
+    },
+    // Regrade single submission
+    regradeSubmission: async (assignmentId: string, submissionId: string): Promise<any> => {
+      return request<any>(`/assignments/${assignmentId}/regrade-submission/${submissionId}`, {
+        method: "POST",
+      });
+    },
   },
 
   // ==========================================
@@ -855,6 +1037,27 @@ export const api = {
         // Specify method property ("POST")
         method: "POST",
         // Specify body property (formData)
+        body: formData,
+      });
+    },
+    parseRoster: async (
+      classroomId: string,
+      file: File,
+    ): Promise<{
+      status: string;
+      filename: string;
+      total_detected: number;
+      students: Array<{ roll_number: string; full_name: string; email?: string | undefined }>;
+    }> => {
+      const formData = new FormData();
+      formData.append("file", file);
+      return request<{
+        status: string;
+        filename: string;
+        total_detected: number;
+        students: Array<{ roll_number: string; full_name: string; email?: string | undefined }>;
+      }>(`/classrooms/${classroomId}/students/parse-roster`, {
+        method: "POST",
         body: formData,
       });
     },
@@ -962,6 +1165,26 @@ export const api = {
       if (options?.course_id) formData.append("course_id", options.course_id);
       if (options?.title) formData.append("title", options.title);
       return request<Rubric>("/rubrics/upload", {
+        method: "POST",
+        body: formData,
+      });
+    },
+    // Parse any rubric file format (PDF, DOCX, XLSX, TXT, CSV, images) with Gemini into matrix criteria
+    parseRubricFile: async (file: File): Promise<{
+      title: string;
+      total_marks: number;
+      criteria: Array<{
+        criterion_name: string;
+        description: string;
+        weight: number;
+        max_points: number;
+        levels: Array<{ level_name: string; points: number; description: string }>;
+      }>;
+      extracted_text_preview: string;
+    }> => {
+      const formData = new FormData();
+      formData.append("file", file);
+      return request<any>("/rubrics/parse-rubric-file", {
         method: "POST",
         body: formData,
       });
@@ -1314,16 +1537,131 @@ export const api = {
       // Return value: []
       return [];
     },
+    // Retrieve pairwise similarity heatmap matrix
+    getMatrix: async (assignmentId: string): Promise<{
+      assignment_id: string;
+      threshold: number;
+      nodes: Array<{ id: string; name: string; roll: string; ai_prob: number }>;
+      links: Array<{ source: string; target: string; source_name: string; target_name: string; similarity: number; status: string; matched_phrases: string[] }>;
+      matrix: number[][];
+    }> => {
+      return request<any>(`/assignments/${assignmentId}/similarity-matrix`);
+    },
+    // Retrieve structured academic integrity case report
+    getCaseReport: async (submissionId: string): Promise<any> => {
+      return request<any>(`/submissions/${submissionId}/integrity-case-report`);
+    },
+    // Update integrity flag lifecycle status and teacher notes
+    updateFlag: async (flagId: string, data: { status?: string; teacher_notes?: string }): Promise<any> => {
+      return request<any>(`/similarity/flags/${flagId}`, {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      });
+    },
+    // Trigger on-demand integrity scan across assignment
+    runIntegrityCheck: async (assignmentId: string): Promise<any> => {
+      return request<any>(`/assignments/${assignmentId}/run-integrity-check`, {
+        method: "POST",
+      });
+    },
   },
 
   // ==========================================
-  // Gradebook
+  // Gradebook & Exports
   // ==========================================
   gradebook: {
     // Specify getCourseGradebook property (async (courseId: string): Promise<any> =>)
     getCourseGradebook: async (courseId: string): Promise<any> => {
       // Return value: request<any>(`/courses/${courseId}/gradebook`)
       return request<any>(`/courses/${courseId}/gradebook`);
+    },
+    // Generate CSV download link with UTF-8 BOM and formula injection defense
+    getExportCsvUrl: (courseId: string, mode = "final", formatType = "default", assignmentId?: string): string => {
+      const q = new URLSearchParams({ mode, format: formatType });
+      if (assignmentId) q.append("assignment_id", assignmentId);
+      return `${API_BASE_URL}/courses/${courseId}/export/csv?${q.toString()}`;
+    },
+    // Generate Excel XLSX download link with branded styling and number formatting
+    getExportXlsxUrl: (courseId: string, mode = "final", assignmentId?: string): string => {
+      const q = new URLSearchParams({ mode });
+      if (assignmentId) q.append("assignment_id", assignmentId);
+      return `${API_BASE_URL}/courses/${courseId}/export/xlsx?${q.toString()}`;
+    },
+    // Toggle auto-approval setting for high-confidence evaluations
+    toggleAutoApprove: async (courseId: string, enabled: boolean): Promise<any> => {
+      return request<any>(`/courses/${courseId}/settings/auto-approve?enabled=${enabled}`, {
+        method: "POST",
+      });
+    },
+  },
+
+  // ==========================================
+  // Analytics & Dashboard Reporting
+  // ==========================================
+  analytics: {
+    // Fetch aggregated real analytics with 60s Redis caching
+    get: async (params?: { course_id?: string; assignment_id?: string; date_range?: string }): Promise<any> => {
+      const q = new URLSearchParams();
+      if (params?.course_id) q.append("course_id", params.course_id);
+      if (params?.assignment_id) q.append("assignment_id", params.assignment_id);
+      if (params?.date_range) q.append("date_range", params.date_range);
+      const queryStr = q.toString() ? `?${q.toString()}` : "";
+      return request<any>(`/analytics${queryStr}`);
+    },
+    // Load complete demo sandbox dataset into CS101-SANDBOX
+    loadDemo: async (): Promise<any> => {
+      return request<any>("/analytics/demo-data", {
+        method: "POST",
+      });
+    },
+    // Purge sandbox demo dataset and invalidate Redis cache
+    clearDemo: async (): Promise<any> => {
+      return request<any>("/analytics/demo-data", {
+        method: "DELETE",
+      });
+    },
+  },
+
+  // ==========================================
+  // 30-Day Trash Bin & Data Deletion
+  // ==========================================
+  trash: {
+    // List all soft-deleted items across courses, assignments, submissions, students, rubrics
+    list: async (): Promise<any> => {
+      return request<any>("/trash");
+    },
+    // Restore soft-deleted item from trash bin
+    restore: async (entityType: string, entityId: string): Promise<any> => {
+      return request<any>(`/trash/restore/${entityType}/${entityId}`, {
+        method: "POST",
+      });
+    },
+    // Permanently purge item immediately, cascading through files and Redis
+    permanentDelete: async (entityType: string, entityId: string): Promise<any> => {
+      return request<any>(`/trash/permanent/${entityType}/${entityId}`, {
+        method: "DELETE",
+      });
+    },
+    // Soft-delete specific entity
+    deleteCourse: async (id: string): Promise<any> => request<any>(`/courses/${id}`, { method: "DELETE" }),
+    deleteAssignment: async (id: string): Promise<any> => request<any>(`/assignments/${id}`, { method: "DELETE" }),
+    deleteSubmission: async (id: string): Promise<any> => request<any>(`/submissions/${id}`, { method: "DELETE" }),
+    deleteStudent: async (id: string): Promise<any> => request<any>(`/students/${id}`, { method: "DELETE" }),
+    deleteRubric: async (id: string): Promise<any> => request<any>(`/rubrics/${id}`, { method: "DELETE" }),
+  },
+
+  // ==========================================
+  // Privacy & GDPR/DPDP Compliance
+  // ==========================================
+  privacy: {
+    // URL to stream complete educator data ZIP archive
+    getExportAllDataUrl: (): string => `${API_BASE_URL}/user/export-all-data`,
+    // Retrieve privacy profile and processing activities
+    getProfile: async (): Promise<any> => request<any>("/privacy/me"),
+    // Submit formal GDPR Art. 17 / DPDP Sec. 12 erasure request
+    submitErasureRequest: async (reason?: string): Promise<any> => {
+      const q = reason ? `?reason=${encodeURIComponent(reason)}` : "";
+      return request<any>(`/privacy/erasure-request${q}`, { method: "POST" });
     },
   },
 };

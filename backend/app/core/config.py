@@ -54,8 +54,14 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "verism_super_secret_jwt_key_change_in_production_1234567890"
     # Optional alternative JWT secret key read from cloud environment variables
     JWT_SECRET: Optional[str] = None
-    # Access token lifespan in minutes (defaults to 1440 minutes / 24 hours)
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 1 day
+    # Access token lifespan in minutes (15 minutes per security specification)
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
+    # Rotating refresh token lifespan in days
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 14
+    # Security flag for httpOnly cookie (set to true over HTTPS in production)
+    COOKIE_SECURE: bool = False
+    # SameSite attribute for session cookies (lax or strict)
+    COOKIE_SAMESITE: str = "lax"
     # AES-256 / Fernet key used to encrypt student PII at rest for FERPA compliance
     FERPA_ENCRYPTION_KEY: str = "MbGUys4qem_FHtZy_5zx8bBSrxkTI2UWrjnhrFAHcyY="
 
@@ -186,12 +192,19 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     # Default LLM model identifier for grading and feedback evaluation
     GEMINI_MODEL: str = "gemini-flash-latest"
+    # Strong LLM model identifier for low-confidence re-evaluations
+    GEMINI_MODEL_STRONG: str = "gemini-2.5-pro"
     # Default text embedding model identifier for vector indexing
     GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
 
+    # Search and Web Integrity Providers (Optional)
+    SERPER_API_KEY: Optional[str] = None
+    BRAVE_API_KEY: Optional[str] = None
+    COPYLEAKS_API_KEY: Optional[str] = None
+
     # Evaluation Thresholds
-    # Default percentage threshold flagging peer-to-peer collision matches (90%)
-    DEFAULT_SIMILARITY_THRESHOLD: float = 90.0
+    # Default percentage threshold flagging peer-to-peer collision matches (70%)
+    DEFAULT_SIMILARITY_THRESHOLD: float = 70.0
     # Default probability threshold triggering the AI-content indicator flag (65%)
     AI_CONTENT_INDICATOR_THRESHOLD: float = 65.0
 

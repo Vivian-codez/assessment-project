@@ -497,28 +497,87 @@ def enroll_students_manual(
     }
 
 
-# Route handler to upload students roster via a CSV file
+# Route handler to parse student roster from any file format (CSV, XLSX, PDF, DOCX, TXT, Images)
+@router.post("/{classroom_id}/students/parse-roster")
+async def parse_classroom_roster(
+    classroom_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_instructor: Instructor = Depends(get_current_instructor),
+):
+    """Accepts any file format (.csv, .xlsx, .xls, .pdf, .docx, .txt, or image scans) and extracts student records using heuristics and Gemini AI."""
+    from app.services.roster_parser_service import roster_parser_service
+    contents = await file.read()
+    students = roster_parser_service.parse_roster_file(file.filename, contents)
+    return {
+        "status": "success",
+        "filename": file.filename,
+        "total_detected": len(students),
+        "students": students,
+    }
+
+
+# Route handler to upload students roster via a CSV file or multi-format document
 @router.post("/{classroom_id}/students/upload-csv", response_model=StudentUploadCSVResponse)
 # Define asynchronous endpoint function receiving classroom ID, uploaded file, db session, and instructor
 async def upload_students_csv(
     # Classroom ID path parameter
     classroom_id: str,
-    # Uploaded multipart CSV file
+    # Uploaded multipart file
     file: UploadFile = File(...),
     # Injected database session dependency
     db: Session = Depends(get_db),
     # Injected authenticated instructor dependency
     current_instructor: Instructor = Depends(get_current_instructor),
 ):
-    # Docstring explaining CSV upload, validation, parsing, and insertion
-    """Accepts a multipart CSV, parses roll_number, name, email, validates duplicates, and inserts."""
-    # Validate file extension ends with .csv
-    if not file.filename.lower().endswith(".csv"):
-        # Raise HTTP 400 Bad Request exception if file is not CSV
-        raise HTTPException(status_code=400, detail="Uploaded file must be a .csv file.")
+    """Accepts a multipart roster (.csv, .xlsx, .pdf, .docx, .txt), parses student records, validates duplicates, and inserts."""
+    from app.services.roster_parser_service import roster_parser_service
 
     # Read binary contents of uploaded file asynchronously
     contents = await file.read()
+
+    # If non-csv file, use AI-powered multi-format parser directly
+    if not file.filename.lower().endswith(".csv"):
+        extracted = roster_parser_service.parse_roster_file(file.filename, contents)
+        existing_rolls = {
+            s.roll_number.strip()
+            for s in db.query(Student).filter(Student.classroom_id == classroom_id).all()
+            if s.roll_number
+        }
+        seen_rolls_in_file = set()
+        inserted_records = []
+        skipped = []
+        for idx, item in enumerate(extracted, start=1):
+            roll = item.get("roll_number", "").strip()
+            name = item.get("full_name", "").strip()
+            email = item.get("email", "").strip()
+            if not roll or not name:
+                skipped.append({"row": idx, "roll_number": roll, "full_name": name, "reason": "Missing roll number or name"})
+                continue
+            if roll in seen_rolls_in_file:
+                skipped.append({"row": idx, "roll_number": roll, "full_name": name, "reason": f"Duplicate roll '{roll}' in file"})
+                continue
+            if roll in existing_rolls:
+                skipped.append({"row": idx, "roll_number": roll, "full_name": name, "reason": f"Student '{roll}' already enrolled"})
+                continue
+            seen_rolls_in_file.add(roll)
+            st_id = str(uuid.uuid4())
+            new_student = Student(id=st_id, classroom_id=classroom_id, roll_number=roll, full_name=name, email=email or None)
+            db.add(new_student)
+            inserted_records.append({"id": st_id, "classroom_id": classroom_id, "roll_number": roll, "full_name": name, "email": email or None})
+        db.commit()
+        active_count = db.query(Student).filter(Student.classroom_id == classroom_id).count()
+        crs = db.query(Course).filter(Course.id == classroom_id).first()
+        if crs:
+            crs.students_count = active_count
+            db.commit()
+        return StudentUploadCSVResponse(
+            status="success",
+            total_inserted=len(inserted_records),
+            total_skipped=len(skipped),
+            students=[StudentResponse(id=r["id"], classroom_id=r["classroom_id"], roll_number=r["roll_number"], full_name=r["full_name"], email=r["email"]) for r in inserted_records],
+            skipped=skipped,
+        )
     # Try decoding file contents as UTF-8 with BOM support
     try:
         # Decode contents using UTF-8-sig

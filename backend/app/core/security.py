@@ -14,10 +14,12 @@ import hashlib
 import hmac
 # Import os module to generate cryptographically secure random salt bytes via os.urandom
 import os
+# Import uuid module to generate unique token IDs (jti)
+import uuid
 # Import datetime, timedelta, and timezone from datetime for UTC timestamping and token expiry calculations
 from datetime import datetime, timedelta, timezone
 # Import type hints from typing for explicit function signatures and return annotations
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, Tuple
 
 # Import application settings singleton to retrieve system encryption keys, JWT secrets, and expiry limits
 from app.core.config import settings
@@ -260,8 +262,8 @@ def create_access_token(data: Union[dict, str, Any], expires_delta: Optional[tim
         # Calculate expiration timestamp using application settings
         expire = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 
-    # Add expiration timestamp and issued-at timestamp to claims dictionary
-    to_encode.update({"exp": expire, "iat": now})
+    # Add expiration timestamp, issued-at timestamp, and unique JWT ID (jti) to claims dictionary
+    to_encode.update({"exp": expire, "iat": now, "jti": uuid.uuid4().hex})
     # Sign and encode JWT token using application secret key and HS256 algorithm
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
 
@@ -278,6 +280,32 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
     except Exception:
         # Return None when token is invalid or expired
         return None
+
+
+# Function computing a cryptographic SHA-256 hash of a token string
+def hash_token(token: str) -> str:
+    """Computes SHA-256 hash of a token string for safe database persistence."""
+    # Compute SHA-256 hexadecimal digest
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# Function generating a cryptographically secure random rotating refresh token
+def create_refresh_token(user_id: str) -> Tuple[str, str]:
+    """Generates a secure random refresh token string and its SHA-256 hash.
+
+    Returns:
+        Tuple of (raw_token: str, token_hash: str)
+    """
+    # Generate 32 bytes of cryptographically secure random entropy
+    entropy = os.urandom(32)
+    # Encode as URL-safe base64 string
+    raw_token = base64.urlsafe_b64encode(entropy).decode("utf-8").rstrip("=")
+    # Format with user-identifying prefix
+    token_str = f"rt_{user_id}_{raw_token}"
+    # Compute SHA-256 hash for database storage
+    token_hash = hash_token(token_str)
+    # Return both plaintext token for client cookie and hash for database
+    return token_str, token_hash
 
 
 # Authentication dependency proxy resolving current user from token

@@ -3,15 +3,23 @@
 
 # Import uuid library for generating unique assignment and course identifiers
 import uuid
-# Import typing annotations for list and optional values
-from typing import List, Optional
-# Import FastAPI routing constructs, dependency injection, and HTTP exceptions
-from fastapi import APIRouter, Depends, HTTPException, status
+# Import standard library modules for multi-format file and zip handling
+import os
+import io
+import re
+import json
+import zipfile
+# Import typing annotations for list, optional, dictionary, and any values
+from typing import List, Optional, Dict, Any
+# Import FastAPI routing constructs, dependency injection, HTTP exceptions, and upload constructs
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Body
 # Import SQLAlchemy Session type for database operations
 from sqlalchemy.orm import Session
 
 # Import dependency helper to obtain a database session
 from app.core.database import get_db
+# Import application settings configuration
+from app.core.config import settings
 # Import Supabase client instance for remote synchronization
 from app.core.supabase import supabase
 # Import application logger for error and audit logging
@@ -20,11 +28,21 @@ from app.core.logging import logger
 from app.models.assignment import Assignment
 # Import Course SQLAlchemy model
 from app.models.course import Course
+# Import Student SQLAlchemy model
+from app.models.student import Student
+# Import Submission SQLAlchemy model
+from app.models.submission import Submission
+# Import DraftGrade SQLAlchemy model
+from app.models.draft_grade import DraftGrade
 # Import Instructor SQLAlchemy model and auth dependency
 from app.models.instructor import Instructor
 from app.api.v1.auth import get_current_instructor
 # Import assignment request and response Pydantic schemas
 from app.schemas.assignment import AssignmentCreate, AssignmentResponse
+# Import PDF and document extraction service
+from app.services.pdf_service import pdf_service
+# Import Redis helpers for live progress streaming
+from app.workers.evaluation_tasks import get_redis_client, update_assignment_progress
 
 # Initialize API router with OpenAPI tag for assignment operations
 router = APIRouter(tags=["Assignments"])
@@ -475,3 +493,383 @@ def delete_assignment(
             logger.warning(f"Supabase assignment delete notice: {e}")
 
     return None
+
+
+# HTTP POST route handler auto-saving assignment drafts from the 4-step wizard
+@router.post("/assignments/draft")
+def auto_save_assignment_draft(
+    # Request body payload containing draft parameters
+    payload: Dict[str, Any] = Body(...),
+    # Injected database session dependency
+    db: Session = Depends(get_db),
+    # Authenticated instructor dependency
+    current_instructor: Instructor = Depends(get_current_instructor),
+):
+    # Route docstring describing draft auto-saving
+    """Auto-saves assignment draft state during wizard progression with Draft status."""
+    # Resolve assignment ID if existing draft
+    assign_id = payload.get("id")
+    # Resolve target course ID
+    course_id = payload.get("course_id")
+
+    # If course_id is missing, fallback to first available course
+    if not course_id:
+        course = db.query(Course).first()
+        course_id = course.id if course else "c_default"
+
+    # Query for existing assignment draft if ID provided
+    assignment = None
+    if assign_id:
+        assignment = db.query(Assignment).filter(Assignment.id == assign_id).first()
+
+    # If assignment draft exists, update its attributes
+    if assignment:
+        if "title" in payload:
+            assignment.title = payload["title"] or "Untitled Assignment Draft"
+        if "description" in payload:
+            assignment.description = payload["description"]
+        if "max_score" in payload:
+            assignment.max_score = float(payload.get("max_score") or 100.0)
+        if "rubric_id" in payload:
+            assignment.rubric_id = payload["rubric_id"]
+        if "reference_assignment_text" in payload:
+            assignment.reference_assignment_text = payload["reference_assignment_text"]
+        if "assignment_type" in payload:
+            assignment.assignment_type = payload["assignment_type"]
+        if "similarity_threshold" in payload:
+            assignment.similarity_threshold = float(payload.get("similarity_threshold") or 70.0)
+        if "starter_code" in payload:
+            assignment.starter_code = payload["starter_code"]
+        # Ensure status is Draft
+        if not assignment.status or assignment.status == "Draft":
+            assignment.status = "Draft"
+    else:
+        # Create new draft assignment
+        assign_id = assign_id or f"assign_{uuid.uuid4().hex[:12]}"
+        assignment = Assignment(
+            id=assign_id,
+            course_id=course_id,
+            title=payload.get("title") or "Untitled Assignment Draft",
+            description=payload.get("description", ""),
+            max_score=float(payload.get("max_score") or 100.0),
+            rubric_id=payload.get("rubric_id"),
+            reference_assignment_text=payload.get("reference_assignment_text"),
+            status="Draft",
+            assignment_type=payload.get("assignment_type", "homework"),
+            similarity_threshold=float(payload.get("similarity_threshold") or 70.0),
+            starter_code=payload.get("starter_code", ""),
+        )
+        db.add(assignment)
+
+    # Commit changes to database
+    db.commit()
+    db.refresh(assignment)
+
+    # Return draft assignment details
+    return {
+        "id": assignment.id,
+        "course_id": assignment.course_id,
+        "title": assignment.title,
+        "description": assignment.description,
+        "status": assignment.status,
+        "max_score": assignment.max_score,
+        "rubric_id": assignment.rubric_id,
+        "reference_assignment_text": assignment.reference_assignment_text,
+        "assignment_type": assignment.assignment_type,
+        "similarity_threshold": assignment.similarity_threshold,
+        "starter_code": assignment.starter_code,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+# HTTP POST route handler uploading or setting benchmark reference solution
+@router.post("/assignments/{assignment_id}/reference-solution")
+async def upload_reference_solution(
+    assignment_id: str,
+    file: Optional[UploadFile] = File(None),
+    solution_text: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    current_instructor: Instructor = Depends(get_current_instructor),
+):
+    """Universal reference solution ingestion: accepts any file format or pasted text and previews extracted content."""
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    extracted = ""
+    filename = "pasted_text"
+    file_size = 0
+
+    if file:
+        filename = file.filename or "reference_document"
+        content = await file.read()
+        file_size = len(content)
+        ext = filename.lower().split(".")[-1] if "." in filename else ""
+        if ext in ["txt", "py", "java", "cpp", "c", "js", "ts", "md", "csv"]:
+            try:
+                extracted = content.decode("utf-8", errors="ignore")
+            except Exception:
+                extracted = ""
+        elif ext == "pdf":
+            try:
+                extracted = pdf_service.extract_text_from_bytes(content, filename)
+            except Exception:
+                extracted = f"Reference PDF: {filename}"
+        elif ext == "docx":
+            try:
+                import docx
+                doc = docx.Document(io.BytesIO(content))
+                extracted = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+            except Exception:
+                extracted = f"Reference DOCX: {filename}"
+        else:
+            extracted = f"Reference Asset: {filename} ({file_size} bytes)"
+
+    if solution_text and solution_text.strip():
+        extracted = solution_text.strip() if not extracted else f"{extracted}\n\n{solution_text.strip()}"
+
+    if not extracted:
+        extracted = "Benchmark Reference Solution: Adheres strictly to assignment requirements."
+
+    assignment.reference_assignment_text = extracted
+    db.commit()
+    db.refresh(assignment)
+
+    return {
+        "assignment_id": assignment.id,
+        "filename": filename,
+        "file_size": file_size,
+        "reference_solution_text": extracted,
+        "extracted_preview": (extracted[:350] + "...") if len(extracted) > 350 else extracted,
+    }
+
+
+# HTTP POST route handler uploading batch submissions with universal format parsing and roll-number matching
+@router.post("/assignments/{assignment_id}/submissions/upload-batch")
+async def upload_batch_submissions(
+    assignment_id: str,
+    files: List[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+    current_instructor: Instructor = Depends(get_current_instructor),
+):
+    """Universal submission ingestion: accepts multi-file or ZIP drop, performs roll number matching, and returns matching preview table."""
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    students = []
+    if assignment.course_id:
+        students = db.query(Student).filter(Student.classroom_id == assignment.course_id).all()
+        if not students:
+            from app.models.course import Course
+            crs = db.query(Course).filter(Course.id == assignment.course_id).first()
+            if crs:
+                students = db.query(Student).all()
+    else:
+        students = db.query(Student).all()
+
+    extracted_files = []
+    for f in files:
+        fname = f.filename or "submission_file"
+        b_content = await f.read()
+        f_size = len(b_content)
+        ext = fname.lower().split(".")[-1] if "." in fname else ""
+
+        if ext == "zip":
+            try:
+                with zipfile.ZipFile(io.BytesIO(b_content)) as z:
+                    for item in z.infolist():
+                        if item.is_dir():
+                            continue
+                        norm_name = os.path.normpath(item.filename)
+                        if norm_name.startswith("..") or os.path.isabs(norm_name):
+                            continue
+                        lower_name = norm_name.lower()
+                        if any(ignored in lower_name for ignored in ["node_modules", ".git", ".venv", "__pycache__", "build", "dist"]):
+                            continue
+                        sub_bytes = z.read(item.filename)
+                        extracted_files.append((os.path.basename(norm_name), sub_bytes, len(sub_bytes)))
+            except Exception as e:
+                logger.warning(f"Error reading zip archive {fname}: {e}")
+                extracted_files.append((fname, b_content, f_size))
+        else:
+            extracted_files.append((fname, b_content, f_size))
+
+    matched_list = []
+    unmatched_list = []
+    duplicate_list = []
+    matched_student_ids = set()
+
+    for item_name, item_bytes, item_size in extracted_files:
+        best_student = None
+        best_conf = 0.0
+
+        for s in students:
+            s_roll = (s.roll_number or "").lower()
+            s_name = (s.name or "").lower()
+            f_lower = item_name.lower()
+
+            if s_roll and s_roll in f_lower:
+                best_student = s
+                best_conf = 0.98
+                break
+            elif s_name and (s_name in f_lower or any(part in f_lower for part in s_name.split() if len(part) > 2)):
+                if best_conf < 0.85:
+                    best_student = s
+                    best_conf = 0.85
+
+        roll_match = re.search(r"\b(\d{4}[-_]\d{3,4}|\d{7,10}|[A-Z]{2,4}\d{4,8})\b", item_name, re.IGNORECASE)
+        if not best_student and roll_match and students:
+            found_roll = roll_match.group(1).lower()
+            for s in students:
+                if (s.roll_number or "").lower() == found_roll:
+                    best_student = s
+                    best_conf = 0.95
+                    break
+
+        if best_student:
+            if best_student.id in matched_student_ids:
+                duplicate_list.append({
+                    "filename": item_name,
+                    "file_size": item_size,
+                    "student_id": best_student.id,
+                    "student_name": best_student.name,
+                    "student_roll": best_student.roll_number,
+                })
+            else:
+                matched_student_ids.add(best_student.id)
+                matched_list.append({
+                    "filename": item_name,
+                    "file_size": item_size,
+                    "student_id": best_student.id,
+                    "student_name": best_student.name,
+                    "student_roll": best_student.roll_number,
+                    "confidence": best_conf,
+                })
+                # Persist or update submission in database
+                sub_id = f"sub_{uuid.uuid4().hex[:12]}"
+                text_content = ""
+                try:
+                    text_content = item_bytes.decode("utf-8", errors="ignore")
+                except Exception:
+                    text_content = f"Uploaded submission: {item_name}"
+
+                new_sub = Submission(
+                    id=sub_id,
+                    assignment_id=assignment.id,
+                    student_id=best_student.id,
+                    student_name=best_student.name,
+                    student_roll=best_student.roll_number,
+                    file_name=item_name,
+                    extracted_text=text_content,
+                    content=text_content,
+                    status="unprocessed",
+                )
+                db.add(new_sub)
+        else:
+            unmatched_list.append({
+                "filename": item_name,
+                "file_size": item_size,
+            })
+
+    db.commit()
+
+    return {
+        "assignment_id": assignment.id,
+        "total_files": len(extracted_files),
+        "matched": matched_list,
+        "unmatched": unmatched_list,
+        "duplicates": duplicate_list,
+        "roster": [
+            {"id": s.id, "name": s.name, "roll": s.roll_number}
+            for s in students
+        ],
+    }
+
+
+# HTTP GET route handler polling real-time grading progress from Redis
+@router.get("/assignments/{assignment_id}/grading-progress")
+def get_assignment_grading_progress(
+    assignment_id: str,
+    db: Session = Depends(get_db),
+):
+    """Streams/polls live evaluation progress: per-submission states, ETA seconds, and progress percentage."""
+    client = get_redis_client()
+    if client:
+        try:
+            cached_progress = client.get(f"assignment_progress:{assignment_id}")
+            if cached_progress:
+                return json.loads(cached_progress.decode("utf-8"))
+        except Exception:
+            pass
+
+    # Database fallback if not in Redis
+    total = db.query(Submission).filter(Submission.assignment_id == assignment_id).count()
+    completed = db.query(Submission).filter(Submission.assignment_id == assignment_id, Submission.status == "completed").count()
+
+    return {
+        "assignment_id": assignment_id,
+        "status": "ready_for_review" if (completed == total and total > 0) else "idle",
+        "total": total,
+        "processed": completed,
+        "current_stage": "idle" if completed == 0 else ("ready_for_review" if completed == total else "grading"),
+        "progress_pct": round((completed / total) * 100.0, 1) if total > 0 else 0.0,
+        "eta_seconds": 0,
+        "failed_count": 0,
+        "errors": [],
+    }
+
+
+# HTTP POST route handler to cancel an active grading run
+@router.post("/assignments/{assignment_id}/cancel-grading")
+def cancel_assignment_grading(
+    assignment_id: str,
+    db: Session = Depends(get_db),
+    current_instructor: Instructor = Depends(get_current_instructor),
+):
+    """Signals cancellation to running Celery grading pipeline for an assignment."""
+    client = get_redis_client()
+    if client:
+        try:
+            client.set(f"cancel_grading:{assignment_id}", "1", ex=3600)
+        except Exception:
+            pass
+
+    update_assignment_progress(
+        assignment_id,
+        {
+            "status": "cancelled",
+            "total": 0,
+            "processed": 0,
+            "current_stage": "cancelled",
+            "progress_pct": 0.0,
+            "eta_seconds": 0,
+            "failed_count": 0,
+            "errors": ["Grading cancelled by user."],
+        },
+    )
+
+    return {"status": "cancelled", "assignment_id": assignment_id, "message": "Grading cancelled successfully."}
+
+
+# HTTP POST route handler to re-grade a single submission
+@router.post("/assignments/{assignment_id}/regrade-submission/{submission_id}")
+def regrade_single_submission(
+    assignment_id: str,
+    submission_id: str,
+    db: Session = Depends(get_db),
+    current_instructor: Instructor = Depends(get_current_instructor),
+):
+    """Re-runs grading for a single submission using Phase 5 prompt and strict Python arithmetic."""
+    sub = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    from app.workers.evaluation_tasks import run_evaluation_batch_logic
+    result = run_evaluation_batch_logic(
+        job_id=f"regrade_{submission_id[:8]}",
+        assignment_id=assignment_id,
+        submission_ids=[submission_id],
+    )
+    return {"status": "completed", "submission_id": submission_id, "result": result}
+

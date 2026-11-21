@@ -86,3 +86,19 @@ class RubricResponse(BaseModel):
     created_at: Optional[str] = None
     # Complete list of criteria and levels in this rubric
     criteria: List[RubricCriterionSchema] = []
+
+
+# Schema for returning parsed rubric file output for teacher review in Step 3 wizard
+class Phase3ParsedRubricResponse(BaseModel):
+    # Configure model to support reading from ORM attributes and mapping by alias
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    # Title extracted from document
+    title: str = Field(default="Parsed Matrix Rubric", description="Extracted rubric title")
+    # Total marks computed from criteria
+    total_marks: float = Field(default=100.0, description="Total maximum score")
+    # List of parsed criteria with descending tiers
+    criteria: List[RubricCriterionSchema] = Field(default_factory=list, description="Extracted criteria and tiers")
+    # Raw extracted text preview
+    extracted_text_preview: str = Field(default="", description="Snippet of raw text extracted from file")
+

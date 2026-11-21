@@ -32,10 +32,20 @@ class Assignment(Base):
     rubric_id = Column(String(64), ForeignKey("rubrics.id", ondelete="SET NULL"), nullable=True)
     # Teacher reference exemplar solution text used by AI for grounding and benchmarking
     reference_assignment_text = Column(Text, nullable=True)  # Exemplar solution/ground truth
+    # Status of the assignment: Draft, Open, Grading, Reviewed, Published
+    status = Column(String(32), default="Draft", index=True, nullable=False)
+    # Categorical assignment type (homework, exam, lab, project)
+    assignment_type = Column(String(64), default="homework", nullable=False)
+    # Configurable similarity threshold percentage for plagiarism collision alerts (defaults to 70.0%)
+    similarity_threshold = Column(Float, default=70.0, nullable=False)
+    # Optional starter code, boilerplate, or template provided to students to exclude from similarity scans
+    starter_code = Column(Text, nullable=True)
     # UTC timestamp recording when the assignment was configured
     created_at = Column(DateTime, default=datetime.utcnow)
     # UTC timestamp recording when assignment attributes were last modified
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    # Optional soft-deletion timestamp indicating retention in trash bin prior to permanent purge
+    deleted_at = Column(DateTime, nullable=True)
 
     # Relationships
     # Many-to-one relationship mapping the parent course entity

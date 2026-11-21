@@ -1,60 +1,105 @@
+# Docker Compose deployment specification for Verism AI full-stack platform
 version: "3.8"
 
 services:
+  # Primary relational database container running PostgreSQL 16
   db:
+    # Use official lightweight Alpine image for PostgreSQL 16
     image: postgres:16-alpine
+    # Explicit container identifier
     container_name: verism_postgres
+    # Automatically restart service unless manually stopped
     restart: unless-stopped
+    # Environment variables configuring PostgreSQL database credentials
     environment:
+      # Database superuser name
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      # Database superuser password
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      # Initial database name to create
       POSTGRES_DB: ${POSTGRES_DB:-verism_db}
+    # Map host port 5432 to container port 5432
     ports:
       - "5432:5432"
+    # Mount persistent storage volume and initialization scripts
     volumes:
+      # Mount PostgreSQL data directory to host volume
       - postgres_data:/var/lib/postgresql/data
+      # Mount schema initialization script into entrypoint directory
       - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    # Health check ensuring PostgreSQL is ready to accept connections before starting dependents
     healthcheck:
+      # Execute pg_isready diagnostic binary inside container
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-verism_db}"]
+      # Interval between healthcheck probes
       interval: 5s
+      # Maximum timeout per probe
       timeout: 5s
+      # Number of consecutive failures before marking container unhealthy
       retries: 5
 
+  # In-memory data store for Celery task queuing, caching, and rate limiting
   redis:
+    # Use official lightweight Alpine image for Redis 7
     image: redis:7-alpine
+    # Explicit container identifier
     container_name: verism_redis
+    # Automatically restart service unless manually stopped
     restart: unless-stopped
+    # Map host port 6379 to container port 6379
     ports:
       - "6379:6379"
+    # Mount persistent storage volume for Redis state dumps
     volumes:
       - redis_data:/data
+    # Health check verifying Redis responsiveness via ping
     healthcheck:
+      # Execute redis-cli ping command
       test: ["CMD", "redis-cli", "ping"]
+      # Interval between healthcheck probes
       interval: 5s
+      # Maximum timeout per probe
       timeout: 3s
+      # Number of consecutive failures before marking container unhealthy
       retries: 5
 
+  # Vector search engine for submission embedding similarity matching
   qdrant:
+    # Use official pinned Qdrant image
     image: qdrant/qdrant:v1.10.0
+    # Explicit container identifier
     container_name: verism_qdrant
+    # Automatically restart service unless manually stopped
     restart: unless-stopped
+    # Expose HTTP REST API and gRPC ports
     ports:
+      # REST API port
       - "6333:6333"
+      # gRPC protocol port
       - "6334:6334"
+    # Mount persistent storage volume for vector collections
     volumes:
       - qdrant_data:/qdrant/storage
+    # Configure gRPC port inside container environment
     environment:
       - QDRANT__SERVICE__GRPC_PORT=6334
 
+  # FastAPI REST API application service
   backend_api:
+    # Build from local backend directory using production Dockerfile
     build:
       context: ./backend
       dockerfile: Dockerfile
+    # Explicit container identifier
     container_name: verism_api
+    # Automatically restart service unless manually stopped
     restart: unless-stopped
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # Startup command running Uvicorn server with hot-reload in development
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # Map host port 8000 to container port 8000
     ports:
       - "8000:8000"
+    # Inject application runtime configuration environment variables
     environment:
       - APP_ENV=development
       - DEBUG=true
@@ -67,9 +112,11 @@ services:
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
       - FERPA_ENCRYPTION_KEY=${FERPA_ENCRYPTION_KEY:-MbGUys4qem_FHtZy_5zx8bBSrxkTI2UWrjnhrFAHcyY=}
       - BACKEND_CORS_ORIGINS=["http://localhost:3000","http://localhost:5173","http://127.0.0.1:3000","http://127.0.0.1:5173","http://localhost:8080"]
+    # Mount source code volume and uploaded files volume
     volumes:
       - ./backend:/app
       - uploads_data:/app/uploads
+    # Wait for database and redis healthchecks before starting API service
     depends_on:
       db:
         condition: service_healthy
@@ -78,13 +125,63 @@ services:
       qdrant:
         condition: service_started
 
-  celery_worker:
+  # Dedicated Celery Worker: Text & Archive Extraction Queue
+  worker_extract:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: verism_celery_worker
+    container_name: verism_worker_extract
     restart: unless-stopped
-    command: celery -A app.workers.celery_app.celery_app worker --loglevel=info --concurrency=4
+    command: celery -A app.workers.celery_app.celery_app worker -Q extract --loglevel=info --concurrency=2 -n extract_worker@%h
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-verism_db}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - FERPA_ENCRYPTION_KEY=${FERPA_ENCRYPTION_KEY:-MbGUys4qem_FHtZy_5zx8bBSrxkTI2UWrjnhrFAHcyY=}
+    volumes:
+      - ./backend:/app
+      - uploads_data:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Dedicated Celery Worker: Optical Character Recognition & Multimodal Parsing Queue
+  worker_ocr:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: verism_worker_ocr
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app.celery_app worker -Q ocr --loglevel=info --concurrency=2 -n ocr_worker@%h
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-verism_db}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - FERPA_ENCRYPTION_KEY=${FERPA_ENCRYPTION_KEY:-MbGUys4qem_FHtZy_5zx8bBSrxkTI2UWrjnhrFAHcyY=}
+    volumes:
+      - ./backend:/app
+      - uploads_data:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Dedicated Celery Worker: AI Rubric Grading & Benchmarking Queue
+  worker_grade:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: verism_worker_grade
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app.celery_app worker -Q grade,celery --loglevel=info --concurrency=4 -n grade_worker@%h
     environment:
       - APP_ENV=development
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-verism_db}
@@ -106,21 +203,105 @@ services:
       qdrant:
         condition: service_started
 
+  # Dedicated Celery Worker: Vector Similarity & Peer-to-Peer Collision Queue
+  worker_similarity:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: verism_worker_similarity
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app.celery_app worker -Q similarity --loglevel=info --concurrency=2 -n similarity_worker@%h
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-verism_db}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - FERPA_ENCRYPTION_KEY=${FERPA_ENCRYPTION_KEY:-MbGUys4qem_FHtZy_5zx8bBSrxkTI2UWrjnhrFAHcyY=}
+    volumes:
+      - ./backend:/app
+      - uploads_data:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+
+  # Dedicated Celery Worker: Gradebook & Analytics Report Export Queue
+  worker_export:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: verism_worker_export
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app.celery_app worker -Q export --loglevel=info --concurrency=2 -n export_worker@%h
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-verism_db}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - FERPA_ENCRYPTION_KEY=${FERPA_ENCRYPTION_KEY:-MbGUys4qem_FHtZy_5zx8bBSrxkTI2UWrjnhrFAHcyY=}
+    volumes:
+      - ./backend:/app
+      - uploads_data:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Celery Beat Scheduler: Periodic Cleanup & Health Maintenance
+  celery_beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: verism_celery_beat
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app.celery_app beat --loglevel=info
+    environment:
+      - APP_ENV=development
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-verism_db}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./backend:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Frontend Single Page Application served via Nginx on port 3000
   frontend:
+    # Build from local frontend directory using multi-stage Dockerfile
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    # Explicit container identifier
     container_name: verism_frontend
+    # Automatically restart service unless manually stopped
     restart: unless-stopped
+    # Expose port 3000 to host
     ports:
       - "3000:3000"
+    # Runtime configuration for API connection
     environment:
       - VITE_API_BASE_URL=http://localhost:8000/api/v1
+    # Ensure backend API service is running before starting web server
     depends_on:
       - backend_api
 
+# Top-level persistent Docker storage volume definitions
 volumes:
+  # Persistent PostgreSQL relational data storage
   postgres_data:
+  # Persistent Redis cache and message queue storage
   redis_data:
+  # Persistent Qdrant vector database collection storage
   qdrant_data:
+  # Persistent uploaded assignment submissions and student files
   uploads_data:

@@ -30,12 +30,16 @@ from app.api.v1.reports import router as reports_router
 from app.api.v1.audit import router as audit_router
 # Import multi-tenant assignment folders and evaluation pipeline sub-router
 from app.api.v1.folders import router as folders_router
+# Import data deletion, trash bin, and privacy compliance sub-router
+from app.api.v1.deletion import router as deletion_router
 
 # Initialize master FastAPI v1 router instance
 api_v1_router = APIRouter()
 
 # Mount authentication router endpoints onto v1 router
 api_v1_router.include_router(auth_router)
+# Mount data deletion, 30-day trash bin, and privacy compliance endpoints first for priority matching
+api_v1_router.include_router(deletion_router)
 # Mount courses router endpoints onto v1 router
 api_v1_router.include_router(courses_router)
 # Mount classrooms router endpoints onto v1 router

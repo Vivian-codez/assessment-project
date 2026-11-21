@@ -56,6 +56,8 @@ class SubmissionResponse(BaseModel):
     file_url: Optional[str] = None
     # Optional list of criterion scores breakdown dictionaries
     criteria_scores: Optional[List[dict]] = None
+    # Indicates whether the submission could not be matched to an enrolled student
+    is_unmatched: Optional[bool] = False
     # Optional qualitative feedback summary for the submission
     feedback: Optional[str] = None
     # Optional full integrity audit and plagiarism report dictionary

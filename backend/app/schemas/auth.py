@@ -98,5 +98,50 @@ class AuthResponse(BaseModel):
     access_token: str
     # The token type identifier, defaulting to bearer
     token_type: str = "bearer"
+    # Detailed profile data of the authenticated user
+    user: UserResponse
+
+
+# Schema for token refresh requests
+class TokenRefreshRequest(BaseModel):
+    # Optional raw refresh token string (fallback when cookies are unavailable)
+    refresh_token: Optional[str] = None
+
+
+# Schema for returning newly issued access token upon refresh
+class TokenRefreshResponse(BaseModel):
+    # New JWT access token string
+    access_token: str
+    # Token type identifier
+    token_type: str = "bearer"
+
+
+# Schema for password change request
+class ChangePasswordRequest(BaseModel):
+    # Current active password for verification
+    current_password: str
+    # New replacement password
+    new_password: str
+
+
+# Schema for requesting password reset instructions
+class ForgotPasswordRequest(BaseModel):
+    # Email address of account to recover
+    email: EmailStr
+
+
+# Schema for resetting password with cryptographic recovery token
+class ResetPasswordRequest(BaseModel):
+    # Password reset token received by user
+    token: str
+    # New replacement password
+    new_password: str
+
+
+# Schema for email verification requests
+class VerifyEmailRequest(BaseModel):
+    # Verification token string received via email
+    token: str
+
     # Detailed user profile associated with the generated token
     user: UserResponse
