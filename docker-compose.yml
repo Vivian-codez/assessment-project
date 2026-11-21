@@ -1,13 +1,19 @@
 # Docker Compose deployment specification for Verism AI full-stack platform
+# Configured with segregated Celery workers, MinIO S3 object storage, and Supabase managed PostgreSQL
 version: "3.8"
 
+# Top-level service specifications
 services:
-  # Primary relational database container running PostgreSQL 16
+  # Local relational database container running PostgreSQL 16 (isolated behind local-db profile)
   db:
     # Use official lightweight Alpine image for PostgreSQL 16
     image: postgres:16-alpine
     # Explicit container identifier
     container_name: verism_postgres
+    # Isolate local PostgreSQL container behind local-db profile so it never starts unless requested
+    profiles:
+      # Profile identifier for local PostgreSQL container
+      - local-db
     # Automatically restart service unless manually stopped
     restart: unless-stopped
     # Environment variables configuring PostgreSQL database credentials
@@ -20,6 +26,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-verism_db}
     # Map host port 5432 to container port 5432
     ports:
+      # Host to container port mapping
       - "5432:5432"
     # Mount persistent storage volume and initialization scripts
     volumes:
@@ -37,6 +44,16 @@ services:
       timeout: 5s
       # Number of consecutive failures before marking container unhealthy
       retries: 5
+    # Resource constraints to prevent local host resource exhaustion
+    deploy:
+      # Resources block
+      resources:
+        # Limits definition
+        limits:
+          # Maximum CPU quota (1.0 core)
+          cpus: '1.0'
+          # Maximum memory quota (1 Gigabyte)
+          memory: 1G
 
   # In-memory data store for Celery task queuing, caching, and rate limiting
   redis:
@@ -48,9 +65,11 @@ services:
     restart: unless-stopped
     # Map host port 6379 to container port 6379
     ports:
+      # Host to container port mapping
       - "6379:6379"
     # Mount persistent storage volume for Redis state dumps
     volumes:
+      # Mount Redis data volume
       - redis_data:/data
     # Health check verifying Redis responsiveness via ping
     healthcheck:
@@ -62,6 +81,63 @@ services:
       timeout: 3s
       # Number of consecutive failures before marking container unhealthy
       retries: 5
+    # Resource constraints to prevent local host resource exhaustion
+    deploy:
+      # Resources block
+      resources:
+        # Limits definition
+        limits:
+          # Maximum CPU quota (0.5 core)
+          cpus: '0.5'
+          # Maximum memory quota (512 Megabytes)
+          memory: 512M
+
+  # MinIO S3-compatible local object storage server (handles submissions without storing blobs in DB)
+  minio:
+    # Official MinIO release image
+    image: minio/minio:RELEASE.2024-01-31T20-20-33Z
+    # Explicit container identifier
+    container_name: verism_minio
+    # Automatically restart service unless manually stopped
+    restart: unless-stopped
+    # Command to start MinIO server storing data in /data directory with Web Console on port 9001
+    command: server /data --console-address ":9001"
+    # Map API port 9000 and web console port 9001
+    ports:
+      # S3 API protocol port
+      - "9000:9000"
+      # Web console administrator UI port
+      - "9001:9001"
+    # MinIO root administrator credentials from environment
+    environment:
+      # Administrator root username
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-verism_minio_admin}
+      # Administrator root password
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-verism_minio_super_secret_password_2026}
+    # Mount persistent storage volume for uploaded object blobs
+    volumes:
+      # Persistent storage volume for MinIO data
+      - minio_data:/data
+    # Health check verifying MinIO server responsiveness
+    healthcheck:
+      # Execute curl command probing MinIO health endpoint
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      # Interval between healthcheck probes
+      interval: 5s
+      # Maximum timeout per probe
+      timeout: 5s
+      # Number of consecutive failures before marking container unhealthy
+      retries: 5
+    # Resource constraints
+    deploy:
+      # Resources block
+      resources:
+        # Limits definition
+        limits:
+          # Maximum CPU quota (0.5 core)
+          cpus: '0.5'
+          # Maximum memory quota (512 Megabytes)
+          memory: 512M
 
   # Vector search engine for submission embedding similarity matching
   qdrant:
@@ -79,16 +155,30 @@ services:
       - "6334:6334"
     # Mount persistent storage volume for vector collections
     volumes:
+      # Mount Qdrant storage volume
       - qdrant_data:/qdrant/storage
     # Configure gRPC port inside container environment
     environment:
+      # Set gRPC port
       - QDRANT__SERVICE__GRPC_PORT=6334
+    # Resource constraints
+    deploy:
+      # Resources block
+      resources:
+        # Limits definition
+        limits:
+          # Maximum CPU quota (0.5 core)
+          cpus: '0.5'
+          # Maximum memory quota (512 Megabytes)
+          memory: 512M
 
-  # FastAPI REST API application service
-  backend_api:
+  # FastAPI REST API application service (web backend)
+  web:
     # Build from local backend directory using production Dockerfile
     build:
+      # Build context directory
       context: ./backend
+      # Target Dockerfile
       dockerfile: Dockerfile
     # Explicit container identifier
     container_name: verism_api
@@ -98,68 +188,129 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     # Map host port 8000 to container port 8000
     ports:
+      # Host to container port mapping
       - "8000:8000"
     # Inject application runtime configuration environment variables
     environment:
+      # Application environment mode
       - APP_ENV=development
+      # Debug mode toggle
       - DEBUG=true
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-verism_db}
+      # Primary PostgreSQL database connection string (Supabase managed Postgres)
+      - DATABASE_URL=${DATABASE_URL}
+      # Redis connection URL string
       - REDIS_URL=redis://redis:6379/0
+      # Celery broker URL string
       - CELERY_BROKER_URL=redis://redis:6379/0
+      # Celery result backend URL string
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      # Qdrant service URL string
       - QDRANT_URL=http://qdrant:6333
+      # Google Gemini API key
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      # Google Gemini model identifier
       - GEMINI_MODEL=${GEMINI_MODEL:-gemini-2.5-flash}
+      # Mandatory FERPA encryption key
       - FERPA_ENCRYPTION_KEY=${FERPA_ENCRYPTION_KEY:-MbGUys4qem_FHtZy_5zx8bBSrxkTI2UWrjnhrFAHcyY=}
-      - BACKEND_CORS_ORIGINS=["http://localhost:3000","http://localhost:5173","http://127.0.0.1:3000","http://127.0.0.1:5173","http://localhost:8080"]
+      # CORS allowed origins JSON array
+      - BACKEND_CORS_ORIGINS=["http://localhost:3000","http://localhost:5173","http://127.0.0.1:3000","http://127.0.0.1:5173","http://localhost:8080","https://assessment-project-jycg.vercel.app"]
+      # S3 / MinIO configuration parameters
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER:-verism_minio_admin}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD:-verism_minio_super_secret_password_2026}
+      - MINIO_BUCKET=${MINIO_BUCKET:-verism-submissions}
+      - MINIO_USE_SSL=false
     # Mount source code volume and uploaded files volume
     volumes:
+      # Mount backend source code for live development reloading
       - ./backend:/app
+      # Mount persistent uploads volume
       - uploads_data:/app/uploads
-    # Wait for database and redis healthchecks before starting API service
+    # Wait for dependent service healthchecks before starting web API service
     depends_on:
-      db:
-        condition: service_healthy
+      # Depend on Redis being healthy
       redis:
+        # Require healthy status
         condition: service_healthy
-      qdrant:
+      # Depend on MinIO being started
+      minio:
+        # Require started status
         condition: service_started
+      # Depend on Qdrant being started
+      qdrant:
+        # Require started status
+        condition: service_started
+    # Health check ensuring web service responds to ping probe
+    healthcheck:
+      # Probe root health check endpoint
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      # Interval between healthcheck probes
+      interval: 10s
+      # Maximum timeout per probe
+      timeout: 5s
+      # Number of consecutive failures before marking container unhealthy
+      retries: 3
+    # Resource constraints
+    deploy:
+      # Resources block
+      resources:
+        # Limits definition
+        limits:
+          # Maximum CPU quota (1.0 core)
+          cpus: '1.0'
+          # Maximum memory quota (1 Gigabyte)
+          memory: 1G
 
   # Dedicated Celery Worker: Text & Archive Extraction Queue
   worker_extract:
+    # Build from local backend directory
     build:
+      # Build context directory
       context: ./backend
+      # Target Dockerfile
       dockerfile: Dockerfile
+    # Explicit container identifier
     container_name: verism_worker_extract
+    # Automatically restart service unless manually stopped
     restart: unless-stopped
+    # Celery worker command listening on extract queue with conservative concurrency
     command: celery -A app.workers.celery_app.celery_app worker -Q extract --loglevel=info --concurrency=2 -n extract_worker@%h
+    # Worker runtime environment variables
     environment:
       - APP_ENV=development
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-verism_db}
+      - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - FERPA_ENCRYPTION_KEY=${FERPA_ENCRYPTION_KEY:-MbGUys4qem_FHtZy_5zx8bBSrxkTI2UWrjnhrFAHcyY=}
+    # Mount volumes
     volumes:
       - ./backend:/app
       - uploads_data:/app/uploads
+    # Wait for Redis healthcheck before starting worker
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
+    # Resource constraints
+    deploy:
+      resources:
+        limits:
+          cpus: '0.75'
+          memory: 768M
 
   # Dedicated Celery Worker: Optical Character Recognition & Multimodal Parsing Queue
   worker_ocr:
+    # Build from local backend directory
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: verism_worker_ocr
     restart: unless-stopped
+    # Celery worker command listening on ocr queue with conservative concurrency
     command: celery -A app.workers.celery_app.celery_app worker -Q ocr --loglevel=info --concurrency=2 -n ocr_worker@%h
     environment:
       - APP_ENV=development
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-verism_db}
+      - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -169,22 +320,27 @@ services:
       - ./backend:/app
       - uploads_data:/app/uploads
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.75'
+          memory: 768M
 
   # Dedicated Celery Worker: AI Rubric Grading & Benchmarking Queue
   worker_grade:
+    # Build from local backend directory
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: verism_worker_grade
     restart: unless-stopped
-    command: celery -A app.workers.celery_app.celery_app worker -Q grade,celery --loglevel=info --concurrency=4 -n grade_worker@%h
+    # Celery worker command listening on grade queue with conservative concurrency (2 workers)
+    command: celery -A app.workers.celery_app.celery_app worker -Q grade,celery --loglevel=info --concurrency=2 -n grade_worker@%h
     environment:
       - APP_ENV=development
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-verism_db}
+      - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -196,24 +352,29 @@ services:
       - ./backend:/app
       - uploads_data:/app/uploads
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
       qdrant:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
 
   # Dedicated Celery Worker: Vector Similarity & Peer-to-Peer Collision Queue
   worker_similarity:
+    # Build from local backend directory
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: verism_worker_similarity
     restart: unless-stopped
+    # Celery worker command listening on similarity queue with conservative concurrency
     command: celery -A app.workers.celery_app.celery_app worker -Q similarity --loglevel=info --concurrency=2 -n similarity_worker@%h
     environment:
       - APP_ENV=development
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-verism_db}
+      - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -224,24 +385,29 @@ services:
       - ./backend:/app
       - uploads_data:/app/uploads
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
       qdrant:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: '0.75'
+          memory: 768M
 
   # Dedicated Celery Worker: Gradebook & Analytics Report Export Queue
   worker_export:
+    # Build from local backend directory
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: verism_worker_export
     restart: unless-stopped
+    # Celery worker command listening on export queue with conservative concurrency
     command: celery -A app.workers.celery_app.celery_app worker -Q export --loglevel=info --concurrency=2 -n export_worker@%h
     environment:
       - APP_ENV=development
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-verism_db}
+      - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -250,22 +416,27 @@ services:
       - ./backend:/app
       - uploads_data:/app/uploads
     depends_on:
-      db:
-        condition: service_healthy
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
 
-  # Celery Beat Scheduler: Periodic Cleanup & Health Maintenance
+  # Celery Beat Scheduler: Periodic Cleanup & Scheduled Tasks
   celery_beat:
+    # Build from local backend directory
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: verism_celery_beat
     restart: unless-stopped
+    # Celery beat scheduler process
     command: celery -A app.workers.celery_app.celery_app beat --loglevel=info
     environment:
       - APP_ENV=development
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-verism_db}
+      - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -274,6 +445,11 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
 
   # Frontend Single Page Application served via Nginx on port 3000
   frontend:
@@ -293,14 +469,21 @@ services:
       - VITE_API_BASE_URL=http://localhost:8000/api/v1
     # Ensure backend API service is running before starting web server
     depends_on:
-      - backend_api
+      - web
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
 
 # Top-level persistent Docker storage volume definitions
 volumes:
-  # Persistent PostgreSQL relational data storage
+  # Persistent PostgreSQL relational data storage for local-db profile
   postgres_data:
   # Persistent Redis cache and message queue storage
   redis_data:
+  # Persistent MinIO S3 object storage volume
+  minio_data:
   # Persistent Qdrant vector database collection storage
   qdrant_data:
   # Persistent uploaded assignment submissions and student files

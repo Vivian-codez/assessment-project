@@ -93,84 +93,30 @@ async def lifespan(app: FastAPI):
     """Application lifespan context for startup and shutdown procedures."""
     # Log startup announcement for the backend service
     logger.info("Initializing Verism AI Backend Service...")
-    # Wrap database initialization in a try block to handle setup exceptions safely
+    # Wrap startup verification in try block to log database connectivity diagnostics
     try:
-        # Create tables automatically if they do not exist
-        # Automatically generate physical database tables for all models registered on Base.metadata
-        Base.metadata.create_all(bind=engine)
-        # Log successful completion of table schema initialization
-        logger.info("Database tables initialized successfully.")
-
-        # Ensure newly added columns exist in SQLite or existing databases
-        # Import text construct to execute raw SQL DDL migration queries safely
-        from sqlalchemy import text
-        # Acquire dedicated database connection from the connection pool
-        with engine.connect() as conn:
-            # Iterate through idempotent ALTER TABLE statements for schema evolution
-            for col_sql in [
-                # Add full_name column to users table
-                "ALTER TABLE users ADD COLUMN full_name VARCHAR(255);",
-                # Add reference exemplar text column to assignments table
-                "ALTER TABLE assignments ADD COLUMN reference_assignment_text TEXT;",
-                # Add normalized file content column to submissions table
-                "ALTER TABLE submissions ADD COLUMN file_content TEXT;",
-                # Add storage download URL column to submissions table
-                "ALTER TABLE submissions ADD COLUMN file_url TEXT;",
-                # Add extracted text content column to submissions table
-                "ALTER TABLE submissions ADD COLUMN content TEXT;",
-                # Add web plagiarism match score column with default 0.0 to submissions table
-                "ALTER TABLE submissions ADD COLUMN web_plagiarism_score REAL DEFAULT 0.0;",
-                # Add web sources JSON column with empty array default to submissions table
-                "ALTER TABLE submissions ADD COLUMN web_sources JSON DEFAULT '[]';",
-                # Add classroom identifier association column to submissions table
-                "ALTER TABLE submissions ADD COLUMN classroom_id TEXT;",
-                # Add student identifier association column to submissions table
-                "ALTER TABLE submissions ADD COLUMN student_id TEXT;",
-                # Add folder identifier association column to submissions table for multi-tenant pipeline
-                "ALTER TABLE submissions ADD COLUMN folder_id VARCHAR(64);",
-                # Add student identifier string column to submissions table
-                "ALTER TABLE submissions ADD COLUMN student_identifier VARCHAR(255);",
-                # Add evaluation status column to submissions table
-                "ALTER TABLE submissions ADD COLUMN evaluation_status VARCHAR(32) DEFAULT 'unprocessed';",
-                # Add calculated total score column to draft grades table
-                "ALTER TABLE draft_grades ADD COLUMN total_score REAL;",
-                # Add maximum possible score column with default 100.0 to draft grades table
-                "ALTER TABLE draft_grades ADD COLUMN max_score REAL DEFAULT 100.0;",
-                # Add granular criteria breakdown JSON column to draft grades table
-                "ALTER TABLE draft_grades ADD COLUMN criteria_breakdown JSON DEFAULT '[]';",
-                # Add composite plagiarism report JSON column to draft grades table
-                "ALTER TABLE draft_grades ADD COLUMN plagiarism_report JSON DEFAULT '{}';",
-                # Add final feedback text column to draft grades table
-                "ALTER TABLE draft_grades ADD COLUMN feedback TEXT;",
-                # Add confidence score column to draft grades table
-                "ALTER TABLE draft_grades ADD COLUMN confidence REAL DEFAULT 0.9;",
-                # Add deleted_at soft-deletion timestamp column to courses table
-                "ALTER TABLE courses ADD COLUMN deleted_at TIMESTAMP;",
-                # Add deleted_at soft-deletion timestamp column to assignments table
-                "ALTER TABLE assignments ADD COLUMN deleted_at TIMESTAMP;",
-                # Add deleted_at soft-deletion timestamp column to submissions table
-                "ALTER TABLE submissions ADD COLUMN deleted_at TIMESTAMP;",
-                # Add deleted_at soft-deletion timestamp column to students table
-                "ALTER TABLE students ADD COLUMN deleted_at TIMESTAMP;",
-                # Add deleted_at soft-deletion timestamp column to rubrics table
-                "ALTER TABLE rubrics ADD COLUMN deleted_at TIMESTAMP;",
-            ]:
-                # Wrap each individual column migration in try block to handle existing columns
-                try:
-                    # Execute the ALTER TABLE migration DDL
-                    conn.execute(text(col_sql))
-                    # Commit the DDL transaction to persist schema modifications
-                    conn.commit()
-                # Catch exception when column already exists
-                except Exception:
-                    # Silently ignore duplicate column errors
-                    pass
-
-        # Auto-seed removed to maintain clean user-driven state without mock data.
-    # Catch any unexpected startup errors
+        # Import database health check utility function
+        from app.core.database import check_db_health
+        # Execute live database health probe against configured PostgreSQL connection
+        db_health = check_db_health()
+        # Verify if database connection was successfully established
+        if db_health.get("connected"):
+            # Log successful database connection and latency
+            logger.info(
+                f"[STARTUP] Database connection verified ({db_health.get('dialect')}, "
+                f"latency: {db_health.get('latency_ms')}ms). Schema managed via Alembic migrations."
+            )
+        # Handle unhealthy database state
+        else:
+            # Log critical warning with error details
+            logger.critical(
+                f"[STARTUP] Database connectivity probe returned unhealthy: {db_health.get('error')}"
+            )
+    # Catch any unexpected startup inspection errors
     except Exception as e:
-        # Log warning if table creation encountered a recoverable error
-        logger.warning(f"Database table auto-creation skipped or encountered error: {e}")
+        # Log critical error notice
+        logger.critical(f"[STARTUP] Database startup verification failed: {e}")
+    # Yield control to let the FastAPI application serve incoming HTTP requests
     # Yield control to let the FastAPI application serve incoming HTTP requests
     yield
     # Log graceful shutdown event when the application stops

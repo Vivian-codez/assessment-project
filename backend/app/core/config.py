@@ -122,46 +122,58 @@ class Settings(BaseSettings):
         # Default fallback allowing all origins
         return ["*"]
 
-    # Supabase Layer – set USE_SUPABASE=false to skip and use local PostgreSQL only
+    # Supabase Layer – Managed PostgreSQL and Cloud Project Metadata
     # Boolean toggle determining whether Supabase cloud integration is active
-    USE_SUPABASE: bool = False
+    USE_SUPABASE: bool = True
     # Supabase project URL endpoint
-    SUPABASE_URL: str = "https://lzranjtbiucfaktbnjec.supabase.co"
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "https://uljtqfbkxsqzmboilwvw.supabase.co")
     # Supabase anonymous public client key
-    SUPABASE_KEY: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx6cmFuanRiaXVjZmFrdGJuamVjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIzNDAyMTMsImV4cCI6MjEwNzkxNjIxM30.TWBIc8-chcw7aI2LYX8NEiopKWMz9-wNB9oqTKe5q9s"
+    SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "sb_publishable_g9AjaKnVX5oGdCZF-4MIFg_1BNjVB6Q")
     # Supabase privileged service role secret key
-    SUPABASE_SERVICE_ROLE_KEY: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
-    # Database (SQLite default for embedded development, PostgreSQL supported)
-    # Database connection string URI (PostgreSQL or SQLite)
-    DATABASE_URL: str = f"sqlite:///{_DEFAULT_DB_PATH}"
+    # Managed PostgreSQL Database via SQLAlchemy 2.x
+    # Database connection string URI (defaults to environment variable with zero silent SQLite fallback)
+    DATABASE_URL: str = os.getenv(
+        "DATABASE_URL",
+        "postgresql://verism_app.uljtqfbkxsqzmboilwvw:postgres@aws-1-ap-south-1.pooler.supabase.com:5432/postgres?sslmode=require"
+    )
+    # Optional connection pooler transaction mode URL
+    DATABASE_POOLER_TRANSACTION_URL: str = os.getenv("DATABASE_POOLER_TRANSACTION_URL", "")
     # PostgreSQL host hostname
-    POSTGRES_SERVER: str = "localhost"
+    POSTGRES_SERVER: str = os.getenv("POSTGRES_SERVER", "aws-1-ap-south-1.pooler.supabase.com")
     # PostgreSQL TCP port number
-    POSTGRES_PORT: int = 5432
+    POSTGRES_PORT: int = int(os.getenv("POSTGRES_PORT", "5432"))
     # PostgreSQL authentication username
-    POSTGRES_USER: str = "postgres"
+    POSTGRES_USER: str = os.getenv("POSTGRES_USER", "verism_app.uljtqfbkxsqzmboilwvw")
     # PostgreSQL authentication password
-    POSTGRES_PASSWORD: str = "postgres"
+    POSTGRES_PASSWORD: str = os.getenv("POSTGRES_PASSWORD", "")
     # Target database name inside PostgreSQL
-    POSTGRES_DB: str = "verism_db"
+    POSTGRES_DB: str = os.getenv("POSTGRES_DB", "postgres")
 
     # Database Connection Pool & Resilience Settings
-    DB_POOL_SIZE: int = 10
-    DB_MAX_OVERFLOW: int = 20
-    DB_POOL_RECYCLE: int = 1800  # 30 minutes / 1800s to avoid idle termination
-    DB_POOL_TIMEOUT: int = 30  # Connection checkout timeout in seconds
-    DB_CONNECT_TIMEOUT: int = 10  # Socket connect timeout in seconds
+    DB_POOL_SIZE: int = int(os.getenv("DB_POOL_SIZE", "10"))
+    DB_MAX_OVERFLOW: int = int(os.getenv("DB_MAX_OVERFLOW", "15"))
+    DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "1800"))  # 30 minutes / 1800s to avoid idle termination
+    DB_POOL_TIMEOUT: int = int(os.getenv("DB_POOL_TIMEOUT", "30"))  # Connection checkout timeout in seconds
+    DB_CONNECT_TIMEOUT: int = int(os.getenv("DB_CONNECT_TIMEOUT", "10"))  # Socket connect timeout in seconds
     DB_POOL_PRE_PING: bool = True  # Test-on-borrow (e.g. SELECT 1)
     # TCP Keep-Alive connect args
-    DB_KEEPALIVES: int = 1
-    DB_KEEPALIVES_IDLE: int = 30
-    DB_KEEPALIVES_INTERVAL: int = 10
-    DB_KEEPALIVES_COUNT: int = 5
+    DB_KEEPALIVES: int = int(os.getenv("DB_KEEPALIVES", "1"))
+    DB_KEEPALIVES_IDLE: int = int(os.getenv("DB_KEEPALIVES_IDLE", "30"))
+    DB_KEEPALIVES_INTERVAL: int = int(os.getenv("DB_KEEPALIVES_INTERVAL", "10"))
+    DB_KEEPALIVES_COUNT: int = int(os.getenv("DB_KEEPALIVES_COUNT", "5"))
 
-    # Local File Storage (replaces Supabase Storage when USE_SUPABASE=false)
-    # Local filesystem directory path for storing uploaded student submission files
-    UPLOADS_DIR: str = "./uploads"
+    # S3 / MinIO Object Storage Adapter
+    MINIO_ENDPOINT: str = os.getenv("MINIO_ENDPOINT", "localhost:9000")
+    MINIO_ROOT_USER: str = os.getenv("MINIO_ROOT_USER", "verism_minio_admin")
+    MINIO_ROOT_PASSWORD: str = os.getenv("MINIO_ROOT_PASSWORD", "verism_minio_super_secret_password_2026")
+    MINIO_BUCKET: str = os.getenv("MINIO_BUCKET", "verism-submissions")
+    MINIO_USE_SSL: bool = os.getenv("MINIO_USE_SSL", "false").lower() in ("true", "1")
+
+    # Local File Storage fallback
+    # Local filesystem directory path for storing temporary extracted files
+    UPLOADS_DIR: str = os.getenv("UPLOADS_DIR", "./uploads")
 
     # Redis & Celery
     # Redis server hostname for task broker and caching

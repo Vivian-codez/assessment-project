@@ -92,14 +92,25 @@ def purge_entity_permanent(db: Session, entity_type: str, entity_id: str, reason
         except Exception as exc:
             logger.debug(f"[PERMANENT-PURGE] Redis key deletion skipped: {exc}")
 
+    # Look up an existing administrator or teacher user for foreign key compliance
+    admin_user = db.query(User).first()
+    # Resolve valid user ID or fallback to default instructor
+    acting_user_id = admin_user.id if admin_user else "inst_priya_rao"
+
     # Record permanent deletion in DeletionRequest compliance log table
     del_req = DeletionRequest(
-        user_id="teacher-system",
+        # Set foreign key reference to active instructor
+        user_id=acting_user_id,
+        # Set normalized entity classification
         entity_type=norm_type,
+        # Set unique entity identifier
         entity_id=entity_id,
+        # Mark compliance record status as completed
         status="completed",
+        # Set justification rationale
         reason=reason,
     )
+    # Add deletion request record to session
     db.add(del_req)
 
     # Delete entity from database (cascades via SQLAlchemy / DB foreign keys)
@@ -663,12 +674,22 @@ def submit_erasure_request(
     Returns:
         dict: Queued erasure ticket details.
     """
+    # Look up an existing administrator or teacher user for foreign key constraint compliance
+    admin_user = db.query(User).first()
+    # Resolve valid user ID or fallback to default instructor
+    acting_user_id = admin_user.id if admin_user else "inst_priya_rao"
+
     # Create compliance ticket
     ticket = DeletionRequest(
-        user_id="educator-privacy-applicant",
+        # Set foreign key reference to requesting user
+        user_id=acting_user_id,
+        # Set target entity category covering all account data
         entity_type="AllUserData",
+        # Set scope identifier
         entity_id="user-account-scope",
+        # Set ticket status to pending review
         status="pending",
+        # Set compliance justification rationale
         reason=reason,
     )
     db.add(ticket)

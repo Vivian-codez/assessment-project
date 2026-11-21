@@ -24,6 +24,7 @@ def setup_test_db():
     from app.models.instructor import Instructor
     from app.models.course import Course
     from app.models.classroom import Classroom
+    from app.models.assignment import Assignment
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
@@ -73,6 +74,18 @@ def setup_test_db():
                 code="SEC-A",
             )
             db.add(classroom)
+            db.flush()
+        # Seed test assignment for submission foreign key integrity
+        assign = db.query(Assignment).filter(Assignment.id == "assign_oop_a3").first()
+        if not assign:
+            assign = Assignment(
+                id="assign_oop_a3",
+                course_id=course.id,
+                title="Object-Oriented Programming Assignment 3",
+                max_score=100.0,
+                status="published",
+            )
+            db.add(assign)
             db.flush()
         db.commit()
     finally:
