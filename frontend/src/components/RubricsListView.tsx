@@ -31,6 +31,8 @@ export function RubricsListView({
   const [rubrics, setRubrics] = useState<Rubric[]>([]);
   const [loading, setLoading] = useState(false);
   const [inspectRubric, setInspectRubric] = useState<Rubric | null>(null);
+  const [deletingRubric, setDeletingRubric] = useState<Rubric | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   useEffect(() => {
     loadRubrics();
@@ -49,15 +51,22 @@ export function RubricsListView({
     }
   };
 
-  const handleDelete = async (rubricId: string) => {
-    if (!window.confirm("Are you sure you want to delete this matrix rubric?")) return;
+  const handleConfirmDeleteRubric = async () => {
+    if (!deletingRubric) return;
+    const target = deletingRubric;
+    setDeleteLoading(true);
+    // Optimistic UI state update
+    setRubrics((prev) => prev.filter((r) => r.id !== target.id));
+    if (inspectRubric?.id === target.id) setInspectRubric(null);
+    setDeletingRubric(null);
     try {
-      await api.rubrics.delete(rubricId);
-      showToast("Rubric deleted.");
-      setRubrics((prev) => prev.filter((r) => r.id !== rubricId));
-      if (inspectRubric?.id === rubricId) setInspectRubric(null);
+      await api.rubrics.delete(target.id);
+      showToast(`Rubric '${target.title || target.name || "Matrix Rubric"}' deleted.`);
     } catch (err: any) {
       showToast(`Failed to delete rubric: ${err.message}`);
+      await loadRubrics();
+    } finally {
+      setDeleteLoading(false);
     }
   };
 
@@ -101,7 +110,8 @@ export function RubricsListView({
             No matrix rubrics created yet
           </h3>
           <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
-            Build multi-tier criteria matrices with specific score tiers (e.g. 4 pts, 3 pts, 2 pts, 0 pts) to benchmark student submissions.
+            Build multi-tier criteria matrices with specific score tiers (e.g. 4 pts, 3 pts, 2 pts,
+            0 pts) to benchmark student submissions.
           </p>
           <div className="mt-4 flex justify-center">
             <Button size="sm" onClick={onOpenCreateRubric} className="text-xs">
@@ -112,7 +122,9 @@ export function RubricsListView({
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
           {rubrics.map((r) => {
-            const classObj = classrooms.find((c) => c.id === r.classroom_id || c.id === r.course_id);
+            const classObj = classrooms.find(
+              (c) => c.id === r.classroom_id || c.id === r.course_id,
+            );
             const totalMarks = r.total_marks || r.total_max_score || 0;
 
             return (
@@ -151,7 +163,10 @@ export function RubricsListView({
                   {r.criteria && r.criteria.length > 0 && (
                     <div className="mt-3 space-y-1 rounded-lg bg-muted/30 p-2.5 text-[11px]">
                       {r.criteria.slice(0, 3).map((crit, idx) => (
-                        <div key={idx} className="flex items-center justify-between text-muted-foreground">
+                        <div
+                          key={idx}
+                          className="flex items-center justify-between text-muted-foreground"
+                        >
                           <span className="truncate max-w-[180px]">
                             • {crit.criterion_name || crit.name}
                           </span>
@@ -182,7 +197,7 @@ export function RubricsListView({
                   <Button
                     variant="ghost"
                     size="icon"
-                    onClick={() => handleDelete(r.id)}
+                    onClick={() => setDeletingRubric(r)}
                     className="size-8 text-muted-foreground hover:text-destructive"
                     title="Delete Rubric"
                   >
@@ -205,14 +220,11 @@ export function RubricsListView({
                   {inspectRubric.title || inspectRubric.name}
                 </h2>
                 <p className="text-xs text-muted-foreground">
-                  Total Marks: {inspectRubric.total_marks || inspectRubric.total_max_score} points · {inspectRubric.criteria?.length || 0} criteria
+                  Total Marks: {inspectRubric.total_marks || inspectRubric.total_max_score} points ·{" "}
+                  {inspectRubric.criteria?.length || 0} criteria
                 </p>
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setInspectRubric(null)}
-              >
+              <Button variant="ghost" size="icon" onClick={() => setInspectRubric(null)}>
                 ✕
               </Button>
             </div>
@@ -232,7 +244,10 @@ export function RubricsListView({
                   {crit.levels && crit.levels.length > 0 ? (
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2 pt-2">
                       {crit.levels.map((lvl, lIdx) => (
-                        <div key={lIdx} className="rounded-lg border border-line/60 bg-muted/20 p-2.5 text-xs">
+                        <div
+                          key={lIdx}
+                          className="rounded-lg border border-line/60 bg-muted/20 p-2.5 text-xs"
+                        >
                           <div className="flex items-center justify-between font-semibold text-foreground mb-1">
                             <span>{lvl.level_name}</span>
                             <span className="font-mono text-primary">{lvl.points} pts</span>
@@ -244,7 +259,9 @@ export function RubricsListView({
                       ))}
                     </div>
                   ) : (
-                    <p className="text-xs text-muted-foreground">{crit.description || "No level descriptions."}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {crit.description || "No level descriptions."}
+                    </p>
                   )}
                 </div>
               ))}
@@ -253,6 +270,77 @@ export function RubricsListView({
             <div className="border-t border-line p-4 flex justify-end bg-muted/10">
               <Button size="sm" onClick={() => setInspectRubric(null)} className="text-xs">
                 Close
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* Modal: Confirm Rubric Deletion                                            */}
+      {/* ========================================================================= */}
+      {deletingRubric && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in">
+          <div className="w-full max-w-md rounded-2xl border border-line bg-card p-6 shadow-2xl animate-scale-in">
+            <div className="flex items-center gap-3">
+              <div className="grid size-10 place-items-center rounded-full bg-destructive/10 text-destructive">
+                <Trash2 className="size-5" />
+              </div>
+              <div>
+                <h3 className="font-display text-lg font-semibold text-foreground">
+                  Delete Matrix Rubric
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  Permanently remove this grading criteria matrix.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-lg bg-muted/40 p-3.5 text-xs text-foreground/90 space-y-1">
+              <p>
+                Are you sure you want to delete{" "}
+                <span className="font-semibold text-foreground">
+                  {deletingRubric.title || deletingRubric.name || "Matrix Rubric"}
+                </span>
+                ?
+              </p>
+              <p className="text-[11px] text-muted-foreground">
+                Total Criteria: {deletingRubric.criteria?.length || 0} · Max Marks:{" "}
+                {deletingRubric.total_marks || deletingRubric.total_max_score || 100} pts
+              </p>
+            </div>
+
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Any assignments currently referencing this rubric will be safely unlinked without
+              deleting student submissions.
+            </p>
+
+            <div className="mt-6 flex justify-end gap-2 border-t border-line pt-4">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setDeletingRubric(null)}
+                disabled={deleteLoading}
+                className="text-xs"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleConfirmDeleteRubric}
+                disabled={deleteLoading}
+                className="text-xs"
+              >
+                {deleteLoading ? (
+                  <>
+                    <Loader2 className="mr-1.5 size-3.5 animate-spin" /> Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="mr-1.5 size-3.5" /> Confirm Delete
+                  </>
+                )}
               </Button>
             </div>
           </div>

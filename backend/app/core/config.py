@@ -140,6 +140,19 @@ class Settings(BaseSettings):
     # Target database name inside PostgreSQL
     POSTGRES_DB: str = "verism_db"
 
+    # Database Connection Pool & Resilience Settings
+    DB_POOL_SIZE: int = 10
+    DB_MAX_OVERFLOW: int = 20
+    DB_POOL_RECYCLE: int = 1800  # 30 minutes / 1800s to avoid idle termination
+    DB_POOL_TIMEOUT: int = 30  # Connection checkout timeout in seconds
+    DB_CONNECT_TIMEOUT: int = 10  # Socket connect timeout in seconds
+    DB_POOL_PRE_PING: bool = True  # Test-on-borrow (e.g. SELECT 1)
+    # TCP Keep-Alive connect args
+    DB_KEEPALIVES: int = 1
+    DB_KEEPALIVES_IDLE: int = 30
+    DB_KEEPALIVES_INTERVAL: int = 10
+    DB_KEEPALIVES_COUNT: int = 5
+
     # Local File Storage (replaces Supabase Storage when USE_SUPABASE=false)
     # Local filesystem directory path for storing uploaded student submission files
     UPLOADS_DIR: str = "./uploads"

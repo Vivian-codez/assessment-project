@@ -60,10 +60,22 @@ export function RosterView({
   // CSV upload modal & preview state
   const [csvModalOpen, setCsvModalOpen] = useState(false);
   const [csvFile, setCsvFile] = useState<File | null>(null);
-  const [csvPreviewRows, setCsvPreviewRows] = useState<Array<{ roll_number: string; full_name: string; email: string; valid: boolean; reason?: string }>>([]);
+  const [csvPreviewRows, setCsvPreviewRows] = useState<
+    Array<{
+      roll_number: string;
+      full_name: string;
+      email: string;
+      valid: boolean;
+      reason?: string;
+    }>
+  >([]);
   const [csvUploading, setCsvUploading] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Student deletion state
+  const [deletingStudent, setDeletingStudent] = useState<Student | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
 
   useEffect(() => {
     if (classroom?.id) {
@@ -86,6 +98,24 @@ export function RosterView({
     }
   };
 
+  const handleConfirmDeleteStudent = async () => {
+    if (!deletingStudent || !classroom?.id) return;
+    const studentToDelete = deletingStudent;
+    setDeleteLoading(true);
+    // Optimistic UI update
+    setStudents((prev) => prev.filter((s) => s.id !== studentToDelete.id));
+    setDeletingStudent(null);
+    try {
+      await api.classrooms.deleteStudent(classroom.id, studentToDelete.id);
+      showToast(`Student ${studentToDelete.full_name} (${studentToDelete.roll_number}) deleted.`);
+    } catch (err: any) {
+      showToast(`Failed to delete student: ${err.message}`);
+      await loadStudents(classroom.id);
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
   // Manual input handlers
   const handleAddManualRow = () => {
     setManualRows((prev) => [
@@ -100,9 +130,7 @@ export function RosterView({
   };
 
   const handleUpdateManualRow = (id: string, field: keyof ManualRow, value: string) => {
-    setManualRows((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, [field]: value } : r))
-    );
+    setManualRows((prev) => prev.map((r) => (r.id === id ? { ...r, [field]: value } : r)));
   };
 
   const handleSaveManualEnrollment = async () => {
@@ -125,7 +153,7 @@ export function RosterView({
           roll_number: r.roll_number.trim(),
           full_name: r.full_name.trim(),
           email: r.email.trim() || undefined,
-        }))
+        })),
       );
       showToast(`Successfully enrolled ${res.total_inserted || valid.length} student(s)!`);
       setManualModalOpen(false);
@@ -149,7 +177,13 @@ export function RosterView({
       skipEmptyLines: true,
       complete: (results) => {
         const parsedRows = results.data as Record<string, string>[];
-        const preview: Array<{ roll_number: string; full_name: string; email: string; valid: boolean; reason?: string }> = [];
+        const preview: Array<{
+          roll_number: string;
+          full_name: string;
+          email: string;
+          valid: boolean;
+          reason?: string;
+        }> = [];
 
         const seenInFile = new Set<string>();
 
@@ -211,7 +245,9 @@ export function RosterView({
     setCsvUploading(true);
     try {
       const res = await api.classrooms.uploadCSV(classroom.id, csvFile);
-      showToast(`CSV Upload complete! Enrolled: ${res.total_inserted}, Skipped: ${res.total_skipped}`);
+      showToast(
+        `CSV Upload complete! Enrolled: ${res.total_inserted}, Skipped: ${res.total_skipped}`,
+      );
       setCsvModalOpen(false);
       setCsvFile(null);
       setCsvPreviewRows([]);
@@ -232,8 +268,7 @@ export function RosterView({
       "Roll Number,Full Name,Email,Enrollment Date\n" +
       students
         .map(
-          (s) =>
-            `"${s.roll_number}","${s.full_name}","${s.email || ""}","${s.created_at || ""}"`
+          (s) => `"${s.roll_number}","${s.full_name}","${s.email || ""}","${s.created_at || ""}"`,
         )
         .join("\n");
     const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
@@ -252,7 +287,7 @@ export function RosterView({
       (s) =>
         s.roll_number.toLowerCase().includes(search.toLowerCase()) ||
         s.full_name.toLowerCase().includes(search.toLowerCase()) ||
-        (s.email && s.email.toLowerCase().includes(search.toLowerCase()))
+        (s.email && s.email.toLowerCase().includes(search.toLowerCase())),
     )
     .sort((a, b) => {
       const fieldA = a[sortField] || "";
@@ -415,13 +450,19 @@ export function RosterView({
               No students enrolled yet
             </h3>
             <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
-              Enroll students manually or upload a class CSV roster to track submissions and auto-grade.
+              Enroll students manually or upload a class CSV roster to track submissions and
+              auto-grade.
             </p>
             <div className="mt-4 flex justify-center gap-2">
               <Button size="sm" onClick={() => setManualModalOpen(true)} className="text-xs">
                 <UserPlus className="mr-1.5 size-3.5" /> Add Students Manually
               </Button>
-              <Button size="sm" variant="outline" onClick={() => setCsvModalOpen(true)} className="text-xs">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setCsvModalOpen(true)}
+                className="text-xs"
+              >
                 <Upload className="mr-1.5 size-3.5" /> Import CSV Roster
               </Button>
             </div>
@@ -435,7 +476,8 @@ export function RosterView({
                   <th className="px-4 py-3">Full Name</th>
                   <th className="px-4 py-3">Email Address</th>
                   <th className="px-4 py-3">Enrolled Status</th>
-                  <th className="px-4 py-3 text-right">Added On</th>
+                  <th className="px-4 py-3">Added On</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-line">
@@ -444,21 +486,27 @@ export function RosterView({
                     <td className="px-4 py-3 font-mono font-medium text-foreground">
                       {student.roll_number}
                     </td>
-                    <td className="px-4 py-3 font-medium text-foreground">
-                      {student.full_name}
-                    </td>
-                    <td className="px-4 py-3 text-muted-foreground">
-                      {student.email || "—"}
-                    </td>
+                    <td className="px-4 py-3 font-medium text-foreground">{student.full_name}</td>
+                    <td className="px-4 py-3 text-muted-foreground">{student.email || "—"}</td>
                     <td className="px-4 py-3">
                       <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
                         <CheckCircle2 className="size-3" /> Enrolled
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-right text-muted-foreground">
+                    <td className="px-4 py-3 text-muted-foreground">
                       {student.created_at
                         ? new Date(student.created_at).toLocaleDateString()
                         : "Active"}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => setDeletingStudent(student)}
+                        title={`Delete ${student.full_name}`}
+                        className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus:outline-none"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -483,11 +531,7 @@ export function RosterView({
                   Add student roll numbers and names for {classroom?.name || "this classroom"}.
                 </p>
               </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setManualModalOpen(false)}
-              >
+              <Button variant="ghost" size="icon" onClick={() => setManualModalOpen(false)}>
                 <X className="size-4" />
               </Button>
             </div>
@@ -506,9 +550,7 @@ export function RosterView({
                     <Input
                       placeholder={`e.g. CS2024-0${idx + 1}`}
                       value={row.roll_number}
-                      onChange={(e) =>
-                        handleUpdateManualRow(row.id, "roll_number", e.target.value)
-                      }
+                      onChange={(e) => handleUpdateManualRow(row.id, "roll_number", e.target.value)}
                       className="text-xs"
                     />
                   </div>
@@ -516,9 +558,7 @@ export function RosterView({
                     <Input
                       placeholder="Student full name"
                       value={row.full_name}
-                      onChange={(e) =>
-                        handleUpdateManualRow(row.id, "full_name", e.target.value)
-                      }
+                      onChange={(e) => handleUpdateManualRow(row.id, "full_name", e.target.value)}
                       className="text-xs"
                     />
                   </div>
@@ -527,9 +567,7 @@ export function RosterView({
                       type="email"
                       placeholder="student@univ.edu"
                       value={row.email}
-                      onChange={(e) =>
-                        handleUpdateManualRow(row.id, "email", e.target.value)
-                      }
+                      onChange={(e) => handleUpdateManualRow(row.id, "email", e.target.value)}
                       className="text-xs"
                     />
                   </div>
@@ -549,12 +587,7 @@ export function RosterView({
             </div>
 
             <div className="mt-4 flex items-center justify-between border-t border-line pt-4">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleAddManualRow}
-                className="text-xs"
-              >
+              <Button variant="outline" size="sm" onClick={handleAddManualRow} className="text-xs">
                 <Plus className="mr-1.5 size-3.5" /> Add Another Row
               </Button>
 
@@ -684,7 +717,10 @@ export function RosterView({
                     </thead>
                     <tbody className="divide-y divide-line">
                       {csvPreviewRows.map((row, idx) => (
-                        <tr key={idx} className={row.valid ? "" : "bg-destructive/5 text-muted-foreground"}>
+                        <tr
+                          key={idx}
+                          className={row.valid ? "" : "bg-destructive/5 text-muted-foreground"}
+                        >
                           <td className="px-3 py-2 font-mono font-medium">
                             {row.roll_number || "—"}
                           </td>
@@ -692,7 +728,9 @@ export function RosterView({
                           <td className="px-3 py-2 text-muted-foreground">{row.email || "—"}</td>
                           <td className="px-3 py-2">
                             {row.valid ? (
-                              <span className="text-emerald-600 font-medium text-[11px]">Valid</span>
+                              <span className="text-emerald-600 font-medium text-[11px]">
+                                Valid
+                              </span>
                             ) : (
                               <span className="text-destructive font-medium text-[11px]">
                                 {row.reason}
@@ -724,7 +762,9 @@ export function RosterView({
               <Button
                 size="sm"
                 onClick={handleConfirmCSVUpload}
-                disabled={!csvFile || csvPreviewRows.filter((r) => r.valid).length === 0 || csvUploading}
+                disabled={
+                  !csvFile || csvPreviewRows.filter((r) => r.valid).length === 0 || csvUploading
+                }
                 className="text-xs bg-primary text-primary-foreground"
               >
                 {csvUploading ? (
@@ -733,6 +773,74 @@ export function RosterView({
                   </>
                 ) : (
                   `Confirm & Enroll (${csvPreviewRows.filter((r) => r.valid).length} Students)`
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* Modal: Confirm Student Deletion                                          */}
+      {/* ========================================================================= */}
+      {deletingStudent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in">
+          <div className="w-full max-w-md rounded-2xl border border-line bg-card p-6 shadow-2xl animate-scale-in">
+            <div className="flex items-center gap-3">
+              <div className="grid size-10 place-items-center rounded-full bg-destructive/10 text-destructive">
+                <Trash2 className="size-5" />
+              </div>
+              <div>
+                <h3 className="font-display text-lg font-semibold text-foreground">
+                  Delete Student Record
+                </h3>
+                <p className="text-xs text-muted-foreground">
+                  Remove student from the classroom roll call registry.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-lg bg-muted/40 p-3.5 text-xs text-foreground/90 space-y-1">
+              <p>
+                Are you sure you want to delete{" "}
+                <span className="font-semibold text-foreground">{deletingStudent.full_name}</span>?
+              </p>
+              <p className="text-[11px] text-muted-foreground font-mono">
+                Roll Number: {deletingStudent.roll_number}{" "}
+                {deletingStudent.email ? `• ${deletingStudent.email}` : ""}
+              </p>
+            </div>
+
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              This action decouples the student from existing submissions. Audit trails will
+              preserve evaluation history.
+            </p>
+
+            <div className="mt-6 flex justify-end gap-2 border-t border-line pt-4">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setDeletingStudent(null)}
+                disabled={deleteLoading}
+                className="text-xs"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleConfirmDeleteStudent}
+                disabled={deleteLoading}
+                className="text-xs"
+              >
+                {deleteLoading ? (
+                  <>
+                    <Loader2 className="mr-1.5 size-3.5 animate-spin" /> Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="mr-1.5 size-3.5" /> Confirm Delete
+                  </>
                 )}
               </Button>
             </div>

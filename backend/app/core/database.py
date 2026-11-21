@@ -1,165 +1,299 @@
-"""Database session management with SQLAlchemy 2.0.
+"""Database session management with SQLAlchemy 2.0 and resilient connection pooling.
 
 Provides:
-- Engine creation with connection pooling
-- Thread-safe SessionLocal sessionmaker
-- FastAPI get_db dependency
-- Automatic table creation utility
+- Persistent QueuePool configuration with pre-ping, pool_recycle, pool_size, and max_overflow
+- TCP Keep-Alive parameters for proxy and cloud firewall resilience
+- Automatic retry with exponential backoff wrapper (db_retry_with_backoff)
+- Transaction-safe SessionLocal sessionmaker and FastAPI get_db dependency
+- Comprehensive pool status diagnostics and live connectivity health checks
+- Schema initialization and incremental migration utilities
 """
 
-# Import Generator type hint from typing to annotate the get_db dependency generator yielding sessions
-from typing import Generator
-# Import create_engine factory from sqlalchemy to configure database connections and connection pooling
-from sqlalchemy import create_engine
-# Import declarative_base for ORM class definitions and sessionmaker to construct thread-safe database sessions
-from sqlalchemy.orm import declarative_base, sessionmaker
+import time
+import functools
+from typing import Generator, Dict, Any, Callable
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from sqlalchemy.pool import QueuePool
+from sqlalchemy.exc import (
+    OperationalError,
+    InterfaceError,
+    DBAPIError,
+    DatabaseError,
+    DisconnectionError,
+    TimeoutError as SATimeoutError,
+)
 
-# Import application settings singleton to retrieve environment configuration including DATABASE_URL
 from app.core.config import settings
+from app.core.logging import logger
 
-# Retrieve the configured database connection URI string from application settings
+# Transient exceptions eligible for automatic retry with backoff
+TRANSIENT_DB_EXCEPTIONS = (
+    OperationalError,
+    InterfaceError,
+    DBAPIError,
+    DatabaseError,
+    DisconnectionError,
+    SATimeoutError,
+    ConnectionResetError,
+    ConnectionRefusedError,
+    BrokenPipeError,
+    TimeoutError,
+)
+
+
+def db_retry_with_backoff(
+    max_retries: int = 3,
+    initial_delay: float = 0.2,
+    backoff_factor: float = 2.0,
+) -> Callable:
+    """Decorator retrying database operations on transient connection drops with exponential backoff."""
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            delay = initial_delay
+            last_exc = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except TRANSIENT_DB_EXCEPTIONS as exc:
+                    last_exc = exc
+                    logger.warning(
+                        f"[DB-RETRY] Transient connection error on attempt {attempt}/{max_retries} "
+                        f"in '{func.__name__}': {exc}. Retrying in {delay:.2f}s..."
+                    )
+                    if attempt == max_retries:
+                        logger.error(
+                            f"[DB-RETRY] Exceeded max retries ({max_retries}) in '{func.__name__}'. "
+                            f"Final error: {exc}"
+                        )
+                        raise
+                    time.sleep(delay)
+                    delay *= backoff_factor
+            if last_exc:
+                raise last_exc
+        return wrapper
+    return decorator
+
+
+def _attach_pool_listeners(target_engine):
+    """Attach structured event logging listeners to engine connection pool."""
+    @event.listens_for(target_engine, "connect")
+    def receive_connect(dbapi_connection, connection_record):
+        logger.info(
+            f"[DB-POOL] New physical connection established in pool "
+            f"(driver: {target_engine.dialect.name})."
+        )
+
+    @event.listens_for(target_engine, "checkout")
+    def receive_checkout(dbapi_connection, connection_record, connection_proxy):
+        logger.debug("[DB-POOL] Connection checked out from pool.")
+
+    @event.listens_for(target_engine, "checkin")
+    def receive_checkin(dbapi_connection, connection_record):
+        logger.debug("[DB-POOL] Connection returned to pool.")
+
+
+# Retrieve the configured database connection URI string
 db_url = settings.DATABASE_URL
-# Check if the connection URL specifies the generic postgresql scheme
 if db_url.startswith("postgresql://"):
-    # Replace postgresql:// with postgresql+psycopg2:// to explicitly specify the psycopg2 driver for SQLAlchemy
     db_url = db_url.replace("postgresql://", "postgresql+psycopg2://", 1)
 
-# Initialize dictionary to hold driver-specific connection arguments passed to underlying DBAPI
-connect_args = {}
-# Check if the database connection string targets a local SQLite database
-if db_url.startswith("sqlite"):
-    # Disable SQLite same-thread check so multiple concurrent FastAPI request threads can access the connection
-    connect_args["check_same_thread"] = False
-    # Create the SQLAlchemy engine bound to the SQLite database URL with custom connection arguments
+# Configure resilient connection engine
+is_sqlite = db_url.startswith("sqlite")
+
+if is_sqlite:
+    sqlite_connect_args = {
+        "check_same_thread": False,
+        "timeout": 30,
+    }
     engine = create_engine(
-        # Pass the SQLite database connection string
         db_url,
-        # Supply driver-specific connection arguments containing check_same_thread=False
-        connect_args=connect_args,
-        # Disable echo to prevent printing every raw SQL query to the console
+        poolclass=QueuePool,
+        pool_size=settings.DB_POOL_SIZE,
+        max_overflow=settings.DB_MAX_OVERFLOW,
+        pool_recycle=settings.DB_POOL_RECYCLE,
+        pool_pre_ping=settings.DB_POOL_PRE_PING,
+        pool_timeout=settings.DB_POOL_TIMEOUT,
+        connect_args=sqlite_connect_args,
         echo=False,
     )
-# Execute PostgreSQL engine creation when SQLite is not targeted
+    _attach_pool_listeners(engine)
 else:
-    # Wrap PostgreSQL connection setup and connectivity test in a try block for graceful error handling
+    # PostgreSQL connect arguments with TCP keep-alive options
+    pg_connect_args = {
+        "connect_timeout": settings.DB_CONNECT_TIMEOUT,
+        "keepalives": settings.DB_KEEPALIVES,
+        "keepalives_idle": settings.DB_KEEPALIVES_IDLE,
+        "keepalives_interval": settings.DB_KEEPALIVES_INTERVAL,
+        "keepalives_count": settings.DB_KEEPALIVES_COUNT,
+    }
     try:
-        # Instantiate SQLAlchemy engine with production connection pooling parameters
         engine = create_engine(
-            # Pass the configured PostgreSQL connection string with driver specification
             db_url,
-            # Maintain up to 10 persistent connections in the connection pool
-            pool_size=10,
-            # Allow up to 20 additional transient connections beyond pool_size during peak traffic bursts
-            max_overflow=20,
-            # Recycle pooled connections every 3600 seconds (1 hour) to avoid disconnections by timeouts
-            pool_recycle=3600,
-            # Enable pre-ping check to test connections for liveness before giving them to the application
-            pool_pre_ping=True,
-            # Disable verbose SQL query logging to console to keep logs clean and protect sensitive data
+            poolclass=QueuePool,
+            pool_size=settings.DB_POOL_SIZE,
+            max_overflow=settings.DB_MAX_OVERFLOW,
+            pool_recycle=settings.DB_POOL_RECYCLE,
+            pool_pre_ping=settings.DB_POOL_PRE_PING,
+            pool_timeout=settings.DB_POOL_TIMEOUT,
+            connect_args=pg_connect_args,
             echo=False,
-            # Set connection timeout to 3 seconds so failure is fast if the database host is unreachable
-            connect_args={"connect_timeout": 3},
         )
-        # Eagerly test connection reachability to confirm the database server is available
+        # Verify socket connectivity with pre-test
         with engine.connect() as conn:
-            # Connection succeeded, exit test block immediately and return connection to pool
             pass
-    # Catch any connection or authentication errors if PostgreSQL is unavailable
-    except Exception:
-        # Define local SQLite fallback URL to ensure application remains functional offline or during local testing
+        _attach_pool_listeners(engine)
+    except Exception as pg_err:
+        logger.warning(
+            f"[DB-INIT] Could not connect to primary PostgreSQL database ({pg_err}). "
+            "Falling back to resilient local SQLite storage."
+        )
         fallback_url = "sqlite:///./verism.db"
-        # Instantiate fallback engine using the local SQLite database file
+        sqlite_connect_args = {
+            "check_same_thread": False,
+            "timeout": 30,
+        }
         engine = create_engine(
-            # Pass fallback SQLite database file path
             fallback_url,
-            # Disable same-thread check for SQLite to support multi-threaded FastAPI execution
-            connect_args={"check_same_thread": False},
-            # Disable query echoing for clean output
+            poolclass=QueuePool,
+            pool_size=settings.DB_POOL_SIZE,
+            max_overflow=settings.DB_MAX_OVERFLOW,
+            pool_recycle=settings.DB_POOL_RECYCLE,
+            pool_pre_ping=settings.DB_POOL_PRE_PING,
+            pool_timeout=settings.DB_POOL_TIMEOUT,
+            connect_args=sqlite_connect_args,
             echo=False,
         )
+        _attach_pool_listeners(engine)
 
-# Create thread-safe session factory bound to the active engine with auto-commit and auto-flush disabled
+# Create thread-safe session factory bound to the active engine
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Create declarative Base class from which all database ORM models inherit table mapping metadata
+# Declarative Base for ORM models
 Base = declarative_base()
 
 
-# Define utility function to initialize database tables and apply incremental column migrations
+def get_db_pool_status() -> Dict[str, Any]:
+    """Retrieve detailed runtime pool statistics and health parameters."""
+    pool = engine.pool
+    try:
+        size = pool.size() if callable(getattr(pool, "size", None)) else getattr(pool, "_pool_size", 0)
+    except Exception:
+        size = settings.DB_POOL_SIZE
+    try:
+        checked_in = pool.checkedin() if callable(getattr(pool, "checkedin", None)) else 0
+    except Exception:
+        checked_in = 0
+    try:
+        checked_out = pool.checkedout() if callable(getattr(pool, "checkedout", None)) else 0
+    except Exception:
+        checked_out = 0
+    try:
+        overflow = pool.overflow() if callable(getattr(pool, "overflow", None)) else 0
+    except Exception:
+        overflow = 0
+
+    return {
+        "pool_type": pool.__class__.__name__,
+        "pool_size": size,
+        "checked_in": checked_in,
+        "checked_out": checked_out,
+        "overflow": overflow,
+        "max_overflow": settings.DB_MAX_OVERFLOW,
+        "pool_recycle_seconds": settings.DB_POOL_RECYCLE,
+        "pool_pre_ping": settings.DB_POOL_PRE_PING,
+        "pool_timeout_seconds": settings.DB_POOL_TIMEOUT,
+        "keepalives_enabled": bool(settings.DB_KEEPALIVES),
+        "keepalives_idle_seconds": settings.DB_KEEPALIVES_IDLE,
+        "keepalives_interval_seconds": settings.DB_KEEPALIVES_INTERVAL,
+        "keepalives_count": settings.DB_KEEPALIVES_COUNT,
+    }
+
+
+def check_db_health() -> Dict[str, Any]:
+    """Test live database connectivity with SELECT 1 probe and measure latency."""
+    start_time = time.perf_counter()
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        return {
+            "status": "healthy",
+            "connected": True,
+            "dialect": engine.dialect.name,
+            "latency_ms": latency_ms,
+            "pool": get_db_pool_status(),
+        }
+    except Exception as exc:
+        latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        logger.error(f"[DB-HEALTH] Database health check probe failed: {exc}")
+        return {
+            "status": "unhealthy",
+            "connected": False,
+            "dialect": engine.dialect.name,
+            "error": str(exc),
+            "latency_ms": latency_ms,
+            "pool": get_db_pool_status(),
+        }
+
+
+@db_retry_with_backoff(max_retries=3, initial_delay=0.2)
 def init_db():
-    """Create tables and ensure newly added columns are migrated."""
-    # Import text construct from sqlalchemy to execute raw SQL DDL migration statements
-    from sqlalchemy import text
+    """Create tables and ensure newly added columns are migrated with retry resilience."""
     import app.models  # Ensure all model tables are registered on Base.metadata
-    # Generate all physical database tables corresponding to models registered on Base.metadata
     Base.metadata.create_all(bind=engine)
-    # Open dedicated connection from the engine to execute schema alteration scripts
+
     with engine.connect() as conn:
-        # Iterate over idempotent ALTER TABLE statements for schema evolution
         for col_sql in [
-            # Add full_name column to users table if not already present
             "ALTER TABLE users ADD COLUMN full_name VARCHAR(255);",
-            # Add reference_assignment_text column to assignments table if not already present
             "ALTER TABLE assignments ADD COLUMN reference_assignment_text TEXT;",
-            # Add file_content column to submissions table for normalized text storage
             "ALTER TABLE submissions ADD COLUMN file_content TEXT;",
-            # Add file_url column to submissions table for public or signed file access URLs
             "ALTER TABLE submissions ADD COLUMN file_url TEXT;",
-            # Add content column to submissions table for extracted text content
             "ALTER TABLE submissions ADD COLUMN content TEXT;",
-            # Add web_plagiarism_score column to submissions table with 0.0 default
             "ALTER TABLE submissions ADD COLUMN web_plagiarism_score REAL DEFAULT 0.0;",
-            # Add web_sources JSON column to submissions table with empty array default
             "ALTER TABLE submissions ADD COLUMN web_sources JSON DEFAULT '[]';",
-            # Add classroom_id column to submissions table
             "ALTER TABLE submissions ADD COLUMN classroom_id VARCHAR(64);",
-            # Add student_id column to submissions table
             "ALTER TABLE submissions ADD COLUMN student_id VARCHAR(64);",
-            # Add classroom_id column to rubrics table
             "ALTER TABLE rubrics ADD COLUMN classroom_id VARCHAR(64);",
-            # Add title column to rubrics table
             "ALTER TABLE rubrics ADD COLUMN title VARCHAR(255);",
-            # Add total_marks column to rubrics table
             "ALTER TABLE rubrics ADD COLUMN total_marks REAL DEFAULT 0.0;",
-            # Add criterion_name column to rubric_criteria table
             "ALTER TABLE rubric_criteria ADD COLUMN criterion_name VARCHAR(255);",
-            # Add max_points column to rubric_criteria table
             "ALTER TABLE rubric_criteria ADD COLUMN max_points REAL DEFAULT 4.0;",
-            # Add levels column to rubric_criteria table
             "ALTER TABLE rubric_criteria ADD COLUMN levels JSON DEFAULT '[]';",
         ]:
-            # Wrap execution of each individual column alteration in a try block to handle existing columns
             try:
-                # Execute the ALTER TABLE SQL statement against the active database connection
                 conn.execute(text(col_sql))
-                # Commit the DDL transaction to persist the newly added column in the schema
                 conn.commit()
-            # Catch exceptions when column already exists in the table schema
             except Exception:
-                # Silently ignore duplicate column errors and proceed to next migration item
                 pass
 
 
-# Wrap automatic startup database initialization in a try block
+# Automatic database schema initialization on startup
 try:
-    # Invoke init_db on module import to guarantee tables exist before requests arrive
     init_db()
-# Catch any database initialization errors during module import
-except Exception:
-    # Allow module import to proceed even if database initialization throws a transient error
-    pass
+except Exception as e:
+    logger.warning(f"[DB-INIT] Startup schema migration notice: {e}")
 
 
-# Define FastAPI dependency function yielding a database session per HTTP request
-def get_db() -> Generator:
-    """Dependency that yields a database session and safely closes it upon request completion."""
-    # Instantiate a new database session from the SessionLocal factory
+def get_db() -> Generator[Session, None, None]:
+    """Dependency yielding a database session with transaction safety and clean pool release.
+
+    Decouples database connection health from request timeouts:
+    - Rolls back any aborted transaction state on exception.
+    - Cleanly closes the session, releasing the socket back to the pool without severing.
+    """
     db = SessionLocal()
-    # Enter try block to ensure the session is safely closed after the request is processed
     try:
-        # Yield the active database session to the requesting route handler
         yield db
-    # Guarantee execution of session cleanup logic regardless of request success or failure
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception as rb_err:
+            logger.warning(f"[DB-SESSION] Rollback notice during cleanup: {rb_err}")
+        raise exc
     finally:
-        # Close the database session and return its connection back to the connection pool
-        db.close()
+        try:
+            db.close()
+        except Exception as cl_err:
+            logger.warning(f"[DB-SESSION] Close notice during cleanup: {cl_err}")

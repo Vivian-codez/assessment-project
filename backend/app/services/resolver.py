@@ -200,66 +200,109 @@ class StudentResolverService:
     ) -> Optional[Dict[str, Any]]:
         # Guard against empty roll number or classroom ID
         if not roll_number or not classroom_id:
+            # Return None when roll number or classroom id is missing
             return None
 
         # Check if pre-built roster index is available for fast lookup
         if roster_index:
+            # Clean and strip input roll number
             clean_roll = roll_number.strip()
+            # Check exact match in pre-built index
             if clean_roll in roster_index:
+                # Return indexed student record
                 return roster_index[clean_roll]
+            # Check lowercase match in pre-built index
             if clean_roll.lower() in roster_index:
+                # Return indexed student record
                 return roster_index[clean_roll.lower()]
+            # Check leading zeros stripped match in pre-built index
             if clean_roll.lstrip("0") in roster_index:
+                # Return indexed student record
                 return roster_index[clean_roll.lstrip("0")]
 
-        # Query local database directly if not resolved via preloaded index
+        # Normalize roll number to lowercase stripped string for direct database query
         clean_roll = roll_number.strip().lower()
+        # Wrap database query in try block
         try:
+            # Open local database session context
             with SessionLocal() as db:
+                # Query student table matching classroom ID and case-insensitive roll number
                 st = (
+                    # Query Student table
                     db.query(Student)
+                    # Filter matching classroom and lowercase roll number
                     .filter(
                         Student.classroom_id == classroom_id,
                         func.lower(Student.roll_number) == clean_roll,
                     )
+                    # Fetch first match
                     .first()
                 )
+                # Check if matching student record was found
                 if st:
+                    # Return student record dictionary representation
                     return {
+                        # Set student ID
                         "id": st.id,
+                        # Set classroom ID
                         "classroom_id": st.classroom_id,
+                        # Set student roll number
                         "roll_number": st.roll_number,
+                        # Set student full name
                         "full_name": st.full_name,
+                        # Set student email address
                         "email": st.email,
                     }
+        # Catch database query errors
         except Exception as db_err:
+            # Log debug notification regarding query error
             logger.debug(f"Local student roll query notice: {db_err}")
 
-        # Cloud fallback if USE_SUPABASE
+        # Cloud fallback if USE_SUPABASE is enabled
         if settings.USE_SUPABASE:
+            # Wrap cloud query in try block
             try:
+                # Query Supabase students table matching classroom ID and exact roll number
                 res = (
+                    # Access students table
                     self.client.table("students")
+                    # Select specific columns
                     .select("id, classroom_id, roll_number, full_name, email")
+                    # Filter by classroom ID
                     .eq("classroom_id", classroom_id)
+                    # Filter by exact stripped roll number
                     .eq("roll_number", roll_number.strip())
+                    # Execute query
                     .execute()
                 )
+                # Check if data was returned
                 if res.data:
+                    # Return first matched student record
                     return res.data[0]
 
+                # Attempt case-insensitive match on Supabase table
                 res_ilike = (
+                    # Access students table
                     self.client.table("students")
+                    # Select specific columns
                     .select("id, classroom_id, roll_number, full_name, email")
+                    # Filter by classroom ID
                     .eq("classroom_id", classroom_id)
+                    # Filter case-insensitively on roll number
                     .ilike("roll_number", roll_number.strip())
+                    # Execute query
                     .execute()
                 )
+                # Check if case-insensitive query matched a student
                 if res_ilike.data:
+                    # Return first matched student record
                     return res_ilike.data[0]
+            # Catch cloud API query exceptions
             except Exception as e:
+                # Log error notification regarding cloud query failure
                 logger.error(f"Error querying student by roll in cloud: {e}")
 
+        # Return None when no matching student could be resolved
         return None
 
     # Method to parse a filename, extract the roll number, and resolve the enrolled student

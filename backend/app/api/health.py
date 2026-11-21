@@ -1,8 +1,11 @@
 """Health check and system diagnostic API endpoints."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Response, status
+from fastapi.responses import JSONResponse
 from app.core.config import settings
+from app.core.database import check_db_health, get_db_pool_status
 
+# Initialize FastAPI router instance tagged under Health
 router = APIRouter(tags=["Health"])
 
 
@@ -20,3 +23,15 @@ def health_check():
         "gemini_model": settings.GEMINI_MODEL,
         "ferpa_encryption": "active",
     }
+
+
+@router.get("/health/db")
+def db_health_check():
+    """Live database connectivity probe returning latency and connection pool metrics."""
+    health_data = check_db_health()
+    if not health_data.get("connected", False):
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=health_data,
+        )
+    return health_data

@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { api, type Classroom, type MatrixCriterion, type RubricLevel } from "@/lib/api";
+import { api, type Classroom, type RubricLevel } from "@/lib/api";
 
 interface MatrixRubricBuilderProps {
   classroom: Classroom | null;
@@ -47,7 +47,7 @@ export function MatrixRubricBuilder({
   showToast,
 }: MatrixRubricBuilderProps) {
   const [title, setTitle] = useState("Object-Oriented Programming & Data Structures Matrix Rubric");
-  const [selectedClassId, setSelectedClassId] = useState(classroom?.id || (classrooms[0]?.id || ""));
+  const [selectedClassId, setSelectedClassId] = useState(classroom?.id || classrooms[0]?.id || "");
   const [saving, setSaving] = useState(false);
 
   // Horizontal score tier columns
@@ -64,9 +64,12 @@ export function MatrixRubricBuilder({
       id: "row_1",
       criterion_name: "OOP Structure, Syntax & Real-time Instance Usage",
       descriptions: {
-        tier_1: "Class well-defined with correct access specifiers, constructor/destructor implementation, and valid instance instantiation in real-time.",
-        tier_2: "Minor syntax issues or imperfect destructor handling, but overall class encapsulation and instantiation are correct.",
-        tier_3: "Missing either constructor or destructor; improper encapsulation or public exposure of sensitive members.",
+        tier_1:
+          "Class well-defined with correct access specifiers, constructor/destructor implementation, and valid instance instantiation in real-time.",
+        tier_2:
+          "Minor syntax issues or imperfect destructor handling, but overall class encapsulation and instantiation are correct.",
+        tier_3:
+          "Missing either constructor or destructor; improper encapsulation or public exposure of sensitive members.",
         tier_4: "Program does not compile; fundamental OOP structure missing.",
       },
     },
@@ -74,8 +77,10 @@ export function MatrixRubricBuilder({
       id: "row_2",
       criterion_name: "Implementation of User-defined Functions & Logic",
       descriptions: {
-        tier_1: "Logic fully decomposed into modular, reusable functions with proper parameters, return types, and algorithmic efficiency.",
-        tier_2: "Functions defined and working but contains slight redundancy or suboptimal edge-case parameter checks.",
+        tier_1:
+          "Logic fully decomposed into modular, reusable functions with proper parameters, return types, and algorithmic efficiency.",
+        tier_2:
+          "Functions defined and working but contains slight redundancy or suboptimal edge-case parameter checks.",
         tier_3: "Monolithic logic with minimal functional abstraction; repetitive code blocks.",
         tier_4: "User-defined functions missing or produce erroneous outputs.",
       },
@@ -84,7 +89,8 @@ export function MatrixRubricBuilder({
       id: "row_3",
       criterion_name: "Execution, Output & Code Quality",
       descriptions: {
-        tier_1: "Clean formatting, standard naming conventions, produces expected output without memory leaks or runtime exceptions.",
+        tier_1:
+          "Clean formatting, standard naming conventions, produces expected output without memory leaks or runtime exceptions.",
         tier_2: "Correct execution output with minor formatting or naming inconsistencies.",
         tier_3: "Output contains logical discrepancies or fails on boundary conditions.",
         tier_4: "Program crashes, contains segmentation faults, or infinite loops.",
@@ -100,13 +106,19 @@ export function MatrixRubricBuilder({
   // Handlers for Score Tiers
   const handleAddTier = () => {
     const newTierId = `tier_${Date.now()}`;
-    const newPoints = tiers.length > 0 ? Math.max(0, Math.min(...tiers.map((t) => t.points)) - 1) : 1;
-    setTiers([...tiers, { id: newTierId, level_name: `Tier ${tiers.length + 1}`, points: newPoints }]);
+    const newPoints =
+      tiers.length > 0 ? Math.max(0, Math.min(...tiers.map((t) => t.points)) - 1) : 1;
+    setTiers([
+      ...tiers,
+      { id: newTierId, level_name: `Tier ${tiers.length + 1}`, points: newPoints },
+    ]);
   };
 
   const handleUpdateTier = (id: string, field: "level_name" | "points", value: any) => {
     setTiers((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, [field]: field === "points" ? Number(value) : value } : t))
+      prev.map((t) =>
+        t.id === id ? { ...t, [field]: field === "points" ? Number(value) : value } : t,
+      ),
     );
   };
 
@@ -132,18 +144,14 @@ export function MatrixRubricBuilder({
   };
 
   const handleUpdateCriterionName = (id: string, name: string) => {
-    setCriteriaRows((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, criterion_name: name } : r))
-    );
+    setCriteriaRows((prev) => prev.map((r) => (r.id === id ? { ...r, criterion_name: name } : r)));
   };
 
   const handleUpdateCellDescription = (rowId: string, tierId: string, text: string) => {
     setCriteriaRows((prev) =>
       prev.map((r) =>
-        r.id === rowId
-          ? { ...r, descriptions: { ...r.descriptions, [tierId]: text } }
-          : r
-      )
+        r.id === rowId ? { ...r, descriptions: { ...r.descriptions, [tierId]: text } } : r,
+      ),
     );
   };
 
@@ -217,7 +225,8 @@ export function MatrixRubricBuilder({
             Matrix Rubric Designer
           </h1>
           <p className="mt-0.5 text-xs text-muted-foreground">
-            Configure multi-tier grading criteria with quantitative score levels and descriptive feedback.
+            Configure multi-tier grading criteria with quantitative score levels and descriptive
+            feedback.
           </p>
         </div>
 
@@ -301,20 +310,10 @@ export function MatrixRubricBuilder({
           </div>
 
           <div className="flex items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleAddTier}
-              className="text-xs"
-            >
+            <Button variant="outline" size="sm" onClick={handleAddTier} className="text-xs">
               <Plus className="mr-1 size-3.5" /> Add Score Tier
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleAddCriterion}
-              className="text-xs"
-            >
+            <Button variant="outline" size="sm" onClick={handleAddCriterion} className="text-xs">
               <Plus className="mr-1 size-3.5" /> Add Criterion Row
             </Button>
           </div>
@@ -340,9 +339,7 @@ export function MatrixRubricBuilder({
                       <div className="flex-1 space-y-1">
                         <Input
                           value={tier.level_name}
-                          onChange={(e) =>
-                            handleUpdateTier(tier.id, "level_name", e.target.value)
-                          }
+                          onChange={(e) => handleUpdateTier(tier.id, "level_name", e.target.value)}
                           className="h-7 text-xs font-bold"
                           placeholder="Tier Name"
                         />
@@ -353,9 +350,7 @@ export function MatrixRubricBuilder({
                             min="0"
                             step="0.5"
                             value={tier.points}
-                            onChange={(e) =>
-                              handleUpdateTier(tier.id, "points", e.target.value)
-                            }
+                            onChange={(e) => handleUpdateTier(tier.id, "points", e.target.value)}
                             className="h-6 w-16 font-mono text-xs font-semibold"
                           />
                         </div>
@@ -399,9 +394,7 @@ export function MatrixRubricBuilder({
 
                       <Textarea
                         value={row.criterion_name}
-                        onChange={(e) =>
-                          handleUpdateCriterionName(row.id, e.target.value)
-                        }
+                        onChange={(e) => handleUpdateCriterionName(row.id, e.target.value)}
                         rows={3}
                         className="text-xs font-medium resize-none"
                         placeholder="e.g. OOP Structure, Syntax & Real-time Instance Usage"
@@ -439,17 +432,13 @@ export function MatrixRubricBuilder({
 
         {/* Footer controls */}
         <div className="flex items-center justify-between border-t border-line bg-muted/20 p-4">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleAddCriterion}
-            className="text-xs"
-          >
+          <Button variant="outline" size="sm" onClick={handleAddCriterion} className="text-xs">
             <Plus className="mr-1.5 size-3.5" /> Add Criterion Row
           </Button>
 
           <p className="text-[11px] text-muted-foreground">
-            Rubric structure formats standard multi-tier matrices matching academic department guidelines.
+            Rubric structure formats standard multi-tier matrices matching academic department
+            guidelines.
           </p>
         </div>
       </div>

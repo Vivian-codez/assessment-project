@@ -3,6 +3,7 @@ name: Logo-matched colour theme
 description: EduCheck AI's theme is matched to the VERISM logo — midnight navy, electric aqua, ice-blue glow, circuit teal. Never hardcode colours.
 type: design
 ---
+
 The user asked for a light-blue theme, then asked for it to match their uploaded logo (the "VERISM" cyber-owl crest). The theme now follows that logo:
 
 - Brand colours taken from the logo: deep midnight navy `#081D33` (text, primary buttons), electric aqua/cyan `#00F2FE` and `#1AE5D9` (glow accents, matched-phrase highlight, secondary accent), ice-blue `#E0FFFF` (soft fills), deep circuit teal `#0C6E77` (links, active states, solid accent buttons).

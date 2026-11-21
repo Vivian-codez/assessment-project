@@ -13,7 +13,16 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 // Import React component state and effect hooks
 import { useState, useEffect } from "react";
 // Import Lucide icons for visual affordances in form fields and buttons
-import { ShieldCheck, Mail, Lock, User, ArrowRight, Loader2, Sparkles, GraduationCap } from "lucide-react";
+import {
+  ShieldCheck,
+  Mail,
+  Lock,
+  User,
+  ArrowRight,
+  Loader2,
+  Sparkles,
+  GraduationCap,
+} from "lucide-react";
 // Import API client functions and authentication token storage utilities
 import { api, setAuthToken, setCachedUser, getAuthToken } from "@/lib/api";
 // Import shared UI Button component
@@ -55,7 +64,7 @@ function LoginPage() {
       // Redirect to home dashboard
       navigate({ to: "/" });
     }
-  // Run on mount or when navigate hook reference changes
+    // Run on mount or when navigate hook reference changes
   }, [navigate]);
 
   // Handler processing sign-in form submissions
@@ -81,11 +90,11 @@ function LoginPage() {
       setCachedUser(apiRes.user);
       // Navigate authenticated educator to the dashboard root
       navigate({ to: "/" });
-    // Catch invalid credentials or server errors
+      // Catch invalid credentials or server errors
     } catch (err: any) {
       // Display error message to user
       setErrorMsg(err.message || "Failed to sign in. Please verify your credentials.");
-    // Reset loading state once network call concludes
+      // Reset loading state once network call concludes
     } finally {
       // Disable loading spinner
       setLoading(false);
@@ -137,11 +146,11 @@ function LoginPage() {
       setCachedUser(apiRes.user);
       // Navigate newly registered educator to dashboard root
       navigate({ to: "/" });
-    // Catch existing email conflict or server errors
+      // Catch existing email conflict or server errors
     } catch (err: any) {
       // Display registration error message
       setErrorMsg(err.message || "Registration failed. Please try a different email.");
-    // Conclude loading indicator
+      // Conclude loading indicator
     } finally {
       // Disable loading spinner
       setLoading(false);
@@ -378,7 +387,8 @@ function LoginPage() {
         {/* Security and compliance footer banner */}
         <div className="mt-6 border-t border-gray-100 pt-4 text-center">
           <p className="flex items-center justify-center gap-1.5 text-[11px] text-gray-400">
-            <ShieldCheck className="size-3.5 text-emerald-500" /> Protected by Local JWT Authentication & FERPA Encryption
+            <ShieldCheck className="size-3.5 text-emerald-500" /> Protected by Local JWT
+            Authentication & FERPA Encryption
           </p>
         </div>
       </div>

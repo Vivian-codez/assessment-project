@@ -107,7 +107,12 @@ function Pill({
   tone?: "neutral" | "lav" | "sage" | "clay" | "amber" | "blue";
 }) {
   return (
-    <span className={cn("inline-flex items-center rounded-md px-2.5 py-1 text-[11px] font-medium", `tone-${tone}`)}>
+    <span
+      className={cn(
+        "inline-flex items-center rounded-md px-2.5 py-1 text-[11px] font-medium",
+        `tone-${tone}`,
+      )}
+    >
       {children}
     </span>
   );
@@ -144,9 +149,15 @@ function SectionTitle({
   return (
     <div className="mb-7 flex flex-wrap items-end justify-between gap-4 animate-fade-up">
       <div>
-        {eyebrow && <p className="mb-2 text-[11px] uppercase tracking-[0.2em] text-faint">{eyebrow}</p>}
-        <h1 className="font-display text-3xl leading-tight tracking-tight text-ink sm:text-4xl">{title}</h1>
-        {description && <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-ink">{description}</p>}
+        {eyebrow && (
+          <p className="mb-2 text-[11px] uppercase tracking-[0.2em] text-faint">{eyebrow}</p>
+        )}
+        <h1 className="font-display text-3xl leading-tight tracking-tight text-ink sm:text-4xl">
+          {title}
+        </h1>
+        {description && (
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-ink">{description}</p>
+        )}
       </div>
       {action}
     </div>
@@ -188,6 +199,14 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
   const [addCourseOpen, setAddCourseOpen] = useState(false);
   const [addAssignmentOpen, setAddAssignmentOpen] = useState(false);
   const [manualSubmissionOpen, setManualSubmissionOpen] = useState(false);
+  // Deletion Confirmation Modal State
+  const [deletionModal, setDeletionModal] = useState<{
+    type: "course" | "assignment" | "submission" | "all_submissions" | "mock_data";
+    id: string;
+    title: string;
+    details?: string;
+  } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Evaluation & Batch Job Polling
   const [isProcessing, setIsProcessing] = useState(false);
@@ -220,11 +239,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
       }
 
       if (mounted) {
-        await Promise.all([
-          loadCourses(),
-          loadClassrooms(),
-          loadRubrics(),
-        ]);
+        await Promise.all([loadCourses(), loadClassrooms(), loadRubrics()]);
       }
     };
 
@@ -270,7 +285,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
     try {
       const cls = await api.classrooms.list();
       setClassrooms(cls || []);
-      if (cls && cls.length > 0) {
+      if (cls && cls.length > 0 && cls[0]) {
         const first = cls[0];
         setSelectedClassroomId((prev) => prev || first.id);
         loadStudents(selectedClassroomId || first.id);
@@ -335,9 +350,11 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
     }
   };
 
-  const loadSubmissions = async (assignmentId: string) => {
+  const loadSubmissions = async (assignmentId?: string) => {
+    const targetId = assignmentId || selectedAssignmentId;
+    if (!targetId) return;
     try {
-      const subs = await api.submissions.listByAssignment(assignmentId);
+      const subs = await api.submissions.listByAssignment(targetId);
       setSubmissions(subs);
       if (subs.length > 0 && subs[0] && !selectedSubmissionId) {
         setSelectedSubmissionId(subs[0].id);
@@ -358,6 +375,9 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
 
   const handleSelectCourse = (courseId: string) => {
     setSelectedCourseId(courseId);
+    setSelectedClassroomId(courseId);
+    loadStudents(courseId);
+    loadRubrics(courseId);
     loadAssignments(courseId);
   };
 
@@ -376,14 +396,25 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
 
   const [editAssignmentOpen, setEditAssignmentOpen] = useState(false);
 
-  const currentCourse: APICourse | null = courses.find((c) => c.id === selectedCourseId) || (courses.length > 0 && courses[0] ? courses[0] : null);
+  const currentCourse: APICourse | null =
+    courses.find((c) => c.id === selectedCourseId) ||
+    (courses.length > 0 && courses[0] ? courses[0] : null);
 
   const currentClassroom: Classroom | null =
     classrooms.find((c) => c.id === selectedClassroomId) ||
     (classrooms.length > 0 ? classrooms[0] : null) ||
-    (currentCourse ? { id: currentCourse.id, name: currentCourse.name, code: currentCourse.code, students_count: currentCourse.students_count || 0 } : null);
+    (currentCourse
+      ? {
+          id: currentCourse.id,
+          name: currentCourse.name,
+          code: currentCourse.code,
+          students_count: currentCourse.students_count || 0,
+        }
+      : null);
 
-  const currentAssignment: APIAssignment | null = assignments.find((a) => a.id === selectedAssignmentId) || (assignments.length > 0 && assignments[0] ? assignments[0] : null);
+  const currentAssignment: APIAssignment | null =
+    assignments.find((a) => a.id === selectedAssignmentId) ||
+    (assignments.length > 0 && assignments[0] ? assignments[0] : null);
 
   const pendingCount = submissions.filter((s) => s.status !== "approved").length;
 
@@ -407,88 +438,122 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
     routerNavigate({ to: "/login" });
   };
 
-  const handleDeleteCourse = async (courseId: string) => {
-    if (!window.confirm("Are you sure you want to delete this course and all its data?")) return;
-    try {
-      await api.courses.delete(courseId);
-      const remaining = courses.filter((c) => c.id !== courseId);
-      setCourses(remaining);
-      if (selectedCourseId === courseId) {
-        if (remaining.length > 0 && remaining[0]) {
-          setSelectedCourseId(remaining[0].id);
-          loadAssignments(remaining[0].id);
-        } else {
-          setSelectedCourseId("");
-          setAssignments([]);
-          setSubmissions([]);
-          setSimilarityMatches([]);
-        }
-      }
-      showToast("Course deleted successfully.");
-    } catch (e: any) {
-      showToast(`Error deleting course: ${e.message}`);
-    }
+  const handleDeleteCourse = (courseId: string) => {
+    const c = courses.find((item) => item.id === courseId);
+    setDeletionModal({
+      type: "course",
+      id: courseId,
+      title: c ? `${c.code} · ${c.name}` : "Course",
+      details:
+        "All associated assignments, rubrics, and student submissions will be permanently deleted.",
+    });
   };
 
-  const handleDeleteAssignment = async (assignId: string) => {
-    if (!window.confirm("Are you sure you want to delete this assignment?")) return;
-    try {
-      await api.assignments.delete(assignId);
-      const remaining = assignments.filter((a) => a.id !== assignId);
-      setAssignments(remaining);
-      if (selectedAssignmentId === assignId) {
-        if (remaining.length > 0 && remaining[0]) {
-          setSelectedAssignmentId(remaining[0].id);
-          loadSubmissions(remaining[0].id);
-          loadSimilarity(remaining[0].id);
-        } else {
-          setSelectedAssignmentId("");
-          setSubmissions([]);
-          setSimilarityMatches([]);
-        }
-      }
-      showToast("Assignment deleted.");
-    } catch (e: any) {
-      showToast(`Error deleting assignment: ${e.message}`);
-    }
+  const handleDeleteAssignment = (assignId: string) => {
+    const a = assignments.find((item) => item.id === assignId);
+    setDeletionModal({
+      type: "assignment",
+      id: assignId,
+      title: a ? a.title : "Assignment",
+      details:
+        "All student submissions and evaluation reports for this assessment will be removed.",
+    });
   };
 
-  const handleDeleteSubmission = async (subId: string) => {
-    try {
-      await api.submissions.delete(subId);
-      setSubmissions(submissions.filter((s) => s.id !== subId));
-      if (selectedSubmissionId === subId) {
-        const remaining = submissions.filter((s) => s.id !== subId);
-        setSelectedSubmissionId(remaining.length > 0 && remaining[0] ? remaining[0].id : "");
-      }
-      showToast("Submission removed.");
-    } catch (e: any) {
-      showToast(`Error deleting submission: ${e.message}`);
-    }
+  const handleDeleteSubmission = (subId: string) => {
+    const s = submissions.find((item) => item.id === subId);
+    setDeletionModal({
+      type: "submission",
+      id: subId,
+      title: s ? `${s.student} (${s.file_name})` : "Student Submission",
+      details:
+        "This student submission and its evaluation reports will be removed from the assignment.",
+    });
   };
 
-  const handleClearAllSubmissions = async () => {
+  const handleClearAllSubmissions = () => {
     if (!selectedAssignmentId) return;
-    if (!window.confirm("Are you sure you want to clear all submissions for this assignment to enter your own real data?")) return;
-    try {
-      await api.submissions.clearAll(selectedAssignmentId);
-      setSubmissions([]);
-      setSelectedSubmissionId("");
-      setSimilarityMatches([]);
-      showToast("All submissions cleared. Ready for your student data!");
-    } catch (e: any) {
-      showToast(`Error clearing submissions: ${e.message}`);
-    }
+    setDeletionModal({
+      type: "all_submissions",
+      id: selectedAssignmentId,
+      title: "Clear All Submissions",
+      details:
+        "This will remove all uploaded student documents for this assignment to allow clean re-entry.",
+    });
   };
 
-  const handleClearMockData = async () => {
-    if (!window.confirm("Purge sample mock courses and records? This ensures a clean custom database.")) return;
+  const handleClearMockData = () => {
+    setDeletionModal({
+      type: "mock_data",
+      id: "mock_data",
+      title: "Purge Sample Mock Data",
+      details:
+        "This will remove seeded sample mock courses and records to ensure a clean, custom database state.",
+    });
+  };
+
+  const handleExecuteConfirmedDelete = async () => {
+    if (!deletionModal) return;
+    const { type, id, title } = deletionModal;
+    setIsDeleting(true);
+
     try {
-      const res = await api.auth.clearMockData();
-      showToast(res.message);
-      await loadCourses();
+      if (type === "course") {
+        await api.courses.delete(id);
+        const remaining = courses.filter((c) => c.id !== id);
+        setCourses(remaining);
+        if (selectedCourseId === id) {
+          if (remaining.length > 0 && remaining[0]) {
+            setSelectedCourseId(remaining[0].id);
+            loadAssignments(remaining[0].id);
+          } else {
+            setSelectedCourseId("");
+            setAssignments([]);
+            setSubmissions([]);
+            setSimilarityMatches([]);
+          }
+        }
+        showToast(`Course '${title}' deleted successfully.`);
+      } else if (type === "assignment") {
+        await api.assignments.delete(id);
+        const remaining = assignments.filter((a) => a.id !== id);
+        setAssignments(remaining);
+        if (selectedAssignmentId === id) {
+          if (remaining.length > 0 && remaining[0]) {
+            setSelectedAssignmentId(remaining[0].id);
+            loadSubmissions(remaining[0].id);
+            loadSimilarity(remaining[0].id);
+          } else {
+            setSelectedAssignmentId("");
+            setSubmissions([]);
+            setSimilarityMatches([]);
+          }
+        }
+        showToast(`Assignment '${title}' deleted.`);
+      } else if (type === "submission") {
+        await api.submissions.delete(id);
+        const remaining = submissions.filter((s) => s.id !== id);
+        setSubmissions(remaining);
+        if (selectedSubmissionId === id) {
+          setSelectedSubmissionId(remaining.length > 0 && remaining[0] ? remaining[0].id : "");
+        }
+        showToast(`Submission removed.`);
+      } else if (type === "all_submissions") {
+        await api.submissions.clearAll(id);
+        setSubmissions([]);
+        setSelectedSubmissionId("");
+        setSimilarityMatches([]);
+        showToast("All submissions cleared. Ready for your student data!");
+      } else if (type === "mock_data") {
+        const res = await api.auth.clearMockData();
+        showToast(res.message || "Sample mock data purged.");
+        await loadCourses();
+      }
+      setDeletionModal(null);
     } catch (e: any) {
-      showToast(`Error: ${e.message}`);
+      showToast(`Error deleting ${type}: ${e.message}`);
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -512,7 +577,9 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
             setProcessingAssignmentId("");
             await loadSubmissions(targetId);
             await loadSimilarity(targetId);
-            showToast(`Auto-grading complete: ${status.processed_items || "All"} submissions ready for review!`);
+            showToast(
+              `Auto-grading complete: ${status.processed_items || "All"} submissions ready for review!`,
+            );
           }, 600);
         } else if (status.status === "failed") {
           window.clearInterval(pollTimer);
@@ -570,7 +637,8 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
         title,
         description: `Student submissions and benchmark solutions for ${currentCourse.name || currentCourse.code}. Evaluated against university rubric with 3-way plagiarism audit.`,
         max_score: 100,
-        reference_assignment_text: "Benchmark Reference Solution: Students must implement accurate algorithmic models, clean functional modularity, robust boundary test coverage, and comprehensive runtime complexity analysis.",
+        reference_assignment_text:
+          "Benchmark Reference Solution: Students must implement accurate algorithmic models, clean functional modularity, robust boundary test coverage, and comprehensive runtime complexity analysis.",
       });
       setAssignments((prev) => {
         const exists = prev.some((a) => a.id === created.id);
@@ -640,12 +708,22 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                   navigate("review");
                 }}
                 onOpenAddCourse={() => setAddCourseOpen(true)}
+                onSelectCourse={handleSelectCourse}
               />
             )}
             {view === "roster" && (
               <RosterView
                 classroom={currentClassroom}
-                classrooms={classrooms.length > 0 ? classrooms : (courses.map((c) => ({ id: c.id, name: c.name, code: c.code, students_count: c.students_count || 0 })))}
+                classrooms={
+                  classrooms.length > 0
+                    ? classrooms
+                    : courses.map((c) => ({
+                        id: c.id,
+                        name: c.name,
+                        code: c.code,
+                        students_count: c.students_count || 0,
+                      }))
+                }
                 onSelectClassroom={handleSelectClassroom}
                 showToast={showToast}
               />
@@ -653,7 +731,16 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
             {view === "rubric_builder" && (
               <MatrixRubricBuilder
                 classroom={currentClassroom}
-                classrooms={classrooms.length > 0 ? classrooms : (courses.map((c) => ({ id: c.id, name: c.name, code: c.code, students_count: c.students_count || 0 })))}
+                classrooms={
+                  classrooms.length > 0
+                    ? classrooms
+                    : courses.map((c) => ({
+                        id: c.id,
+                        name: c.name,
+                        code: c.code,
+                        students_count: c.students_count || 0,
+                      }))
+                }
                 onSelectClassroom={handleSelectClassroom}
                 onSaved={() => {
                   loadRubrics(currentClassroom?.id);
@@ -666,7 +753,16 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
             {view === "rubrics" && (
               <RubricsListView
                 classroom={currentClassroom}
-                classrooms={classrooms.length > 0 ? classrooms : (courses.map((c) => ({ id: c.id, name: c.name, code: c.code, students_count: c.students_count || 0 })))}
+                classrooms={
+                  classrooms.length > 0
+                    ? classrooms
+                    : courses.map((c) => ({
+                        id: c.id,
+                        name: c.name,
+                        code: c.code,
+                        students_count: c.students_count || 0,
+                      }))
+                }
                 onOpenCreateRubric={() => navigate("rubric_builder")}
                 showToast={showToast}
               />
@@ -685,6 +781,10 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
             {view === "assignments" && (
               <AssignmentsView
                 course={currentCourse}
+                courses={courses}
+                onSelectCourse={handleSelectCourse}
+                rubrics={matrixRubrics}
+                onReloadRubrics={() => loadRubrics(selectedCourseId || currentCourse?.id)}
                 assignments={assignments}
                 selectedAssignmentId={selectedAssignmentId}
                 processingAssignmentId={processingAssignmentId}
@@ -756,7 +856,9 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 showToast={showToast}
               />
             )}
-            {view === "reports" && <ReportsView course={currentCourse} submissions={submissions} showToast={showToast} />}
+            {view === "reports" && (
+              <ReportsView course={currentCourse} submissions={submissions} showToast={showToast} />
+            )}
             {view === "settings" && (
               <SettingsView
                 currentUser={currentUser}
@@ -857,6 +959,69 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
           showToast={showToast}
         />
       )}
+
+      {/* Reusable Deletion Confirmation Modal */}
+      {deletionModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in">
+          <div className="w-full max-w-md rounded-2xl border border-line bg-card p-6 shadow-2xl animate-scale-in">
+            <div className="flex items-center gap-3">
+              <div className="grid size-10 place-items-center rounded-full bg-destructive/10 text-destructive">
+                <Trash2 className="size-5" />
+              </div>
+              <div>
+                <h3 className="font-display text-lg font-semibold text-foreground">
+                  Confirm Deletion
+                </h3>
+                <p className="text-xs text-muted-foreground capitalize">
+                  {deletionModal.type.replace("_", " ")} Removal
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-lg bg-muted/40 p-3.5 text-xs text-foreground/90 space-y-1">
+              <p className="font-semibold text-foreground">{deletionModal.title}</p>
+              {deletionModal.details && (
+                <p className="text-muted-foreground text-[11px] leading-relaxed">
+                  {deletionModal.details}
+                </p>
+              )}
+            </div>
+
+            <p className="mt-3 text-[11px] text-muted-foreground">
+              This operation cannot be undone. Are you sure you want to proceed?
+            </p>
+
+            <div className="mt-6 flex justify-end gap-2 border-t border-line pt-4">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setDeletionModal(null)}
+                disabled={isDeleting}
+                className="text-xs"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleExecuteConfirmedDelete}
+                disabled={isDeleting}
+                className="text-xs"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 className="mr-1.5 size-3.5 animate-spin" /> Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="mr-1.5 size-3.5" /> Confirm Delete
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -873,10 +1038,8 @@ const navSections: {
     label: "Workspace",
     items: [
       { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-      { key: "courses", label: "My Classrooms", icon: BookOpen },
+      { key: "courses", label: "My Courses", icon: BookOpen },
       { key: "roster", label: "Student Roll Call", icon: Users },
-      { key: "rubrics", label: "Matrix Rubrics", icon: ClipboardCheck },
-      { key: "rubric_builder", label: "Rubric Designer", icon: Edit3 },
       { key: "assignments", label: "Assignments & Submissions", icon: FolderOpen },
       { key: "grading", label: "AI Auto-Grading", icon: Sparkles },
       { key: "review", label: "Review Queue", icon: CheckCircle2 },
@@ -915,7 +1078,7 @@ function Sidebar({
       <aside
         className={cn(
           "fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-line bg-card px-5 py-6 transition-transform duration-300 lg:translate-x-0",
-          mobileOpen ? "translate-x-0" : "-translate-x-full"
+          mobileOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
         <div className="flex items-center gap-2.5 px-1">
@@ -924,16 +1087,25 @@ function Sidebar({
           </div>
           <div className="leading-tight">
             <p className="text-[13px] font-semibold tracking-tight">Verism AI</p>
-            <p className="mt-0.5 text-[10px] uppercase tracking-[0.18em] text-faint">Academic Integrity & Review</p>
+            <p className="mt-0.5 text-[10px] uppercase tracking-[0.18em] text-faint">
+              Academic Integrity & Review
+            </p>
           </div>
-          <Button size="icon" variant="ghost" className="ml-auto text-muted-ink lg:hidden" onClick={onClose}>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="ml-auto text-muted-ink lg:hidden"
+            onClick={onClose}
+          >
             <X />
           </Button>
         </div>
         <nav className="mt-8 space-y-0.5 text-[13px]">
           {navSections.map((section) => (
             <div key={section.label} className="mb-5">
-              <div className="mb-2 px-3 text-[10px] uppercase tracking-[0.16em] text-faint">{section.label}</div>
+              <div className="mb-2 px-3 text-[10px] uppercase tracking-[0.16em] text-faint">
+                {section.label}
+              </div>
               {section.items.map((item) => {
                 const Icon = item.icon;
                 const isActive = active === item.key;
@@ -944,7 +1116,7 @@ function Sidebar({
                     onClick={() => onNavigate(item.key)}
                     className={cn(
                       "flex h-9 w-full justify-start gap-3 rounded-lg px-3 font-normal text-muted-ink hover:bg-paper hover:text-ink",
-                      isActive && "bg-lav-soft font-medium text-ink hover:bg-lav-soft"
+                      isActive && "bg-lav-soft font-medium text-ink hover:bg-lav-soft",
                     )}
                   >
                     <Icon className={cn("size-4", isActive ? "text-amber-ink" : "text-faint")} />
@@ -1050,7 +1222,7 @@ function TopBar({
         {currentUser ? (
           <div className="flex items-center gap-2">
             <div className="grid size-8 place-items-center rounded-full bg-lav-soft text-[11px] font-medium text-ink">
-              {currentUser.name
+              {(currentUser.name || "User")
                 .split(" ")
                 .map((n) => n[0])
                 .join("")
@@ -1058,8 +1230,8 @@ function TopBar({
                 .toUpperCase()}
             </div>
             <div className="hidden text-left leading-tight sm:block">
-              <p className="text-[12px] font-medium">{currentUser.name}</p>
-              <p className="text-[10px] text-faint">{currentUser.role}</p>
+              <p className="text-[12px] font-medium">{currentUser.name || "User"}</p>
+              <p className="text-[10px] text-faint">{currentUser.role || "Instructor"}</p>
             </div>
             <Button
               size="icon"
@@ -1072,7 +1244,11 @@ function TopBar({
             </Button>
           </div>
         ) : (
-          <Button size="sm" onClick={onOpenAuth} className="rounded-lg bg-ink text-card hover:bg-ink/90">
+          <Button
+            size="sm"
+            onClick={onOpenAuth}
+            className="rounded-lg bg-ink text-card hover:bg-ink/90"
+          >
             <LogIn className="mr-1.5 size-3.5" />
             Sign In / Sign Up
           </Button>
@@ -1099,6 +1275,7 @@ function Dashboard({
   onNavigate,
   onReview,
   onOpenAddCourse,
+  onSelectCourse,
 }: {
   course: APICourse | null;
   courses: APICourse[];
@@ -1112,6 +1289,7 @@ function Dashboard({
   onNavigate: (view: ViewKey) => void;
   onReview: (id: string) => void;
   onOpenAddCourse: () => void;
+  onSelectCourse: (id: string) => void;
 }) {
   if (!course && courses.length === 0 && classrooms.length === 0) {
     return (
@@ -1119,40 +1297,71 @@ function Dashboard({
         <div className="mx-auto grid size-16 place-items-center rounded-2xl bg-lav-soft text-ink mb-6 shadow-sm">
           <GraduationCap className="size-8 text-amber-ink" />
         </div>
-        <p className="text-xs uppercase tracking-[0.2em] text-faint mb-2">Teacher Workspace · Live Database</p>
+        <p className="text-xs uppercase tracking-[0.2em] text-faint mb-2">
+          Teacher Workspace · Live Database
+        </p>
         <h1 className="font-display text-4xl text-ink">Welcome to Your Educator Console</h1>
         <p className="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-muted-ink">
-          Live database connected with zero mock records. Start setting up your courses, student roll call rosters, and matrix rubrics to begin automated evaluations.
+          Live database connected with zero mock records. Start setting up your courses, student
+          roll call rosters, and evaluation rubrics to begin automated grading.
         </p>
         <div className="mt-8 flex flex-wrap justify-center gap-3">
-          <Button onClick={onOpenAddCourse} size="lg" className="bg-ink text-card hover:bg-ink/90 rounded-xl px-5">
+          <Button
+            onClick={onOpenAddCourse}
+            size="lg"
+            className="bg-ink text-card hover:bg-ink/90 rounded-xl px-5"
+          >
             <Plus className="mr-2 size-4" />
-            Add Your First Classroom
+            Add Your First Course
           </Button>
-          <Button onClick={() => onNavigate("roster")} size="lg" variant="outline" className="rounded-xl px-5 border-line">
+          <Button
+            onClick={() => onNavigate("roster")}
+            size="lg"
+            variant="outline"
+            className="rounded-xl px-5 border-line"
+          >
             <Users className="mr-2 size-4 text-amber-ink" />
             Enroll Your First Student
           </Button>
-          <Button onClick={() => onNavigate("rubric_builder")} size="lg" variant="outline" className="rounded-xl px-5 border-line">
-            <ClipboardCheck className="mr-2 size-4 text-sage" />
-            Create Your First Rubric
+          <Button
+            onClick={() => onNavigate("assignments")}
+            size="lg"
+            variant="outline"
+            className="rounded-xl px-5 border-line"
+          >
+            <FolderOpen className="mr-2 size-4 text-sage" />
+            Manage Assignments & Rubrics
           </Button>
         </div>
         <div className="mt-12 grid gap-4 text-left sm:grid-cols-3">
           <div className="rounded-[14px] border border-line bg-card p-5">
-            <div className="grid size-9 place-items-center rounded-lg bg-lav-soft text-ink mb-3 font-semibold">1</div>
-            <h3 className="font-display text-lg">Classroom & Roll Call</h3>
-            <p className="mt-1 text-xs text-muted-ink">Batch enroll students manually or drag-and-drop CSV rosters with duplicate validation.</p>
+            <div className="grid size-9 place-items-center rounded-lg bg-lav-soft text-ink mb-3 font-semibold">
+              1
+            </div>
+            <h3 className="font-display text-lg">Courses & Roll Call</h3>
+            <p className="mt-1 text-xs text-muted-ink">
+              Batch enroll students manually or drag-and-drop CSV rosters with duplicate validation.
+            </p>
           </div>
           <div className="rounded-[14px] border border-line bg-card p-5">
-            <div className="grid size-9 place-items-center rounded-lg bg-sage-soft text-sage mb-3 font-semibold">2</div>
-            <h3 className="font-display text-lg">Matrix Rubric Builder</h3>
-            <p className="mt-1 text-xs text-muted-ink">Multi-tier criteria matrices with custom score tiers (4, 3, 2, 0 pts) and auto-calculated total marks.</p>
+            <div className="grid size-9 place-items-center rounded-lg bg-sage-soft text-sage mb-3 font-semibold">
+              2
+            </div>
+            <h3 className="font-display text-lg">Assignments & Rubrics</h3>
+            <p className="mt-1 text-xs text-muted-ink">
+              Upload rubric documents or design inline matrix criteria with custom score tiers
+              directly inside assignments.
+            </p>
           </div>
           <div className="rounded-[14px] border border-line bg-card p-5">
-            <div className="grid size-9 place-items-center rounded-lg bg-amber-soft text-amber-ink mb-3 font-semibold">3</div>
+            <div className="grid size-9 place-items-center rounded-lg bg-amber-soft text-amber-ink mb-3 font-semibold">
+              3
+            </div>
             <h3 className="font-display text-lg">Submissions & Auditing</h3>
-            <p className="mt-1 text-xs text-muted-ink">Benchmark student work against reference exemplars with 3-way peer, AI, and web plagiarism checking.</p>
+            <p className="mt-1 text-xs text-muted-ink">
+              Benchmark student work against reference exemplars with 3-way peer, AI, and web
+              plagiarism checking.
+            </p>
           </div>
         </div>
       </div>
@@ -1170,35 +1379,58 @@ function Dashboard({
       : 0;
 
   const metrics = [
-    { label: "Total Enrolled Students", value: `${students.length}`, note: course ? `${course.code} roll call` : "Active roll call", tone: "lav" },
-    { label: "Active Assignments", value: `${assignments.length}`, note: "Configured in Database", tone: "blue" },
-    { label: "Submissions Pending Evaluation", value: `${pendingCount}`, note: "Teacher approval required", tone: "amber" },
-    { label: "Matrix Rubrics", value: `${rubrics.length}`, note: "Tiered criteria matrices", tone: "sage" },
-    { label: "Active Classrooms", value: `${courses.length || classrooms.length}`, note: "Registered in Database", tone: "lav" },
-    { label: "Approved Grades", value: `${approvedCount}`, note: "Final stamped marks", tone: "sage" },
-    { label: "Plagiarism Flags", value: `${highSimCount}`, note: "Similarity >= 85%", tone: "clay" },
+    {
+      label: "Total Enrolled Students",
+      value: `${students.length}`,
+      note: course ? `${course.code} roll call` : "Active roll call",
+      tone: "lav",
+    },
+    {
+      label: "Active Assignments",
+      value: `${assignments.length}`,
+      note: "Configured in Database",
+      tone: "blue",
+    },
+    {
+      label: "Approved Grades",
+      value: `${approvedCount}`,
+      note: "Final stamped marks",
+      tone: "sage",
+    },
   ];
 
-  const activeClassName = course?.name || (classrooms[0]?.name || "Active Classroom");
-  const activeClassCode = course?.code || (classrooms[0]?.code || "CLASS");
+  const activeClassName = course?.name || classrooms[0]?.name || "Active Course";
+  const activeClassCode = course?.code || classrooms[0]?.code || "CLASS";
 
   return (
     <>
       <SectionTitle
         eyebrow="Teacher Console · Live Overview"
         title={`Dashboard · ${activeClassName}`}
-        description="Comprehensive educator workspace for class rosters, active assignments, pending grading queues, and multi-tier matrix rubrics."
+        description="Comprehensive educator workspace for class rosters, active assignments, and automated evaluation workflows."
         action={
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={() => onNavigate("roster")} variant="outline" className="rounded-lg border-line">
-              <Users className="mr-1.5 size-4 text-amber-ink" />
-              Manage Roll Call
-            </Button>
-            <Button onClick={() => onNavigate("rubric_builder")} variant="outline" className="rounded-lg border-line">
-              <ClipboardCheck className="mr-1.5 size-4 text-sage" />
-              New Rubric
-            </Button>
-            <Button onClick={() => onNavigate("assignments")} className="rounded-lg bg-ink text-card hover:bg-ink/90">
+          <div className="flex flex-wrap items-center gap-3">
+            {courses.length > 0 && (
+              <div className="flex items-center gap-2 rounded-lg border border-line bg-card px-3 py-1.5 shadow-xs">
+                <BookOpen className="size-4 text-amber-ink" />
+                <span className="text-xs font-semibold text-muted-ink">Course:</span>
+                <select
+                  value={course?.id || ""}
+                  onChange={(e) => onSelectCourse(e.target.value)}
+                  className="bg-transparent text-sm font-medium text-ink focus:outline-none cursor-pointer"
+                >
+                  {courses.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.code} · {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            <Button
+              onClick={() => onNavigate("assignments")}
+              className="rounded-lg bg-ink text-card hover:bg-ink/90"
+            >
               <UploadCloud className="mr-1.5 size-4" />
               Manage Submissions
             </Button>
@@ -1206,149 +1438,21 @@ function Dashboard({
         }
       />
 
-      {/* Metrics Bar */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-7">
+      {/* Metrics Bar - 3 Focused Cards */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         {metrics.map((metric) => (
-          <div key={metric.label} className="rounded-[12px] border border-line bg-card p-4">
-            <div className={cn("mb-3 size-2 rounded-full", `dot-${metric.tone}`)} />
-            <p className="text-xs font-medium text-muted-ink">{metric.label}</p>
-            <p className="mt-1 font-display text-3xl text-ink">{metric.value}</p>
-            <p className="mt-1 text-[11px] text-faint">{metric.note}</p>
+          <div
+            key={metric.label}
+            className="rounded-[14px] border border-line bg-card p-5 shadow-xs"
+          >
+            <div className={cn("mb-3 size-2.5 rounded-full", `dot-${metric.tone}`)} />
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-ink">
+              {metric.label}
+            </p>
+            <p className="mt-1 font-display text-3xl font-bold text-ink">{metric.value}</p>
+            <p className="mt-1 text-xs text-faint">{metric.note}</p>
           </div>
         ))}
-      </div>
-
-      {/* 2-Column Overview: Student Roster & Matrix Rubrics */}
-      <div className="mt-6 grid gap-5 xl:grid-cols-12">
-        {/* Class Roster Preview */}
-        <div className="rounded-[14px] border border-line bg-card p-5 xl:col-span-7">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <Users className="size-4 text-amber-ink" />
-                <h2 className="font-display text-xl">Class Roster & Roll Call</h2>
-                <Badge variant="outline" className="text-xs font-mono">
-                  {students.length} Enrolled
-                </Badge>
-              </div>
-              <p className="mt-1 text-xs text-muted-ink">
-                Active students registered for {activeClassName} ({activeClassCode}).
-              </p>
-            </div>
-            <Button variant="ghost" size="sm" className="text-amber-ink" onClick={() => onNavigate("roster")}>
-              Full Roster <ArrowRight className="ml-1 size-3.5" />
-            </Button>
-          </div>
-
-          <div className="mt-4">
-            {students.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-line p-6 text-center">
-                <Users className="mx-auto size-7 text-faint" />
-                <p className="mt-2 text-sm font-medium text-ink">No students enrolled yet</p>
-                <p className="mt-1 text-xs text-muted-ink">
-                  Add students manually or upload a CSV with roll numbers and full names.
-                </p>
-                <Button size="sm" onClick={() => onNavigate("roster")} className="mt-3 bg-ink text-card">
-                  <UserPlus className="mr-1.5 size-3.5" />
-                  Enroll Students / Upload CSV
-                </Button>
-              </div>
-            ) : (
-              <div className="overflow-x-auto rounded-lg border border-line">
-                <table className="w-full text-left text-xs">
-                  <thead className="border-b border-line bg-paper text-muted-ink">
-                    <tr>
-                      <th className="py-2.5 px-3 font-medium">Roll Number</th>
-                      <th className="py-2.5 px-3 font-medium">Full Name</th>
-                      <th className="py-2.5 px-3 font-medium">Email</th>
-                      <th className="py-2.5 px-3 text-right font-medium">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-line">
-                    {students.slice(0, 5).map((st) => (
-                      <tr key={st.id} className="hover:bg-paper/50">
-                        <td className="py-2.5 px-3 font-mono font-medium text-ink">{st.roll_number}</td>
-                        <td className="py-2.5 px-3 font-medium text-ink">{st.full_name}</td>
-                        <td className="py-2.5 px-3 text-muted-ink">{st.email || "—"}</td>
-                        <td className="py-2.5 px-3 text-right">
-                          <Pill tone="sage">Enrolled</Pill>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {students.length > 5 && (
-                  <div className="border-t border-line bg-paper/50 py-2 px-3 text-center text-xs text-muted-ink">
-                    Showing 5 of {students.length} students ·{" "}
-                    <button onClick={() => onNavigate("roster")} className="font-medium text-ink underline">
-                      View all in Student Roll Call
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Matrix Rubrics Management Card */}
-        <div className="rounded-[14px] border border-line bg-card p-5 xl:col-span-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2">
-                <ClipboardCheck className="size-4 text-sage" />
-                <h2 className="font-display text-xl">Matrix Rubrics</h2>
-                <Badge variant="outline" className="text-xs">
-                  {rubrics.length} Available
-                </Badge>
-              </div>
-              <p className="mt-1 text-xs text-muted-ink">
-                Tiered grading rubrics for objective evaluation.
-              </p>
-            </div>
-            <Button variant="ghost" size="sm" className="text-sage" onClick={() => onNavigate("rubrics")}>
-              All Rubrics <ArrowRight className="ml-1 size-3.5" />
-            </Button>
-          </div>
-
-          <div className="mt-4 space-y-3">
-            {rubrics.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-line p-6 text-center">
-                <ClipboardCheck className="mx-auto size-7 text-faint" />
-                <p className="mt-2 text-sm font-medium text-ink">No rubrics created yet</p>
-                <p className="mt-1 text-xs text-muted-ink">
-                  Build multi-tier criteria matrices with custom points (4, 3, 2, 0 pts).
-                </p>
-                <Button size="sm" onClick={() => onNavigate("rubric_builder")} className="mt-3 bg-ink text-card">
-                  <Plus className="mr-1.5 size-3.5" />
-                  Create Matrix Rubric
-                </Button>
-              </div>
-            ) : (
-              rubrics.slice(0, 3).map((r) => (
-                <div key={r.id} className="rounded-lg border border-line bg-paper p-3.5 hover:border-ink/20 transition-colors">
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm font-semibold text-ink line-clamp-1">{r.title || r.name}</p>
-                    <Badge variant="secondary" className="font-mono text-xs">
-                      {r.total_marks || r.total_max_score || 100} pts
-                    </Badge>
-                  </div>
-                  <div className="mt-2 flex items-center justify-between text-xs text-muted-ink">
-                    <span>{r.criteria?.length || 0} criteria rows</span>
-                    <button onClick={() => onNavigate("rubrics")} className="text-amber-ink font-medium hover:underline">
-                      View matrix
-                    </button>
-                  </div>
-                </div>
-              ))
-            )}
-            <div className="pt-2">
-              <Button onClick={() => onNavigate("rubric_builder")} variant="outline" size="sm" className="w-full border-dashed">
-                <Plus className="mr-1.5 size-3.5" />
-                Build New Matrix Rubric
-              </Button>
-            </div>
-          </div>
-        </div>
       </div>
 
       {/* 2-Column Overview: Active Assignments & Integrity Auditing */}
@@ -1358,10 +1462,16 @@ function Dashboard({
             <div>
               <h2 className="font-display text-xl">Integrity Audit Breakdown</h2>
               <p className="mt-1 text-xs text-muted-ink">
-                3-Way academic integrity overview for {assignment ? assignment.title : activeClassName}.
+                3-Way academic integrity overview for{" "}
+                {assignment ? assignment.title : activeClassName}.
               </p>
             </div>
-            <Button variant="ghost" size="sm" className="text-amber-ink" onClick={() => onNavigate("similarity")}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-amber-ink"
+              onClick={() => onNavigate("similarity")}
+            >
               Inspect flags <ArrowRight className="ml-1 size-3.5" />
             </Button>
           </div>
@@ -1418,7 +1528,9 @@ function Dashboard({
           <div className="flex items-center justify-between">
             <div>
               <h2 className="font-display text-xl">Class Average Score</h2>
-              <p className="mt-1 text-xs text-muted-ink">{activeClassName} · {activeClassCode}</p>
+              <p className="mt-1 text-xs text-muted-ink">
+                {activeClassName} · {activeClassCode}
+              </p>
             </div>
             <span className="font-display text-3xl text-ink">{avgScore}/100</span>
           </div>
@@ -1434,7 +1546,8 @@ function Dashboard({
               tone="sage"
             />
             <p className="mt-3 text-[11px] leading-relaxed text-faint">
-              Every score suggested by AI is a draft recommendation. Teachers retain complete approval authority.
+              Every score suggested by AI is a draft recommendation. Teachers retain complete
+              approval authority.
             </p>
           </div>
         </div>
@@ -1445,7 +1558,9 @@ function Dashboard({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="font-display text-xl">Pending Student Reviews</h2>
-            <p className="mt-1 text-xs text-muted-ink">Submissions waiting for teacher review and grading stamp.</p>
+            <p className="mt-1 text-xs text-muted-ink">
+              Submissions waiting for teacher review and grading stamp.
+            </p>
           </div>
           <Button variant="outline" size="sm" onClick={() => onNavigate("review")}>
             Open Review Workspace <ArrowRight className="ml-1 size-3.5" />
@@ -1455,7 +1570,9 @@ function Dashboard({
         {submissions.length === 0 ? (
           <div className="mt-6 rounded-lg border border-dashed border-line p-8 text-center">
             <FolderOpen className="mx-auto size-8 text-faint" />
-            <p className="mt-2 font-display text-lg text-ink">No submissions in this assignment yet</p>
+            <p className="mt-2 font-display text-lg text-ink">
+              No submissions in this assignment yet
+            </p>
             <p className="mt-1 text-xs text-muted-ink">
               Upload PDF/DOCX files or input student text to start automated grading.
             </p>
@@ -1473,23 +1590,45 @@ function Dashboard({
               <div key={item.id} className="rounded-[10px] border border-line bg-paper p-4">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-sm font-medium">{item.student}</span>
-                  <Pill tone={item.status === "approved" ? "sage" : item.status === "flagged" ? "clay" : "lav"}>
-                    {item.status === "approved" ? "Approved" : item.status === "flagged" ? "Flagged" : "Pending"}
+                  <Pill
+                    tone={
+                      item.status === "approved"
+                        ? "sage"
+                        : item.status === "flagged"
+                          ? "clay"
+                          : "lav"
+                    }
+                  >
+                    {item.status === "approved"
+                      ? "Approved"
+                      : item.status === "flagged"
+                        ? "Flagged"
+                        : "Pending"}
                   </Pill>
                 </div>
                 <div className="mt-2 space-y-1 text-xs text-muted-ink">
                   <p>Roll: {item.roll}</p>
-                  <p>AI Suggested: <span className="font-semibold text-ink">{item.score}/100</span></p>
+                  <p>
+                    AI Suggested: <span className="font-semibold text-ink">{item.score}/100</span>
+                  </p>
                   <div className="flex items-center gap-2 pt-1 text-[11px]">
-                    <span className={item.similarity >= 85 ? "text-clay font-medium" : "text-faint"}>
+                    <span
+                      className={item.similarity >= 85 ? "text-clay font-medium" : "text-faint"}
+                    >
                       Peer: {item.similarity}%
                     </span>
                     <span>·</span>
-                    <span className={item.aiContent >= 60 ? "text-amber-ink font-medium" : "text-faint"}>
+                    <span
+                      className={item.aiContent >= 60 ? "text-amber-ink font-medium" : "text-faint"}
+                    >
                       AI: {item.aiContent}%
                     </span>
                     <span>·</span>
-                    <span className={(item.webPlagiarism || 0) >= 20 ? "text-blue font-medium" : "text-faint"}>
+                    <span
+                      className={
+                        (item.webPlagiarism || 0) >= 20 ? "text-blue font-medium" : "text-faint"
+                      }
+                    >
                       Web: {item.webPlagiarism || 0}%
                     </span>
                   </div>
@@ -1532,7 +1671,7 @@ function CoursesView({
   search: string;
 }) {
   const filtered = courses.filter((c) =>
-    `${c.name} ${c.code} ${c.section || ""}`.toLowerCase().includes(search.toLowerCase())
+    `${c.name} ${c.code} ${c.section || ""}`.toLowerCase().includes(search.toLowerCase()),
   );
 
   return (
@@ -1554,7 +1693,8 @@ function CoursesView({
           <BookOpen className="mx-auto size-10 text-faint mb-3" />
           <h3 className="font-display text-xl text-ink">No Courses Added Yet</h3>
           <p className="mt-1 text-xs text-muted-ink">
-            Create your first custom course to start managing real assignments and student submissions.
+            Create your first custom course to start managing real assignments and student
+            submissions.
           </p>
           <Button onClick={onOpenAddCourse} className="mt-4 bg-ink text-card hover:bg-ink/90">
             <Plus className="mr-1.5 size-4" /> Add First Course
@@ -1570,11 +1710,16 @@ function CoursesView({
                 onClick={() => onSelectCourse(item.id)}
                 className={cn(
                   "group relative cursor-pointer rounded-[14px] border bg-card p-5 text-left transition-all hover:-translate-y-0.5 hover:shadow-md",
-                  isSelected ? "border-lav ring-2 ring-lav-soft" : "border-line"
+                  isSelected ? "border-lav ring-2 ring-lav-soft" : "border-line",
                 )}
               >
                 <div className="flex items-start justify-between">
-                  <div className={cn("grid size-10 place-items-center rounded-lg", `soft-${item.tone || "lav"}`)}>
+                  <div
+                    className={cn(
+                      "grid size-10 place-items-center rounded-lg",
+                      `soft-${item.tone || "lav"}`,
+                    )}
+                  >
                     <GraduationCap className={cn("size-5", `icon-${item.tone || "lav"}`)} />
                   </div>
                   <div className="flex items-center gap-1.5">
@@ -1625,6 +1770,10 @@ function getProcessingStage(p: number): string {
 
 function AssignmentsView({
   course,
+  courses,
+  onSelectCourse,
+  rubrics,
+  onReloadRubrics,
   assignments,
   selectedAssignmentId,
   processingAssignmentId,
@@ -1646,6 +1795,10 @@ function AssignmentsView({
   showToast,
 }: {
   course: APICourse | null;
+  courses: APICourse[];
+  onSelectCourse: (id: string) => void;
+  rubrics: Rubric[];
+  onReloadRubrics: () => Promise<void> | void;
   assignments: APIAssignment[];
   selectedAssignmentId: string;
   processingAssignmentId?: string;
@@ -1666,9 +1819,19 @@ function AssignmentsView({
   onNavigate: (view: ViewKey) => void;
   showToast: (msg: string) => void;
 }) {
+  const [activeTab, setActiveTab] = useState<"submissions" | "rubrics">("submissions");
+  const [rubricMode, setRubricMode] = useState<"list" | "upload" | "builder">("list");
   const [uploading, setUploading] = useState(false);
+  const [uploadingRubric, setUploadingRubric] = useState(false);
+  const [rubricDragOver, setRubricDragOver] = useState(false);
+  const [rubricUploadFile, setRubricUploadFile] = useState<File | null>(null);
+  const [rubricUploadTitle, setRubricUploadTitle] = useState("");
+  const [linkingRubricId, setLinkingRubricId] = useState<string | null>(null);
+
   const activeAssign = assignments.find((a) => a.id === selectedAssignmentId);
-  const isThisAssignmentProcessing = isProcessing && (!processingAssignmentId || processingAssignmentId === selectedAssignmentId);
+  const isThisAssignmentProcessing =
+    isProcessing && (!processingAssignmentId || processingAssignmentId === selectedAssignmentId);
+  const linkedRubric = rubrics.find((r) => r.id === activeAssign?.rubric_id);
 
   if (!course) {
     return (
@@ -1678,7 +1841,10 @@ function AssignmentsView({
         <p className="mt-1 text-xs text-muted-ink">
           Please select or create a course before configuring assignments and student submissions.
         </p>
-        <Button onClick={() => onNavigate("courses")} className="mt-4 bg-ink text-card hover:bg-ink/90">
+        <Button
+          onClick={() => onNavigate("courses")}
+          className="mt-4 bg-ink text-card hover:bg-ink/90"
+        >
           Go to Courses
         </Button>
       </div>
@@ -1715,9 +1881,10 @@ function AssignmentsView({
     showToast(`Uploading ${files.length} submission(s) with FERPA-grade AES-256 encryption...`);
     try {
       await api.submissions.batchUpload(targetAssignId, Array.from(files));
-      showToast(`Uploaded ${files.length} submission(s). AI Auto-Grading & Plagiarism audit running...`);
+      showToast(
+        `Uploaded ${files.length} submission(s). AI Auto-Grading & Plagiarism audit running...`,
+      );
       await onReloadSubmissions(targetAssignId);
-      // Automatically trigger AI grading & plagiarism checks so the assignment is in process!
       onStartGrading(targetAssignId);
     } catch (e: any) {
       showToast(`Upload error: ${e.message}`);
@@ -1726,23 +1893,133 @@ function AssignmentsView({
     }
   };
 
+  const handleRubricFileSelect = (file: File) => {
+    setRubricUploadFile(file);
+    const cleanName = file.name
+      .replace(/\.[^/.]+$/, "")
+      .replace(/[-_]/g, " ")
+      .trim();
+    setRubricUploadTitle(cleanName);
+  };
+
+  const handleUploadRubricSubmit = async () => {
+    if (!rubricUploadFile) {
+      showToast("Please select a rubric file to upload.");
+      return;
+    }
+    setUploadingRubric(true);
+    showToast(`Uploading and analyzing rubric document '${rubricUploadFile.name}'...`);
+    try {
+      const res = await api.rubrics.upload(rubricUploadFile, {
+        classroom_id: course.id,
+        course_id: course.id,
+        title: rubricUploadTitle || rubricUploadFile.name,
+      });
+      showToast(`Rubric '${res.title || res.name}' successfully added to database!`);
+      if (
+        activeAssign &&
+        (!activeAssign.rubric_id ||
+          window.confirm("Attach this uploaded rubric to current active assignment?"))
+      ) {
+        await api.assignments.update(activeAssign.id, { rubric_id: res.id });
+        activeAssign.rubric_id = res.id;
+        showToast(`Attached to '${activeAssign.title}'.`);
+      }
+      await onReloadRubrics();
+      setRubricMode("list");
+      setRubricUploadFile(null);
+      setRubricUploadTitle("");
+    } catch (err: any) {
+      showToast(`Failed to upload rubric: ${err.message}`);
+    } finally {
+      setUploadingRubric(false);
+    }
+  };
+
+  const handleAttachRubric = async (rubricId: string) => {
+    if (!activeAssign) {
+      showToast("Select or create an assignment first to attach this rubric.");
+      return;
+    }
+    setLinkingRubricId(rubricId);
+    try {
+      await api.assignments.update(activeAssign.id, { rubric_id: rubricId });
+      activeAssign.rubric_id = rubricId;
+      showToast(`Rubric attached to '${activeAssign.title}' successfully.`);
+      await onReloadRubrics();
+    } catch (err: any) {
+      showToast(`Error attaching rubric: ${err.message}`);
+    } finally {
+      setLinkingRubricId(null);
+    }
+  };
+
+  const handleDetachRubric = async () => {
+    if (!activeAssign) return;
+    try {
+      await api.assignments.update(activeAssign.id, { rubric_id: "" });
+      activeAssign.rubric_id = undefined;
+      showToast(`Rubric detached from '${activeAssign.title}'.`);
+      await onReloadRubrics();
+    } catch (err: any) {
+      showToast(`Error: ${err.message}`);
+    }
+  };
+
+  const handleDeleteRubric = async (rubricId: string, rubricTitle: string) => {
+    if (!window.confirm(`Are you sure you want to delete rubric '${rubricTitle}'?`)) return;
+    try {
+      await api.rubrics.delete(rubricId);
+      if (activeAssign && activeAssign.rubric_id === rubricId) {
+        activeAssign.rubric_id = undefined;
+      }
+      showToast(`Rubric '${rubricTitle}' deleted.`);
+      await onReloadRubrics();
+    } catch (err: any) {
+      showToast(`Error deleting rubric: ${err.message}`);
+    }
+  };
+
   return (
     <>
       <SectionTitle
-        eyebrow={`Assignments · ${course.code} · Section ${course.section || "A"}`}
-        title="Student Submissions & Benchmark Exemplars"
-        description="Provide a Reference Assignment (ground truth) and grading rubric. The AI engine compares each submission against the benchmark solution."
+        eyebrow={`Course: ${course.code} · Section ${course.section || "A"}`}
+        title="Assignments, Submissions & Evaluation Rubrics"
+        description="Manage coursework, benchmark reference solutions, and configure grading criteria via document upload or the matrix designer."
         action={
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {courses.length > 0 && (
+              <div className="flex items-center gap-2 rounded-lg border border-line bg-card px-3 py-1.5 shadow-xs">
+                <BookOpen className="size-4 text-amber-ink" />
+                <span className="text-xs font-semibold text-muted-ink">Course:</span>
+                <select
+                  value={course.id}
+                  onChange={(e) => onSelectCourse(e.target.value)}
+                  className="bg-transparent text-sm font-medium text-ink focus:outline-none cursor-pointer"
+                >
+                  {courses.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.code} · {c.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             {activeAssign && (
-              <Button asChild className="rounded-lg bg-teal-600 text-white hover:bg-teal-500 shadow-sm">
+              <Button
+                asChild
+                className="rounded-lg bg-teal-600 text-white hover:bg-teal-500 shadow-sm"
+              >
                 <Link to="/dashboard/assignments/$id/upload" params={{ id: activeAssign.id }}>
                   <FileArchive className="mr-1.5 size-4" />
                   Batch ZIP & Roll Matching
                 </Link>
               </Button>
             )}
-            <Button onClick={onOpenAddAssignment} className="rounded-lg bg-ink text-card hover:bg-ink/90">
+            <Button
+              onClick={onOpenAddAssignment}
+              className="rounded-lg bg-ink text-card hover:bg-ink/90"
+            >
               <Plus className="mr-1.5 size-4" />
               New Assignment
             </Button>
@@ -1754,376 +2031,922 @@ function AssignmentsView({
         }
       />
 
-      <div className="grid gap-5 xl:grid-cols-12">
-        <section className="rounded-[14px] border border-line bg-card p-5 xl:col-span-7">
-          {/* Active Assignment Selection */}
-          <div className="mb-4">
-            <div className="flex items-center justify-between">
-              <label className="text-[11px] font-medium uppercase tracking-[0.14em] text-faint">
-                Active Assignment
-              </label>
-              {isThisAssignmentProcessing && (
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-soft px-2.5 py-0.5 text-[11px] font-bold text-amber-ink animate-pulse">
-                  <span className="relative flex size-2">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber opacity-75"></span>
-                    <span className="relative inline-flex size-2 rounded-full bg-amber"></span>
-                  </span>
-                  In Process ({progress}%)
-                </span>
-              )}
-            </div>
-            <div className="mt-1 flex flex-wrap items-center gap-2">
-              {assignments.length === 0 ? (
-                <div className="flex flex-wrap items-center gap-3 py-1">
-                  <span className="text-xs italic text-faint">No assignments in this course yet.</span>
-                  <Button
-                    size="sm"
-                    variant="default"
-                    className="h-7 text-xs bg-ink text-card hover:bg-ink/90 font-medium shadow-sm transition-all"
-                    onClick={() => onTakeDefaultAssignment()}
-                    disabled={takingAssignment || uploading}
-                  >
-                    <Plus className="mr-1 size-3.5" />
-                    {takingAssignment ? "Taking Assignment 1..." : "Take Assignment 1"}
-                  </Button>
-                </div>
-              ) : (
-                assignments.map((a) => {
-                  const isThisProcessing = isProcessing && a.id === (processingAssignmentId || selectedAssignmentId);
-                  const isSelected = a.id === selectedAssignmentId;
-                  return (
-                    <Button
-                      key={a.id}
-                      size="sm"
-                      variant={isSelected ? "default" : "outline"}
-                      onClick={() => onSelectAssignment(a.id)}
-                      className={cn(
-                        "transition-all",
-                        isThisProcessing && "ring-2 ring-amber/60 border-amber/50 font-medium"
-                      )}
-                    >
-                      {isThisProcessing && (
-                        <Loader2 className="mr-1.5 size-3.5 animate-spin text-amber-ink" />
-                      )}
-                      <span>{a.title}</span>
-                      {isThisProcessing && (
-                        <span className="ml-1.5 rounded bg-amber-soft px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-ink">
-                          In Process
-                        </span>
-                      )}
-                    </Button>
-                  );
-                })
-              )}
-            </div>
-          </div>
-
-          {/* Dynamic In-Process Banner */}
-          {isThisAssignmentProcessing && activeAssign && (
-            <div className="mb-5 overflow-hidden rounded-[14px] border border-amber/40 bg-gradient-to-r from-amber-soft/80 via-lav-soft/60 to-amber-soft/40 p-4 shadow-sm animate-fade-up">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <span className="relative flex size-3">
-                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber opacity-75"></span>
-                    <span className="relative inline-flex size-3 rounded-full bg-amber"></span>
-                  </span>
-                  <span className="text-xs font-bold uppercase tracking-wider text-amber-ink">
-                    Assignment In Process · AI Engine Actively Auditing
-                  </span>
-                </div>
-                <span className="rounded-full bg-card/90 px-2.5 py-0.5 font-mono text-xs font-bold text-ink shadow-sm">
-                  {progress}% Complete
-                </span>
-              </div>
-
-              <div className="mt-2.5 flex items-center gap-2 text-sm font-semibold text-ink">
-                <Sparkles className="size-4 animate-spin text-amber-ink shrink-0" />
-                <span className="truncate">{getProcessingStage(progress)}</span>
-              </div>
-
-              <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-card/60">
-                <div
-                  className="h-full rounded-full bg-gradient-to-r from-amber via-clay to-lav transition-all duration-500 ease-out"
-                  style={{ width: `${Math.max(8, progress)}%` }}
-                />
-              </div>
-
-              <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 text-[11px]">
-                <div className={`flex items-center gap-1.5 rounded bg-card/60 p-1.5 ${progress >= 25 ? "text-ink font-semibold" : "text-amber-ink"}`}>
-                  {progress >= 25 ? <CheckCircle2 className="size-3.5 text-sage shrink-0" /> : <Loader2 className="size-3.5 animate-spin text-amber-ink shrink-0" />}
-                  <span className="truncate">1. Ingestion & FERPA</span>
-                </div>
-                <div className={`flex items-center gap-1.5 rounded bg-card/60 p-1.5 ${progress >= 50 ? "text-ink font-semibold" : progress >= 25 ? "text-amber-ink" : "text-faint"}`}>
-                  {progress >= 50 ? <CheckCircle2 className="size-3.5 text-sage shrink-0" /> : progress >= 25 ? <Loader2 className="size-3.5 animate-spin text-amber-ink shrink-0" /> : <div className="size-3.5 rounded-full border border-faint/30 shrink-0" />}
-                  <span className="truncate">2. Vector Embeddings</span>
-                </div>
-                <div className={`flex items-center gap-1.5 rounded bg-card/60 p-1.5 ${progress >= 75 ? "text-ink font-semibold" : progress >= 50 ? "text-amber-ink" : "text-faint"}`}>
-                  {progress >= 75 ? <CheckCircle2 className="size-3.5 text-sage shrink-0" /> : progress >= 50 ? <Loader2 className="size-3.5 animate-spin text-amber-ink shrink-0" /> : <div className="size-3.5 rounded-full border border-faint/30 shrink-0" />}
-                  <span className="truncate">3. 3-Way Plagiarism</span>
-                </div>
-                <div className={`flex items-center gap-1.5 rounded bg-card/60 p-1.5 ${progress >= 100 ? "text-ink font-semibold" : progress >= 75 ? "text-amber-ink" : "text-faint"}`}>
-                  {progress >= 100 ? <CheckCircle2 className="size-3.5 text-sage shrink-0" /> : progress >= 75 ? <Loader2 className="size-3.5 animate-spin text-amber-ink shrink-0" /> : <div className="size-3.5 rounded-full border border-faint/30 shrink-0" />}
-                  <span className="truncate">4. Gemini Auto-Grade</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeAssign && (
-            <div className="mb-5 rounded-lg border border-line bg-paper p-3.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-semibold text-ink">{activeAssign.title}</span>
-                  <Badge variant="outline">Max Marks: {activeAssign.max_score}</Badge>
-                  {isThisAssignmentProcessing ? (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-soft px-2 py-0.5 text-[10px] font-bold text-amber-ink animate-pulse">
-                      <Loader2 className="size-2.5 animate-spin" /> In Process
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-sage-soft px-2 py-0.5 text-[10px] font-semibold text-sage-ink">
-                      <CheckCircle2 className="size-2.5 text-sage" /> Active
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={onOpenEditAssignment}
-                  >
-                    <Edit3 className="mr-1 size-3" />
-                    Edit Exemplar
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-7 text-xs text-muted-ink hover:text-clay hover:bg-clay-soft"
-                    onClick={() => onDeleteAssignment(activeAssign.id)}
-                    title="Delete Assignment"
-                  >
-                    <Trash2 className="size-3.5" />
-                  </Button>
-                </div>
-              </div>
-              {activeAssign.description && (
-                <p className="mt-1 text-xs text-muted-ink">{activeAssign.description}</p>
-              )}
-
-              {/* Reference Assignment Display */}
-              <div className="mt-3 border-t border-line pt-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-faint">
-                    Ground Truth Reference Exemplar:
-                  </span>
-                  <span className="text-[10px] text-sage font-medium">Active benchmark</span>
-                </div>
-                {activeAssign.reference_assignment_text ? (
-                  <p className="mt-1 line-clamp-3 rounded bg-card p-2 font-mono text-[11px] text-muted-ink">
-                    {activeAssign.reference_assignment_text}
-                  </p>
-                ) : (
-                  <p className="mt-1 text-xs italic text-faint">
-                    No reference exemplar added yet. Click "Edit Exemplar" to paste benchmark code or solution.
-                  </p>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Drag & Drop File Upload */}
-          <label className={cn(
-            "flex min-h-52 cursor-pointer flex-col items-center justify-center rounded-[12px] border border-dashed border-line bg-paper p-6 text-center transition-colors hover:border-lav",
-            isThisAssignmentProcessing && "border-amber/40 bg-amber-soft/20"
-          )}>
-            <input
-              type="file"
-              multiple
-              className="hidden"
-              accept=".pdf,.doc,.docx,.txt,.zip"
-              onChange={(e) => handleFileUpload(e.target.files)}
-            />
-            <div className={cn(
-              "grid size-12 place-items-center rounded-full text-amber-ink",
-              isThisAssignmentProcessing ? "bg-amber-soft animate-pulse" : "bg-lav-soft"
-            )}>
-              {isThisAssignmentProcessing ? <Sparkles className="size-6 animate-spin text-amber" /> : <UploadCloud className="size-6" />}
-            </div>
-            <p className="mt-3 font-display text-lg">
-              {isThisAssignmentProcessing
-                ? "AI Checks In Process · Queue More Submissions"
-                : !activeAssign
-                ? "Take Assignment & Upload Submissions"
-                : "Upload student submissions"}
-            </p>
-            <p className="mt-1 max-w-sm text-xs text-muted-ink">
-              {!activeAssign
-                ? "Drop student files here to automatically initialize Assignment 1 and run AI plagiarism & autograding checks."
-                : "Drop PDFs, DOCX, TXT, or ZIP archive. Files are encrypted with FERPA-grade AES-256 upon upload."}
-            </p>
-            <Button type="button" variant="outline" size="sm" className="mt-4" disabled={uploading}>
-              {uploading ? (
-                <>
-                  <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                  Uploading & Encrypting...
-                </>
-              ) : (
-                "Browse files"
-              )}
-            </Button>
-          </label>
-
-          <div className="mt-5 flex items-center justify-between border-t border-line pt-4">
-            <div>
-              <p className="text-sm font-medium">Ready for Auto-Grading & 3-Way Plagiarism Audit</p>
-              <p className="mt-0.5 text-xs text-muted-ink">
-                Executes peer cross-matching, synthetic AI probability, and public web search citations.
-              </p>
-            </div>
-            <Button
-              onClick={() => onStartGrading(selectedAssignmentId)}
-              disabled={isThisAssignmentProcessing || submissions.length === 0 || !selectedAssignmentId}
-              className="bg-ink text-card hover:bg-ink/90 transition-all"
+      {/* Integrated Section Tabs */}
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3 border-b border-line pb-3">
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setActiveTab("submissions")}
+            className={cn(
+              "inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-all",
+              activeTab === "submissions"
+                ? "bg-ink text-card shadow-sm"
+                : "text-muted-ink hover:text-ink hover:bg-card",
+            )}
+          >
+            <FolderOpen className="size-4" />
+            <span>Submissions & Evaluations</span>
+            <Badge
+              variant={activeTab === "submissions" ? "secondary" : "outline"}
+              className="ml-1 text-[10px] font-mono"
             >
-              {isThisAssignmentProcessing ? (
-                <>
-                  <Loader2 className="mr-1.5 size-4 animate-spin text-amber" />
-                  Grading in Progress ({progress}%)...
-                </>
-              ) : (
-                <>
-                  Start AI Grading
-                  <Sparkles className="ml-1.5 size-4" />
-                </>
-              )}
+              {submissions.length}
+            </Badge>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("rubrics")}
+            className={cn(
+              "inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-all",
+              activeTab === "rubrics"
+                ? "bg-ink text-card shadow-sm"
+                : "text-muted-ink hover:text-ink hover:bg-card",
+            )}
+          >
+            <ClipboardCheck className="size-4" />
+            <span>Rubrics & Criteria Matrix</span>
+            <Badge
+              variant={activeTab === "rubrics" ? "secondary" : "outline"}
+              className="ml-1 text-[10px] font-mono"
+            >
+              {rubrics.length}
+            </Badge>
+          </button>
+        </div>
+
+        {activeTab === "rubrics" && (
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant={rubricMode === "list" ? "default" : "outline"}
+              onClick={() => setRubricMode("list")}
+              className="text-xs"
+            >
+              Rubrics Library ({rubrics.length})
+            </Button>
+            <Button
+              size="sm"
+              variant={rubricMode === "upload" ? "default" : "outline"}
+              onClick={() => setRubricMode("upload")}
+              className="text-xs"
+            >
+              <UploadCloud className="mr-1.5 size-3.5" />
+              Upload Rubric Doc
+            </Button>
+            <Button
+              size="sm"
+              variant={rubricMode === "builder" ? "default" : "outline"}
+              onClick={() => setRubricMode("builder")}
+              className="text-xs"
+            >
+              <Edit3 className="mr-1.5 size-3.5" />
+              Inline Matrix Designer
             </Button>
           </div>
+        )}
+      </div>
 
-          {isThisAssignmentProcessing && (
-            <div className="mt-4 rounded-lg bg-lav-soft p-3.5 animate-fade-up">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-medium text-ink">Analyzing batch & checking web citations</span>
-                <span className="font-semibold text-amber-ink">{progress}%</span>
-              </div>
-              <Progress value={progress} className="mt-2 bg-card" />
-              <p className="mt-1.5 text-[11px] text-muted-ink">
-                Benchmarking against reference exemplar · teacher review remains mandatory.
-              </p>
-            </div>
-          )}
-        </section>
-
-        {/* Submissions Queue */}
-        <section className="rounded-[14px] border border-line bg-card p-5 xl:col-span-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="font-display text-xl">Current Submissions</h2>
-              <div className="mt-1 flex items-center gap-2">
-                <p className="text-xs text-muted-ink">{submissions.length} submissions in this assignment</p>
+      {/* TAB 1: SUBMISSIONS & EVALUATIONS */}
+      {activeTab === "submissions" && (
+        <div className="grid gap-5 xl:grid-cols-12">
+          <section className="rounded-[14px] border border-line bg-card p-5 xl:col-span-7">
+            {/* Active Assignment Selection */}
+            <div className="mb-4">
+              <div className="flex items-center justify-between">
+                <label className="text-[11px] font-medium uppercase tracking-[0.14em] text-faint">
+                  Active Assignment
+                </label>
                 {isThisAssignmentProcessing && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-soft px-2 py-0.5 text-[10px] font-bold text-amber-ink animate-pulse">
-                    <Loader2 className="size-2.5 animate-spin" />
-                    AI Checks In Process
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-soft px-2.5 py-0.5 text-[11px] font-bold text-amber-ink animate-pulse">
+                    <span className="relative flex size-2">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber opacity-75"></span>
+                      <span className="relative inline-flex size-2 rounded-full bg-amber"></span>
+                    </span>
+                    In Process ({progress}%)
                   </span>
                 )}
               </div>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-8 text-xs text-muted-ink hover:text-clay hover:bg-clay-soft"
-                onClick={onClearAllSubmissions}
-                disabled={submissions.length === 0 || isThisAssignmentProcessing}
-                title="Clear all submissions for this assignment"
-              >
-                <Trash2 className="mr-1 size-3.5" />
-                Clear All
-              </Button>
-              <Button size="icon" variant="ghost" onClick={() => onReloadSubmissions(selectedAssignmentId)} title="Refresh">
-                <RefreshCw className={cn("size-4", isThisAssignmentProcessing && "animate-spin text-amber")} />
-              </Button>
-            </div>
-          </div>
-
-          <div className="mt-4 max-h-[460px] space-y-2.5 overflow-y-auto pr-1">
-            {submissions.length === 0 ? (
-              <p className="py-8 text-center text-xs text-faint">
-                No submissions yet. Upload files or use "Manual Text Input" to enter student work.
-              </p>
-            ) : (
-              submissions.map((sub) => (
-                <div
-                  key={sub.id}
-                  className={cn(
-                    "relative overflow-hidden rounded-lg border border-line bg-paper p-3 transition-all",
-                    isThisAssignmentProcessing && "border-amber/30 bg-amber-soft/10"
-                  )}
-                >
-                  {isThisAssignmentProcessing && (
-                    <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-amber via-clay to-lav animate-pulse" />
-                  )}
-                  <div className="flex items-center gap-3">
-                    <div className={cn(
-                      "grid size-8 shrink-0 place-items-center rounded-lg text-amber-ink",
-                      isThisAssignmentProcessing ? "bg-amber-soft" : "bg-lav-soft"
-                    )}>
-                      {isThisAssignmentProcessing ? (
-                        <Loader2 className="size-4 animate-spin text-amber-ink" />
-                      ) : (
-                        <FileText className="size-4" />
-                      )}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between">
-                        <p className="truncate text-xs font-semibold text-ink">{sub.student}</p>
-                        {isThisAssignmentProcessing ? (
-                          <span className="inline-flex items-center gap-1 rounded bg-amber-soft px-1.5 py-0.5 text-[10px] font-semibold text-amber-ink animate-pulse">
-                            <Loader2 className="size-2.5 animate-spin" /> Evaluating...
-                          </span>
-                        ) : (
-                          <span className="text-[11px] font-bold text-ink">{sub.score}/100</span>
-                        )}
-                      </div>
-                      <div className="mt-1 flex items-center gap-2 text-[10px]">
-                        {isThisAssignmentProcessing ? (
-                          <span className="text-amber-ink font-medium">
-                            AI Plagiarism & Rubric checks running...
-                          </span>
-                        ) : (
-                          <>
-                            <span className={sub.similarity >= 85 ? "text-clay font-medium" : "text-faint"}>
-                              Peer: {sub.similarity}%
-                            </span>
-                            <span>·</span>
-                            <span className={sub.aiContent >= 60 ? "text-amber-ink font-medium" : "text-faint"}>
-                              AI: {sub.aiContent}%
-                            </span>
-                            <span>·</span>
-                            <span className={(sub.webPlagiarism || 0) >= 20 ? "text-blue font-medium" : "text-faint"}>
-                              Web: {sub.webPlagiarism || 0}%
-                            </span>
-                          </>
-                        )}
-                      </div>
-                    </div>
+              <div className="mt-1 flex flex-wrap items-center gap-2">
+                {assignments.length === 0 ? (
+                  <div className="flex flex-wrap items-center gap-3 py-1">
+                    <span className="text-xs italic text-faint">
+                      No assignments in this course yet.
+                    </span>
                     <Button
-                      size="icon"
+                      size="sm"
+                      variant="default"
+                      className="h-7 text-xs bg-ink text-card hover:bg-ink/90 font-medium shadow-sm transition-all"
+                      onClick={() => onTakeDefaultAssignment()}
+                      disabled={takingAssignment || uploading}
+                    >
+                      <Plus className="mr-1 size-3.5" />
+                      {takingAssignment ? "Taking Assignment 1..." : "Take Assignment 1"}
+                    </Button>
+                  </div>
+                ) : (
+                  assignments.map((a) => {
+                    const isThisProcessing =
+                      isProcessing && a.id === (processingAssignmentId || selectedAssignmentId);
+                    const isSelected = a.id === selectedAssignmentId;
+                    return (
+                      <Button
+                        key={a.id}
+                        size="sm"
+                        variant={isSelected ? "default" : "outline"}
+                        onClick={() => onSelectAssignment(a.id)}
+                        className={cn(
+                          "transition-all",
+                          isThisProcessing && "ring-2 ring-amber/60 border-amber/50 font-medium",
+                        )}
+                      >
+                        {isThisProcessing && (
+                          <Loader2 className="mr-1.5 size-3.5 animate-spin text-amber-ink" />
+                        )}
+                        <span>{a.title}</span>
+                        {isThisProcessing && (
+                          <span className="ml-1.5 rounded bg-amber-soft px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-amber-ink">
+                            In Process
+                          </span>
+                        )}
+                      </Button>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* Dynamic In-Process Banner */}
+            {isThisAssignmentProcessing && activeAssign && (
+              <div className="mb-5 overflow-hidden rounded-[14px] border border-amber/40 bg-gradient-to-r from-amber-soft/80 via-lav-soft/60 to-amber-soft/40 p-4 shadow-sm animate-fade-up">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="relative flex size-3">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber opacity-75"></span>
+                      <span className="relative inline-flex size-3 rounded-full bg-amber"></span>
+                    </span>
+                    <span className="text-xs font-bold uppercase tracking-wider text-amber-ink">
+                      Assignment In Process · AI Engine Actively Auditing
+                    </span>
+                  </div>
+                  <span className="rounded-full bg-card/90 px-2.5 py-0.5 font-mono text-xs font-bold text-ink shadow-sm">
+                    {progress}% Complete
+                  </span>
+                </div>
+
+                <div className="mt-2.5 flex items-center gap-2 text-sm font-semibold text-ink">
+                  <Sparkles className="size-4 animate-spin text-amber-ink shrink-0" />
+                  <span className="truncate">{getProcessingStage(progress)}</span>
+                </div>
+
+                <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-card/60">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-amber via-clay to-lav transition-all duration-500 ease-out"
+                    style={{ width: `${Math.max(8, progress)}%` }}
+                  />
+                </div>
+
+                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 text-[11px]">
+                  <div
+                    className={`flex items-center gap-1.5 rounded bg-card/60 p-1.5 ${progress >= 25 ? "text-ink font-semibold" : "text-amber-ink"}`}
+                  >
+                    {progress >= 25 ? (
+                      <CheckCircle2 className="size-3.5 text-sage shrink-0" />
+                    ) : (
+                      <Loader2 className="size-3.5 animate-spin text-amber-ink shrink-0" />
+                    )}
+                    <span className="truncate">1. Ingestion & FERPA</span>
+                  </div>
+                  <div
+                    className={`flex items-center gap-1.5 rounded bg-card/60 p-1.5 ${progress >= 50 ? "text-ink font-semibold" : progress >= 25 ? "text-amber-ink" : "text-faint"}`}
+                  >
+                    {progress >= 50 ? (
+                      <CheckCircle2 className="size-3.5 text-sage shrink-0" />
+                    ) : progress >= 25 ? (
+                      <Loader2 className="size-3.5 animate-spin text-amber-ink shrink-0" />
+                    ) : (
+                      <div className="size-3.5 rounded-full border border-faint/30 shrink-0" />
+                    )}
+                    <span className="truncate">2. Vector Embeddings</span>
+                  </div>
+                  <div
+                    className={`flex items-center gap-1.5 rounded bg-card/60 p-1.5 ${progress >= 75 ? "text-ink font-semibold" : progress >= 50 ? "text-amber-ink" : "text-faint"}`}
+                  >
+                    {progress >= 75 ? (
+                      <CheckCircle2 className="size-3.5 text-sage shrink-0" />
+                    ) : progress >= 50 ? (
+                      <Loader2 className="size-3.5 animate-spin text-amber-ink shrink-0" />
+                    ) : (
+                      <div className="size-3.5 rounded-full border border-faint/30 shrink-0" />
+                    )}
+                    <span className="truncate">3. 3-Way Plagiarism</span>
+                  </div>
+                  <div
+                    className={`flex items-center gap-1.5 rounded bg-card/60 p-1.5 ${progress >= 100 ? "text-ink font-semibold" : progress >= 75 ? "text-amber-ink" : "text-faint"}`}
+                  >
+                    {progress >= 100 ? (
+                      <CheckCircle2 className="size-3.5 text-sage shrink-0" />
+                    ) : progress >= 75 ? (
+                      <Loader2 className="size-3.5 animate-spin text-amber-ink shrink-0" />
+                    ) : (
+                      <div className="size-3.5 rounded-full border border-faint/30 shrink-0" />
+                    )}
+                    <span className="truncate">4. Gemini Auto-Grade</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeAssign && (
+              <div className="mb-5 rounded-lg border border-line bg-paper p-3.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-ink">{activeAssign.title}</span>
+                    <Badge variant="outline">Max Marks: {activeAssign.max_score}</Badge>
+                    {isThisAssignmentProcessing ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-soft px-2 py-0.5 text-[10px] font-bold text-amber-ink animate-pulse">
+                        <Loader2 className="size-2.5 animate-spin" /> In Process
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-sage-soft px-2 py-0.5 text-[10px] font-semibold text-sage-ink">
+                        <CheckCircle2 className="size-2.5 text-sage" /> Active
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={onOpenEditAssignment}
+                    >
+                      <Edit3 className="mr-1 size-3" />
+                      Edit Exemplar
+                    </Button>
+                    <Button
                       variant="ghost"
-                      className="size-7 shrink-0 text-muted-ink hover:text-clay hover:bg-clay-soft"
-                      onClick={() => onDeleteSubmission(sub.id)}
-                      disabled={isThisAssignmentProcessing}
-                      title="Delete Submission"
+                      size="sm"
+                      className="h-7 text-xs text-muted-ink hover:text-clay hover:bg-clay-soft"
+                      onClick={() => onDeleteAssignment(activeAssign.id)}
+                      title="Delete Assignment"
                     >
                       <Trash2 className="size-3.5" />
                     </Button>
                   </div>
                 </div>
-              ))
+                {activeAssign.description && (
+                  <p className="mt-1 text-xs text-muted-ink">{activeAssign.description}</p>
+                )}
+
+                {/* Rubric Linkage Summary */}
+                <div className="mt-3 flex items-center justify-between border-t border-line pt-2 text-xs">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-faint">
+                    Linked Grading Rubric:
+                  </span>
+                  {linkedRubric ? (
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium text-sage-ink flex items-center gap-1">
+                        <Check className="size-3 text-sage" />
+                        {linkedRubric.title || linkedRubric.name} (
+                        {linkedRubric.total_marks || linkedRubric.total_max_score || 100} pts)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("rubrics")}
+                        className="text-[11px] text-amber-ink hover:underline font-medium"
+                      >
+                        Change
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("rubrics")}
+                      className="text-[11px] text-amber-ink hover:underline font-medium"
+                    >
+                      + Attach Rubric
+                    </button>
+                  )}
+                </div>
+
+                {/* Reference Assignment Display */}
+                <div className="mt-2 border-t border-line pt-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-faint">
+                      Ground Truth Reference Exemplar:
+                    </span>
+                    <span className="text-[10px] text-sage font-medium">Active benchmark</span>
+                  </div>
+                  {activeAssign.reference_assignment_text ? (
+                    <p className="mt-1 line-clamp-3 rounded bg-card p-2 font-mono text-[11px] text-muted-ink">
+                      {activeAssign.reference_assignment_text}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-xs italic text-faint">
+                      No reference exemplar added yet. Click "Edit Exemplar" to paste benchmark code
+                      or solution.
+                    </p>
+                  )}
+                </div>
+              </div>
             )}
-          </div>
-        </section>
-      </div>
+
+            {/* Drag & Drop File Upload */}
+            <label
+              className={cn(
+                "flex min-h-52 cursor-pointer flex-col items-center justify-center rounded-[12px] border border-dashed border-line bg-paper p-6 text-center transition-colors hover:border-lav",
+                isThisAssignmentProcessing && "border-amber/40 bg-amber-soft/20",
+              )}
+            >
+              <input
+                type="file"
+                multiple
+                className="hidden"
+                accept=".pdf,.doc,.docx,.txt,.zip"
+                onChange={(e) => handleFileUpload(e.target.files)}
+              />
+              <div
+                className={cn(
+                  "grid size-12 place-items-center rounded-full text-amber-ink",
+                  isThisAssignmentProcessing ? "bg-amber-soft animate-pulse" : "bg-lav-soft",
+                )}
+              >
+                {isThisAssignmentProcessing ? (
+                  <Sparkles className="size-6 animate-spin text-amber" />
+                ) : (
+                  <UploadCloud className="size-6" />
+                )}
+              </div>
+              <p className="mt-3 font-display text-lg">
+                {isThisAssignmentProcessing
+                  ? "AI Checks In Process · Queue More Submissions"
+                  : !activeAssign
+                    ? "Take Assignment & Upload Submissions"
+                    : "Upload student submissions"}
+              </p>
+              <p className="mt-1 max-w-sm text-xs text-muted-ink">
+                {!activeAssign
+                  ? "Drop student files here to automatically initialize Assignment 1 and run AI plagiarism & autograding checks."
+                  : "Drop PDFs, DOCX, TXT, or ZIP archive. Files are encrypted with FERPA-grade AES-256 upon upload."}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-4"
+                disabled={uploading}
+              >
+                {uploading ? (
+                  <>
+                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                    Uploading & Encrypting...
+                  </>
+                ) : (
+                  "Browse files"
+                )}
+              </Button>
+            </label>
+
+            <div className="mt-5 flex items-center justify-between border-t border-line pt-4">
+              <div>
+                <p className="text-sm font-medium">
+                  Ready for Auto-Grading & 3-Way Plagiarism Audit
+                </p>
+                <p className="mt-0.5 text-xs text-muted-ink">
+                  Executes peer cross-matching, synthetic AI probability, and public web search
+                  citations.
+                </p>
+              </div>
+              <Button
+                onClick={() => onStartGrading(selectedAssignmentId)}
+                disabled={
+                  isThisAssignmentProcessing || submissions.length === 0 || !selectedAssignmentId
+                }
+                className="bg-ink text-card hover:bg-ink/90 transition-all"
+              >
+                {isThisAssignmentProcessing ? (
+                  <>
+                    <Loader2 className="mr-1.5 size-4 animate-spin text-amber" />
+                    Grading in Progress ({progress}%)...
+                  </>
+                ) : (
+                  <>
+                    Start AI Grading
+                    <Sparkles className="ml-1.5 size-4" />
+                  </>
+                )}
+              </Button>
+            </div>
+
+            {isThisAssignmentProcessing && (
+              <div className="mt-4 rounded-lg bg-lav-soft p-3.5 animate-fade-up">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium text-ink">
+                    Analyzing batch & checking web citations
+                  </span>
+                  <span className="font-semibold text-amber-ink">{progress}%</span>
+                </div>
+                <Progress value={progress} className="mt-2 bg-card" />
+                <p className="mt-1.5 text-[11px] text-muted-ink">
+                  Benchmarking against reference exemplar · teacher review remains mandatory.
+                </p>
+              </div>
+            )}
+          </section>
+
+          {/* Submissions Queue */}
+          <section className="rounded-[14px] border border-line bg-card p-5 xl:col-span-5">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="font-display text-xl">Current Submissions</h2>
+                <div className="mt-1 flex items-center gap-2">
+                  <p className="text-xs text-muted-ink">
+                    {submissions.length} submissions in this assignment
+                  </p>
+                  {isThisAssignmentProcessing && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-soft px-2 py-0.5 text-[10px] font-bold text-amber-ink animate-pulse">
+                      <Loader2 className="size-2.5 animate-spin" />
+                      AI Checks In Process
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-8 text-xs text-muted-ink hover:text-clay hover:bg-clay-soft"
+                  onClick={onClearAllSubmissions}
+                  disabled={submissions.length === 0 || isThisAssignmentProcessing}
+                  title="Clear all submissions for this assignment"
+                >
+                  <Trash2 className="mr-1 size-3.5" />
+                  Clear All
+                </Button>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  onClick={() => onReloadSubmissions(selectedAssignmentId)}
+                  title="Refresh"
+                >
+                  <RefreshCw
+                    className={cn(
+                      "size-4",
+                      isThisAssignmentProcessing && "animate-spin text-amber",
+                    )}
+                  />
+                </Button>
+              </div>
+            </div>
+
+            <div className="mt-4 max-h-[460px] space-y-2.5 overflow-y-auto pr-1">
+              {submissions.length === 0 ? (
+                <p className="py-8 text-center text-xs text-faint">
+                  No submissions yet. Upload files or use "Manual Text Input" to enter student work.
+                </p>
+              ) : (
+                submissions.map((sub) => (
+                  <div
+                    key={sub.id}
+                    className={cn(
+                      "relative overflow-hidden rounded-lg border border-line bg-paper p-3 transition-all",
+                      isThisAssignmentProcessing && "border-amber/30 bg-amber-soft/10",
+                    )}
+                  >
+                    {isThisAssignmentProcessing && (
+                      <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-amber via-clay to-lav animate-pulse" />
+                    )}
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={cn(
+                          "grid size-8 shrink-0 place-items-center rounded-lg text-amber-ink",
+                          isThisAssignmentProcessing ? "bg-amber-soft" : "bg-lav-soft",
+                        )}
+                      >
+                        {isThisAssignmentProcessing ? (
+                          <Loader2 className="size-4 animate-spin text-amber-ink" />
+                        ) : (
+                          <FileText className="size-4" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between">
+                          <p className="truncate text-xs font-semibold text-ink">{sub.student}</p>
+                          {isThisAssignmentProcessing ? (
+                            <span className="inline-flex items-center gap-1 rounded bg-amber-soft px-1.5 py-0.5 text-[10px] font-semibold text-amber-ink animate-pulse">
+                              <Loader2 className="size-2.5 animate-spin" /> Evaluating...
+                            </span>
+                          ) : (
+                            <span className="text-[11px] font-bold text-ink">{sub.score}/100</span>
+                          )}
+                        </div>
+                        <div className="mt-1 flex items-center gap-2 text-[10px]">
+                          {isThisAssignmentProcessing ? (
+                            <span className="text-amber-ink font-medium">
+                              AI Plagiarism & Rubric checks running...
+                            </span>
+                          ) : (
+                            <>
+                              <span
+                                className={
+                                  sub.similarity >= 85 ? "text-clay font-medium" : "text-faint"
+                                }
+                              >
+                                Peer: {sub.similarity}%
+                              </span>
+                              <span>·</span>
+                              <span
+                                className={
+                                  sub.aiContent >= 60 ? "text-amber-ink font-medium" : "text-faint"
+                                }
+                              >
+                                AI: {sub.aiContent}%
+                              </span>
+                              <span>·</span>
+                              <span
+                                className={
+                                  (sub.webPlagiarism || 0) >= 20
+                                    ? "text-blue font-medium"
+                                    : "text-faint"
+                                }
+                              >
+                                Web: {sub.webPlagiarism || 0}%
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="size-7 shrink-0 text-muted-ink hover:text-clay hover:bg-clay-soft"
+                        onClick={() => onDeleteSubmission(sub.id)}
+                        disabled={isThisAssignmentProcessing}
+                        title="Delete Submission"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* TAB 2: INTEGRATED RUBRICS & CRITERIA MATRIX */}
+      {activeTab === "rubrics" && (
+        <div className="space-y-6 animate-fade-up">
+          {/* Active Assignment Rubric Status Banner */}
+          {activeAssign && (
+            <div className="rounded-[14px] border border-line bg-card p-4 shadow-xs">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="grid size-10 place-items-center rounded-xl bg-lav-soft text-amber-ink">
+                    <ClipboardCheck className="size-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-muted-ink">
+                        Active Assignment:
+                      </span>
+                      <span className="text-sm font-bold text-ink">{activeAssign.title}</span>
+                    </div>
+                    <p className="mt-0.5 text-xs text-muted-ink">
+                      {linkedRubric ? (
+                        <>
+                          Grading configured with rubric{" "}
+                          <span className="font-semibold text-ink">
+                            "{linkedRubric.title || linkedRubric.name}"
+                          </span>{" "}
+                          ({linkedRubric.total_marks || linkedRubric.total_max_score || 100} pts,{" "}
+                          {linkedRubric.criteria?.length || 0} criteria rows).
+                        </>
+                      ) : (
+                        "No rubric currently linked to this assignment. Attach one from below or create a new one."
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                {linkedRubric && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleDetachRubric}
+                    className="text-xs text-clay border-clay/30 hover:bg-clay-soft"
+                  >
+                    Detach Rubric
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* MODE: UPLOAD RUBRIC DOCUMENT */}
+          {rubricMode === "upload" && (
+            <div className="rounded-[14px] border border-line bg-card p-6 shadow-xs animate-fade-up">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <h3 className="font-display text-xl">Upload Rubric Document</h3>
+                  <p className="mt-0.5 text-xs text-muted-ink">
+                    Upload any grading rubric document (PDF, Word DOCX, Excel XLSX, CSV, Plain Text,
+                    or image). Criteria will be automatically extracted and indexed.
+                  </p>
+                </div>
+                <Button size="sm" variant="ghost" onClick={() => setRubricMode("list")}>
+                  Cancel
+                </Button>
+              </div>
+
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setRubricDragOver(true);
+                }}
+                onDragLeave={() => setRubricDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setRubricDragOver(false);
+                  if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                    handleRubricFileSelect(e.dataTransfer.files[0]);
+                  }
+                }}
+                className={cn(
+                  "flex min-h-56 cursor-pointer flex-col items-center justify-center rounded-[12px] border-2 border-dashed p-8 text-center transition-all",
+                  rubricDragOver
+                    ? "border-amber bg-amber-soft/20 scale-[1.01]"
+                    : "border-line bg-paper hover:border-ink/30",
+                )}
+              >
+                <input
+                  type="file"
+                  id="rubric-file-input"
+                  className="hidden"
+                  accept=".pdf,.doc,.docx,.xlsx,.xls,.txt,.csv,.png,.jpg,.jpeg"
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files[0]) {
+                      handleRubricFileSelect(e.target.files[0]);
+                    }
+                  }}
+                />
+                <div className="grid size-12 place-items-center rounded-full bg-lav-soft text-amber-ink mb-3">
+                  <UploadCloud className="size-6" />
+                </div>
+                {rubricUploadFile ? (
+                  <div className="space-y-1">
+                    <p className="font-display text-lg text-ink">{rubricUploadFile.name}</p>
+                    <p className="text-xs text-muted-ink">
+                      {(rubricUploadFile.size / 1024).toFixed(1)} KB · Ready to process
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <p className="font-display text-lg text-ink">
+                      Drag & Drop your Rubric file here
+                    </p>
+                    <p className="mt-1 text-xs text-muted-ink max-w-sm">
+                      Supports PDF, DOCX, XLSX, CSV, TXT, and image files. Automatic criteria and
+                      score tier extraction.
+                    </p>
+                  </>
+                )}
+
+                <div className="mt-4 flex flex-wrap justify-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => document.getElementById("rubric-file-input")?.click()}
+                  >
+                    {rubricUploadFile ? "Choose Different File" : "Browse Computer"}
+                  </Button>
+                </div>
+              </div>
+
+              {rubricUploadFile && (
+                <div className="mt-5 space-y-3 rounded-lg border border-line bg-paper p-4">
+                  <label className="text-xs font-semibold text-muted-ink block">
+                    Rubric Title / Name:
+                  </label>
+                  <Input
+                    value={rubricUploadTitle}
+                    onChange={(e) => setRubricUploadTitle(e.target.value)}
+                    placeholder="e.g., Object Oriented Programming Assignment 1 Rubric"
+                    className="bg-card"
+                  />
+                  <div className="flex justify-end gap-2 pt-2">
+                    <Button variant="outline" size="sm" onClick={() => setRubricUploadFile(null)}>
+                      Clear
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={handleUploadRubricSubmit}
+                      disabled={uploadingRubric}
+                      className="bg-ink text-card hover:bg-ink/90"
+                    >
+                      {uploadingRubric ? (
+                        <>
+                          <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                          Processing & Saving...
+                        </>
+                      ) : (
+                        <>
+                          <Check className="mr-1.5 size-3.5" />
+                          Upload & Save Rubric
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* MODE: INLINE MATRIX RUBRIC BUILDER */}
+          {rubricMode === "builder" && (
+            <div className="rounded-[14px] border border-line bg-card p-6 shadow-xs animate-fade-up">
+              <MatrixRubricBuilder
+                classroom={{
+                  id: course.id,
+                  name: course.name,
+                  code: course.code,
+                  students_count: course.students_count || 0,
+                }}
+                classrooms={courses.map((c) => ({
+                  id: c.id,
+                  name: c.name,
+                  code: c.code,
+                  students_count: c.students_count || 0,
+                }))}
+                onSelectClassroom={(id) => onSelectCourse(id)}
+                onSaved={async () => {
+                  await onReloadRubrics();
+                  setRubricMode("list");
+                  showToast("Matrix Rubric saved to database and ready for grading!");
+                }}
+                onCancel={() => setRubricMode("list")}
+                showToast={showToast}
+              />
+            </div>
+          )}
+
+          {/* MODE: RUBRICS LIBRARY LIST */}
+          {rubricMode === "list" && (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-display text-xl">Course Rubrics Library</h3>
+                  <p className="mt-0.5 text-xs text-muted-ink">
+                    Available rubrics for {course.name} ({course.code}). Attach any rubric to the
+                    active assignment.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setRubricMode("upload")}
+                    className="text-xs"
+                  >
+                    <UploadCloud className="mr-1.5 size-3.5" />
+                    Upload File
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => setRubricMode("builder")}
+                    className="text-xs bg-ink text-card hover:bg-ink/90"
+                  >
+                    <Plus className="mr-1.5 size-3.5" />
+                    New Matrix Rubric
+                  </Button>
+                </div>
+              </div>
+
+              {rubrics.length === 0 ? (
+                <div className="rounded-[14px] border border-dashed border-line p-10 text-center bg-card">
+                  <ClipboardCheck className="mx-auto size-10 text-faint mb-3" />
+                  <h4 className="font-display text-lg text-ink">No Rubrics Created Yet</h4>
+                  <p className="mt-1 text-xs text-muted-ink max-w-md mx-auto">
+                    Design multi-tier criteria matrices with quantitative score tiers (4, 3, 2, 0
+                    pts) or upload an existing rubric document to guide automated evaluation.
+                  </p>
+                  <div className="mt-5 flex flex-wrap justify-center gap-3">
+                    <Button
+                      onClick={() => setRubricMode("upload")}
+                      variant="outline"
+                      className="text-xs"
+                    >
+                      <UploadCloud className="mr-1.5 size-3.5" />
+                      Upload Rubric Document
+                    </Button>
+                    <Button
+                      onClick={() => setRubricMode("builder")}
+                      className="text-xs bg-ink text-card hover:bg-ink/90"
+                    >
+                      <Plus className="mr-1.5 size-3.5" />
+                      Open Matrix Rubric Designer
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2">
+                  {rubrics.map((r) => {
+                    const isAttached = activeAssign?.rubric_id === r.id;
+                    const isLinking = linkingRubricId === r.id;
+                    return (
+                      <div
+                        key={r.id}
+                        className={cn(
+                          "rounded-[14px] border bg-card p-5 transition-all shadow-xs",
+                          isAttached
+                            ? "border-sage/60 ring-1 ring-sage/30 bg-sage-soft/10"
+                            : "border-line hover:border-ink/20",
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <h4 className="font-display text-lg font-semibold text-ink truncate">
+                                {r.title || r.name}
+                              </h4>
+                              {isAttached && (
+                                <Badge className="bg-sage text-white text-[10px]">
+                                  Active Benchmark
+                                </Badge>
+                              )}
+                            </div>
+                            <p className="mt-1 text-xs text-muted-ink">
+                              {r.criteria?.length || 0} evaluation criteria rows
+                            </p>
+                          </div>
+                          <Badge variant="secondary" className="font-mono text-xs">
+                            {r.total_marks || r.total_max_score || 100} pts
+                          </Badge>
+                        </div>
+
+                        {/* Criteria preview pills */}
+                        {r.criteria && r.criteria.length > 0 && (
+                          <div className="mt-3 flex flex-wrap gap-1.5">
+                            {r.criteria.slice(0, 4).map((c, i) => (
+                              <span
+                                key={c.id || i}
+                                className="inline-flex items-center rounded-md bg-paper px-2 py-1 text-[10px] font-medium text-muted-ink border border-line"
+                              >
+                                {c.criterion_name || c.name} ({c.max_points || c.max_score || 4}{" "}
+                                pts)
+                              </span>
+                            ))}
+                            {r.criteria.length > 4 && (
+                              <span className="text-[10px] text-faint self-center">
+                                +{r.criteria.length - 4} more
+                              </span>
+                            )}
+                          </div>
+                        )}
+
+                        <div className="mt-4 flex items-center justify-between border-t border-line pt-3">
+                          {isAttached ? (
+                            <span className="text-xs font-semibold text-sage-ink flex items-center gap-1">
+                              <CheckCircle2 className="size-3.5 text-sage" /> Attached to{" "}
+                              {activeAssign?.title}
+                            </span>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleAttachRubric(r.id)}
+                              disabled={isLinking || !activeAssign}
+                              className="text-xs"
+                            >
+                              {isLinking ? (
+                                <Loader2 className="mr-1.5 size-3 animate-spin" />
+                              ) : (
+                                <Check className="mr-1.5 size-3" />
+                              )}
+                              Attach to Active Assignment
+                            </Button>
+                          )}
+
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => handleDeleteRubric(r.id, r.title || r.name)}
+                            className="size-7 text-muted-ink hover:text-clay hover:bg-clay-soft"
+                            title="Delete Rubric"
+                          >
+                            <Trash2 className="size-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
     </>
   );
 }
@@ -2145,10 +2968,30 @@ function AssessmentsView({
 }) {
   const [rubrics, setRubrics] = useState<Rubric[]>([]);
   const [criteria, setCriteria] = useState([
-    { name: "Understanding", description: "Conceptual clarity, problem modeling and depth", weight: 30, max_score: 30 },
-    { name: "Accuracy", description: "Correctness of algorithmic solution against benchmark", weight: 30, max_score: 30 },
-    { name: "Methodology", description: "Process, computational complexity and reasoning", weight: 20, max_score: 20 },
-    { name: "Presentation", description: "Code structure, modularity and documentation", weight: 20, max_score: 20 },
+    {
+      name: "Understanding",
+      description: "Conceptual clarity, problem modeling and depth",
+      weight: 30,
+      max_score: 30,
+    },
+    {
+      name: "Accuracy",
+      description: "Correctness of algorithmic solution against benchmark",
+      weight: 30,
+      max_score: 30,
+    },
+    {
+      name: "Methodology",
+      description: "Process, computational complexity and reasoning",
+      weight: 20,
+      max_score: 20,
+    },
+    {
+      name: "Presentation",
+      description: "Code structure, modularity and documentation",
+      weight: 20,
+      max_score: 20,
+    },
   ]);
 
   useEffect(() => {
@@ -2162,8 +3005,13 @@ function AssessmentsView({
       <div className="rounded-[14px] border border-dashed border-line p-12 text-center animate-fade-up">
         <ClipboardCheck className="mx-auto size-10 text-faint mb-3" />
         <h3 className="font-display text-xl text-ink">No Active Course Selected</h3>
-        <p className="mt-1 text-xs text-muted-ink">Please select or create a course to configure grading rubrics.</p>
-        <Button onClick={() => onNavigate("courses")} className="mt-4 bg-ink text-card hover:bg-ink/90">
+        <p className="mt-1 text-xs text-muted-ink">
+          Please select or create a course to configure grading rubrics.
+        </p>
+        <Button
+          onClick={() => onNavigate("courses")}
+          className="mt-4 bg-ink text-card hover:bg-ink/90"
+        >
           Go to Courses
         </Button>
       </div>
@@ -2189,7 +3037,12 @@ function AssessmentsView({
   const addCriterion = () => {
     setCriteria([
       ...criteria,
-      { name: "New Criterion", description: "Criterion evaluation standards", weight: 10, max_score: 10 },
+      {
+        name: "New Criterion",
+        description: "Criterion evaluation standards",
+        weight: 10,
+        max_score: 10,
+      },
     ]);
   };
 
@@ -2216,12 +3069,17 @@ function AssessmentsView({
             <div className="col-span-2">Max Marks</div>
           </div>
           {criteria.map((row, idx) => (
-            <div key={idx} className="grid grid-cols-12 items-center gap-3 border-t border-line px-4 py-3 text-sm">
+            <div
+              key={idx}
+              className="grid grid-cols-12 items-center gap-3 border-t border-line px-4 py-3 text-sm"
+            >
               <div className="col-span-3">
                 <Input
                   value={row.name}
                   onChange={(e) => {
-                    setCriteria(criteria.map((c, i) => i === idx ? { ...c, name: e.target.value } : c));
+                    setCriteria(
+                      criteria.map((c, i) => (i === idx ? { ...c, name: e.target.value } : c)),
+                    );
                   }}
                   className="h-8 text-xs font-medium"
                 />
@@ -2230,7 +3088,11 @@ function AssessmentsView({
                 <Input
                   value={row.description}
                   onChange={(e) => {
-                    setCriteria(criteria.map((c, i) => i === idx ? { ...c, description: e.target.value } : c));
+                    setCriteria(
+                      criteria.map((c, i) =>
+                        i === idx ? { ...c, description: e.target.value } : c,
+                      ),
+                    );
                   }}
                   className="h-8 text-xs text-muted-ink"
                 />
@@ -2240,7 +3102,11 @@ function AssessmentsView({
                   type="number"
                   value={row.weight}
                   onChange={(e) => {
-                    setCriteria(criteria.map((c, i) => i === idx ? { ...c, weight: Number(e.target.value) } : c));
+                    setCriteria(
+                      criteria.map((c, i) =>
+                        i === idx ? { ...c, weight: Number(e.target.value) } : c,
+                      ),
+                    );
                   }}
                   className="h-8 text-xs text-center"
                 />
@@ -2250,7 +3116,11 @@ function AssessmentsView({
                   type="number"
                   value={row.max_score}
                   onChange={(e) => {
-                    setCriteria(criteria.map((c, i) => i === idx ? { ...c, max_score: Number(e.target.value) } : c));
+                    setCriteria(
+                      criteria.map((c, i) =>
+                        i === idx ? { ...c, max_score: Number(e.target.value) } : c,
+                      ),
+                    );
                   }}
                   className="h-8 text-xs text-center"
                 />
@@ -2350,7 +3220,9 @@ function SimilarityView({
                   </td>
                   <td className="px-3 py-4">
                     <Pill tone={sub.aiContent >= 60 ? "amber" : "sage"}>
-                      {sub.aiContent >= 60 ? `${sub.aiContent}% Indicated` : `${sub.aiContent}% Low`}
+                      {sub.aiContent >= 60
+                        ? `${sub.aiContent}% Indicated`
+                        : `${sub.aiContent}% Low`}
                     </Pill>
                   </td>
                   <td className="px-3 py-4">
@@ -2359,7 +3231,15 @@ function SimilarityView({
                     </Pill>
                   </td>
                   <td className="px-3 py-4">
-                    <Pill tone={sub.status === "approved" ? "sage" : sub.status === "flagged" ? "clay" : "lav"}>
+                    <Pill
+                      tone={
+                        sub.status === "approved"
+                          ? "sage"
+                          : sub.status === "flagged"
+                            ? "clay"
+                            : "lav"
+                      }
+                    >
                       {sub.status}
                     </Pill>
                   </td>
@@ -2408,7 +3288,11 @@ function AIGradingView({
         title="Suggested Grades & Integrity Scores"
         description="AI evaluates submissions against your criteria and reference solution. Every grade is held in Pending Review until approved."
         action={
-          <Button onClick={() => onStartGrading(assignment?.id)} disabled={isProcessing} className="bg-ink text-card hover:bg-ink/90">
+          <Button
+            onClick={() => onStartGrading(assignment?.id)}
+            disabled={isProcessing}
+            className="bg-ink text-card hover:bg-ink/90"
+          >
             {isProcessing ? (
               <>
                 <Loader2 className="mr-1.5 size-4 animate-spin text-amber" />
@@ -2481,7 +3365,11 @@ function AIGradingView({
                     <span className="text-sm text-muted-ink">/100</span>
                   </td>
                   <td className="px-3 py-4">
-                    <span className={sub.similarity >= 85 ? "font-semibold text-clay" : "text-muted-ink"}>
+                    <span
+                      className={
+                        sub.similarity >= 85 ? "font-semibold text-clay" : "text-muted-ink"
+                      }
+                    >
                       {sub.similarity}%
                     </span>
                   </td>
@@ -2494,8 +3382,20 @@ function AIGradingView({
                     </Pill>
                   </td>
                   <td className="px-3 py-4">
-                    <Pill tone={sub.status === "approved" ? "sage" : sub.status === "flagged" ? "clay" : "lav"}>
-                      {sub.status === "approved" ? "Approved" : sub.status === "flagged" ? "Flagged" : "Pending"}
+                    <Pill
+                      tone={
+                        sub.status === "approved"
+                          ? "sage"
+                          : sub.status === "flagged"
+                            ? "clay"
+                            : "lav"
+                      }
+                    >
+                      {sub.status === "approved"
+                        ? "Approved"
+                        : sub.status === "flagged"
+                          ? "Flagged"
+                          : "Pending"}
                     </Pill>
                   </td>
                   <td className="px-3 py-4 text-right">
@@ -2602,7 +3502,9 @@ function ReviewWorkspace({
 
       {/* Student Selector Carousel */}
       <div className="mb-4 flex items-center gap-2 overflow-x-auto rounded-lg border border-line bg-card p-2">
-        <span className="shrink-0 px-2 text-[10px] uppercase tracking-[0.14em] text-faint">Students:</span>
+        <span className="shrink-0 px-2 text-[10px] uppercase tracking-[0.14em] text-faint">
+          Students:
+        </span>
         {submissions.map((sub) => (
           <Button
             key={sub.id}
@@ -2622,7 +3524,9 @@ function ReviewWorkspace({
           <section className="flex flex-col rounded-[14px] border border-line bg-card p-5 xl:col-span-4">
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-[11px] uppercase tracking-[0.16em] text-faint">Student Submission</p>
+                <p className="text-[11px] uppercase tracking-[0.16em] text-faint">
+                  Student Submission
+                </p>
                 <h2 className="mt-1 font-display text-2xl">{currentSub.student}</h2>
                 <p className="text-xs text-faint">Roll: {currentSub.roll}</p>
               </div>
@@ -2635,19 +3539,34 @@ function ReviewWorkspace({
             <div className="mt-4 grid grid-cols-3 gap-2 border-y border-line py-3 text-center">
               <div>
                 <span className="text-[10px] uppercase text-faint">Peer Sim</span>
-                <p className={cn("text-sm font-bold", currentSub.similarity >= 85 ? "text-clay" : "text-ink")}>
+                <p
+                  className={cn(
+                    "text-sm font-bold",
+                    currentSub.similarity >= 85 ? "text-clay" : "text-ink",
+                  )}
+                >
                   {currentSub.similarity}%
                 </p>
               </div>
               <div>
                 <span className="text-[10px] uppercase text-faint">AI Prob</span>
-                <p className={cn("text-sm font-bold", currentSub.aiContent >= 60 ? "text-amber-ink" : "text-ink")}>
+                <p
+                  className={cn(
+                    "text-sm font-bold",
+                    currentSub.aiContent >= 60 ? "text-amber-ink" : "text-ink",
+                  )}
+                >
                   {currentSub.aiContent}%
                 </p>
               </div>
               <div>
                 <span className="text-[10px] uppercase text-faint">Web Match</span>
-                <p className={cn("text-sm font-bold", (currentSub.webPlagiarism || 0) >= 20 ? "text-blue" : "text-ink")}>
+                <p
+                  className={cn(
+                    "text-sm font-bold",
+                    (currentSub.webPlagiarism || 0) >= 20 ? "text-blue" : "text-ink",
+                  )}
+                >
                   {currentSub.webPlagiarism || 0}%
                 </p>
               </div>
@@ -2655,7 +3574,9 @@ function ReviewWorkspace({
 
             {/* Submission Content Text */}
             <div className="mt-4 max-h-[300px] overflow-y-auto rounded-lg border border-line bg-paper p-3 text-xs leading-relaxed text-muted-ink">
-              <span className="mb-1 block font-semibold uppercase text-faint">Student Submitted Text:</span>
+              <span className="mb-1 block font-semibold uppercase text-faint">
+                Student Submitted Text:
+              </span>
               <p className="whitespace-pre-wrap">
                 {detail?.extracted_text || "Submission content registered."}
               </p>
@@ -2716,7 +3637,9 @@ function ReviewWorkspace({
                       </span>
                     )}
                   </div>
-                  {crit.rationale && <p className="mt-1.5 text-[11px] text-muted-ink">{crit.rationale}</p>}
+                  {crit.rationale && (
+                    <p className="mt-1.5 text-[11px] text-muted-ink">{crit.rationale}</p>
+                  )}
                 </div>
               ))}
             </div>
@@ -2753,14 +3676,12 @@ function ReviewWorkspace({
             </div>
 
             <div className="mt-4 rounded-[10px] border border-lav bg-lav-soft px-3 py-2.5 text-[11px] leading-snug text-muted-ink">
-              "AI suggests. You stamp." — No AI score is officially recorded without your direct confirmation.
+              "AI suggests. You stamp." — No AI score is officially recorded without your direct
+              confirmation.
             </div>
 
             <div className="mt-auto flex flex-col gap-2 pt-6">
-              <Button
-                onClick={handleApproveGrade}
-                className="bg-ink text-card hover:bg-ink/90"
-              >
+              <Button onClick={handleApproveGrade} className="bg-ink text-card hover:bg-ink/90">
                 <Check className="mr-1.5 size-4" />
                 Approve Grade · Final {editedScore}/100
               </Button>
@@ -2799,13 +3720,23 @@ function GradebookView({
       <div className="rounded-[14px] border border-dashed border-line p-12 text-center animate-fade-up">
         <BarChart3 className="mx-auto size-10 text-faint mb-3" />
         <h3 className="font-display text-xl text-ink">No Active Course Selected</h3>
-        <p className="mt-1 text-xs text-muted-ink">Select or create a course to inspect its gradebook.</p>
+        <p className="mt-1 text-xs text-muted-ink">
+          Select or create a course to inspect its gradebook.
+        </p>
       </div>
     );
   }
 
   const exportCSV = () => {
-    const headers = ["Student Name", "Roll Number", "Status", "Score", "Peer Similarity %", "AI Content %", "Web Match %"];
+    const headers = [
+      "Student Name",
+      "Roll Number",
+      "Status",
+      "Score",
+      "Peer Similarity %",
+      "AI Content %",
+      "Web Match %",
+    ];
     const rows = submissions.map((s) => [
       s.student,
       s.roll,
@@ -2821,7 +3752,10 @@ function GradebookView({
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `${course?.code || "course"}_${assignment?.title || "assignment"}_gradebook.csv`);
+    link.setAttribute(
+      "download",
+      `${course?.code || "course"}_${assignment?.title || "assignment"}_gradebook.csv`,
+    );
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -2872,7 +3806,11 @@ function GradebookView({
                       <span className="text-xs text-muted-ink">/100</span>
                     </td>
                     <td className="px-3 py-3.5">
-                      <span className={s.similarity >= 85 ? "font-semibold text-clay" : "text-muted-ink"}>
+                      <span
+                        className={
+                          s.similarity >= 85 ? "font-semibold text-clay" : "text-muted-ink"
+                        }
+                      >
                         {s.similarity}%
                       </span>
                     </td>
@@ -2885,7 +3823,11 @@ function GradebookView({
                       </Pill>
                     </td>
                     <td className="px-3 py-3.5">
-                      <Pill tone={s.status === "approved" ? "sage" : s.status === "flagged" ? "clay" : "lav"}>
+                      <Pill
+                        tone={
+                          s.status === "approved" ? "sage" : s.status === "flagged" ? "clay" : "lav"
+                        }
+                      >
                         {s.status}
                       </Pill>
                     </td>
@@ -2925,9 +3867,10 @@ function ReportsView({
         <div className="rounded-[14px] border border-line bg-card p-5">
           <h2 className="font-display text-xl">FERPA/GDPR Data Minimization</h2>
           <p className="mt-2 text-xs leading-relaxed text-muted-ink">
-            All student identifiers (Names, Roll Numbers, Emails) undergo AES-256 Fernet field-level encryption at rest.
-            When submissions are passed to Google Gemini for evaluation, student identities are pseudonymized into deterministic
-            tokens (e.g. STUDENT_A3F89B), ensuring zero student PII ever leaves your security perimeter.
+            All student identifiers (Names, Roll Numbers, Emails) undergo AES-256 Fernet field-level
+            encryption at rest. When submissions are passed to Google Gemini for evaluation, student
+            identities are pseudonymized into deterministic tokens (e.g. STUDENT_A3F89B), ensuring
+            zero student PII ever leaves your security perimeter.
           </p>
           <div className="mt-4 rounded bg-sage-soft p-3 text-xs text-sage font-medium">
             Active: Cryptographic Data Minimization & Encryption Enforced
@@ -2937,8 +3880,8 @@ function ReportsView({
         <div className="rounded-[14px] border border-line bg-card p-5">
           <h2 className="font-display text-xl">Audit Trail & Teacher Accountability</h2>
           <p className="mt-2 text-xs leading-relaxed text-muted-ink">
-            Every grade approval, threshold adjustment, and feedback modification produces an immutable audit record in the database
-            with timestamp, actor ID, and IP address.
+            Every grade approval, threshold adjustment, and feedback modification produces an
+            immutable audit record in the database with timestamp, actor ID, and IP address.
           </p>
           <div className="mt-4 rounded bg-lav-soft p-3 text-xs text-ink font-medium">
             Active: Database Audit Logs & Storage Mirroring
@@ -2987,10 +3930,15 @@ function SettingsView({
       <div className="mt-5 rounded-[14px] border border-line bg-card p-5 max-w-2xl">
         <h2 className="font-display text-xl text-clay">Database Maintenance & Custom Data</h2>
         <p className="mt-1 text-xs text-muted-ink">
-          Purge all seeded demo courses and submissions so you can populate Verism strictly with your own real-world classes, students, and assignment exemplars.
+          Purge all seeded demo courses and submissions so you can populate Verism strictly with
+          your own real-world classes, students, and assignment exemplars.
         </p>
         <div className="mt-4">
-          <Button variant="outline" className="text-clay hover:bg-clay-soft" onClick={onClearMockData}>
+          <Button
+            variant="outline"
+            className="text-clay hover:bg-clay-soft"
+            onClick={onClearMockData}
+          >
             <Trash2 className="mr-1.5 size-4" /> Purge Demo Seed Data
           </Button>
         </div>
@@ -3052,36 +4000,58 @@ function AuthModal({
       <div className="w-full max-w-md rounded-[16px] border border-line bg-card p-6 shadow-2xl animate-fade-up">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="grid size-7 place-items-center rounded bg-ink text-card text-xs font-bold">V</div>
-            <h2 className="font-display text-xl">{tab === "login" ? "Sign In to Verism" : "Create Teacher Account"}</h2>
+            <div className="grid size-7 place-items-center rounded bg-ink text-card text-xs font-bold">
+              V
+            </div>
+            <h2 className="font-display text-xl">
+              {tab === "login" ? "Sign In to Verism" : "Create Teacher Account"}
+            </h2>
           </div>
-          <Button size="icon" variant="ghost" onClick={onClose}><X className="size-4" /></Button>
+          <Button size="icon" variant="ghost" onClick={onClose}>
+            <X className="size-4" />
+          </Button>
         </div>
 
         <div className="mt-4 flex border-b border-line">
           <button
-            onClick={() => { setTab("login"); setError(""); }}
-            className={cn("flex-1 py-2 text-xs font-semibold text-center border-b-2", tab === "login" ? "border-ink text-ink" : "border-transparent text-muted-ink")}
+            onClick={() => {
+              setTab("login");
+              setError("");
+            }}
+            className={cn(
+              "flex-1 py-2 text-xs font-semibold text-center border-b-2",
+              tab === "login" ? "border-ink text-ink" : "border-transparent text-muted-ink",
+            )}
           >
             Sign In
           </button>
           <button
-            onClick={() => { setTab("signup"); setError(""); }}
-            className={cn("flex-1 py-2 text-xs font-semibold text-center border-b-2", tab === "signup" ? "border-ink text-ink" : "border-transparent text-muted-ink")}
+            onClick={() => {
+              setTab("signup");
+              setError("");
+            }}
+            className={cn(
+              "flex-1 py-2 text-xs font-semibold text-center border-b-2",
+              tab === "signup" ? "border-ink text-ink" : "border-transparent text-muted-ink",
+            )}
           >
             Sign Up (New User)
           </button>
         </div>
 
         {error && (
-          <div className="mt-3 rounded bg-clay-soft p-2.5 text-xs text-clay font-medium">{error}</div>
+          <div className="mt-3 rounded bg-clay-soft p-2.5 text-xs text-clay font-medium">
+            {error}
+          </div>
         )}
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-3">
           {tab === "signup" && (
             <>
               <div>
-                <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Full Name</label>
+                <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
+                  Full Name
+                </label>
                 <Input
                   required
                   value={name}
@@ -3091,7 +4061,9 @@ function AuthModal({
                 />
               </div>
               <div>
-                <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Role / Department</label>
+                <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
+                  Role / Department
+                </label>
                 <Input
                   value={role}
                   onChange={(e) => setRole(e.target.value)}
@@ -3103,7 +4075,9 @@ function AuthModal({
           )}
 
           <div>
-            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Email Address</label>
+            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
+              Email Address
+            </label>
             <Input
               required
               type="email"
@@ -3126,7 +4100,11 @@ function AuthModal({
             />
           </div>
 
-          <Button type="submit" disabled={loading} className="mt-4 w-full bg-ink text-card hover:bg-ink/90">
+          <Button
+            type="submit"
+            disabled={loading}
+            className="mt-4 w-full bg-ink text-card hover:bg-ink/90"
+          >
             {loading ? "Processing..." : tab === "login" ? "Sign In" : "Register Account"}
           </Button>
         </form>
@@ -3179,12 +4157,16 @@ function AddCourseModal({
       <div className="w-full max-w-md rounded-[16px] border border-line bg-card p-6 shadow-2xl animate-fade-up">
         <div className="flex items-center justify-between">
           <h2 className="font-display text-xl">Add New Course</h2>
-          <Button size="icon" variant="ghost" onClick={onClose}><X className="size-4" /></Button>
+          <Button size="icon" variant="ghost" onClick={onClose}>
+            <X className="size-4" />
+          </Button>
         </div>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-3">
           <div>
-            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Course Name</label>
+            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
+              Course Name
+            </label>
             <Input
               required
               value={name}
@@ -3195,7 +4177,9 @@ function AddCourseModal({
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Course Code</label>
+              <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
+                Course Code
+              </label>
               <Input
                 required
                 value={code}
@@ -3215,7 +4199,9 @@ function AddCourseModal({
             </div>
           </div>
           <div>
-            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Expected Students</label>
+            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
+              Expected Students
+            </label>
             <Input
               type="number"
               value={students}
@@ -3224,7 +4210,11 @@ function AddCourseModal({
             />
           </div>
 
-          <Button type="submit" disabled={submitting} className="mt-4 w-full bg-ink text-card hover:bg-ink/90">
+          <Button
+            type="submit"
+            disabled={submitting}
+            className="mt-4 w-full bg-ink text-card hover:bg-ink/90"
+          >
             {submitting ? "Saving..." : "Create Course"}
           </Button>
         </form>
@@ -3273,12 +4263,16 @@ function AddAssignmentModal({
       <div className="w-full max-w-lg rounded-[16px] border border-line bg-card p-6 shadow-2xl animate-fade-up max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between">
           <h2 className="font-display text-xl">Create Assignment & Benchmark</h2>
-          <Button size="icon" variant="ghost" onClick={onClose}><X className="size-4" /></Button>
+          <Button size="icon" variant="ghost" onClick={onClose}>
+            <X className="size-4" />
+          </Button>
         </div>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-3">
           <div>
-            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Assignment Title</label>
+            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
+              Assignment Title
+            </label>
             <Input
               required
               value={title}
@@ -3288,7 +4282,9 @@ function AddAssignmentModal({
             />
           </div>
           <div>
-            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Instructions / Prompt</label>
+            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
+              Instructions / Prompt
+            </label>
             <Textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -3298,7 +4294,9 @@ function AddAssignmentModal({
             />
           </div>
           <div>
-            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Maximum Score</label>
+            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
+              Maximum Score
+            </label>
             <Input
               type="number"
               value={maxScore}
@@ -3314,7 +4312,8 @@ function AddAssignmentModal({
               <span className="text-[10px] text-sage">AI Benchmark</span>
             </div>
             <p className="mt-0.5 text-[11px] text-muted-ink">
-              Paste the exemplar solution or reference code. The AI grading engine will benchmark student accuracy and technical depth against this text.
+              Paste the exemplar solution or reference code. The AI grading engine will benchmark
+              student accuracy and technical depth against this text.
             </p>
             <Textarea
               value={referenceText}
@@ -3325,7 +4324,11 @@ function AddAssignmentModal({
             />
           </div>
 
-          <Button type="submit" disabled={submitting} className="mt-4 w-full bg-ink text-card hover:bg-ink/90">
+          <Button
+            type="submit"
+            disabled={submitting}
+            className="mt-4 w-full bg-ink text-card hover:bg-ink/90"
+          >
             {submitting ? "Creating..." : "Save Assignment & Exemplar"}
           </Button>
         </form>
@@ -3374,12 +4377,16 @@ function ManualSubmissionModal({
       <div className="w-full max-w-lg rounded-[16px] border border-line bg-card p-6 shadow-2xl animate-fade-up max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between">
           <h2 className="font-display text-xl">Direct Student Submission Input</h2>
-          <Button size="icon" variant="ghost" onClick={onClose}><X className="size-4" /></Button>
+          <Button size="icon" variant="ghost" onClick={onClose}>
+            <X className="size-4" />
+          </Button>
         </div>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-3">
           <div>
-            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Student Full Name</label>
+            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
+              Student Full Name
+            </label>
             <Input
               required
               value={studentName}
@@ -3390,7 +4397,9 @@ function ManualSubmissionModal({
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Roll / Student ID</label>
+              <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
+                Roll / Student ID
+              </label>
               <Input
                 required
                 value={studentRoll}
@@ -3400,7 +4409,9 @@ function ManualSubmissionModal({
               />
             </div>
             <div>
-              <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Student Email</label>
+              <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
+                Student Email
+              </label>
               <Input
                 type="email"
                 value={studentEmail}
@@ -3424,7 +4435,11 @@ function ManualSubmissionModal({
             />
           </div>
 
-          <Button type="submit" disabled={submitting} className="mt-4 w-full bg-ink text-card hover:bg-ink/90">
+          <Button
+            type="submit"
+            disabled={submitting}
+            className="mt-4 w-full bg-ink text-card hover:bg-ink/90"
+          >
             {submitting ? "Saving..." : "Register Submission"}
           </Button>
         </form>
@@ -3473,12 +4488,16 @@ function EditAssignmentModal({
       <div className="w-full max-w-lg rounded-[16px] border border-line bg-card p-6 shadow-2xl animate-fade-up max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between">
           <h2 className="font-display text-xl">Edit Assignment & Benchmark Exemplar</h2>
-          <Button size="icon" variant="ghost" onClick={onClose}><X className="size-4" /></Button>
+          <Button size="icon" variant="ghost" onClick={onClose}>
+            <X className="size-4" />
+          </Button>
         </div>
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-3">
           <div>
-            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Assignment Title</label>
+            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
+              Assignment Title
+            </label>
             <Input
               required
               value={title}
@@ -3487,7 +4506,9 @@ function EditAssignmentModal({
             />
           </div>
           <div>
-            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Instructions / Prompt</label>
+            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
+              Instructions / Prompt
+            </label>
             <Textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -3496,7 +4517,9 @@ function EditAssignmentModal({
             />
           </div>
           <div>
-            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Maximum Score</label>
+            <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
+              Maximum Score
+            </label>
             <Input
               type="number"
               value={maxScore}
@@ -3512,7 +4535,8 @@ function EditAssignmentModal({
               <span className="text-[10px] text-sage font-medium">Active benchmark</span>
             </div>
             <p className="mt-0.5 text-[11px] text-muted-ink">
-              Paste the exemplar solution or reference code. The AI grading engine will benchmark student accuracy and technical depth against this text.
+              Paste the exemplar solution or reference code. The AI grading engine will benchmark
+              student accuracy and technical depth against this text.
             </p>
             <Textarea
               value={referenceText}
@@ -3523,7 +4547,11 @@ function EditAssignmentModal({
             />
           </div>
 
-          <Button type="submit" disabled={submitting} className="mt-4 w-full bg-ink text-card hover:bg-ink/90">
+          <Button
+            type="submit"
+            disabled={submitting}
+            className="mt-4 w-full bg-ink text-card hover:bg-ink/90"
+          >
             {submitting ? "Updating..." : "Save Changes & Benchmark"}
           </Button>
         </form>

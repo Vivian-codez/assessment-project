@@ -20,8 +20,14 @@ class Submission(Base):
 
     # Alphanumeric unique identifier for submission acting as primary key
     id = Column(String(64), primary_key=True, index=True)
-    # Foreign key referencing parent assignment (cascades deletions when assignment is deleted)
-    assignment_id = Column(String(64), ForeignKey("assignments.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Optional foreign key referencing parent assignment (cascades deletions when assignment is deleted)
+    assignment_id = Column(String(64), ForeignKey("assignments.id", ondelete="CASCADE"), nullable=True, index=True)
+
+    # Optional assignment folder identifier foreign association for multi-tenant evaluation pipeline
+    folder_id = Column(String(64), ForeignKey("assignment_folders.id", ondelete="CASCADE"), nullable=True, index=True)
+
+    # Student identifier (e.g., student ID, email, or institutional roll number)
+    student_identifier = Column(String(255), nullable=True, index=True)
 
     # Optional classroom identifier foreign association
     classroom_id = Column(String(64), ForeignKey("classrooms.id", ondelete="SET NULL"), nullable=True, index=True)
@@ -38,7 +44,7 @@ class Submission(Base):
 
     # File and Submission Metadata
     # Original filename of the uploaded student submission document
-    file_name = Column(String(255), nullable=False)
+    file_name = Column(String(255), nullable=True, default="submission.txt")
     # Storage filesystem relative or absolute path on disk
     file_path = Column(String(512), nullable=True)
     # Public or signed download URL for client frontend access
@@ -51,6 +57,9 @@ class Submission(Base):
     content = Column(Text, nullable=True)  # Raw text or extracted text alias for database
     # Raw file content (plaintext code or base64 binary) stored directly in database
     file_content = Column(Text, nullable=True)  # Raw file content (text or base64) stored directly in database
+
+    # Multi-tenant evaluation pipeline status: 'unprocessed', 'processing', 'completed', 'deferred', 'quota_deferred'
+    evaluation_status = Column(String(32), default="unprocessed", index=True)
 
     # Plagiarism / Similarity & AI Indicators
     # Highest percentage similarity score found with any other peer submission

@@ -82,7 +82,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "description", content: "AI-assisted grading and similarity review for teachers." },
       { name: "author", content: "Verism AI" },
       { property: "og:title", content: "Verism AI — Teacher Review Console" },
-      { property: "og:description", content: "AI-assisted grading and similarity review for teachers." },
+      {
+        property: "og:description",
+        content: "AI-assisted grading and similarity review for teachers.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
       { name: "twitter:site", content: "@Lovable" },

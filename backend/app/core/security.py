@@ -177,71 +177,115 @@ ferpa_cipher = FerpaEncryptionHandler()
 
 # --- Authentication & Password Hashing ---
 
+# Import bcrypt library for password hashing and verification
 import bcrypt
+# Import jwt module and JWTError exception from python-jose for JWT token creation and decoding
 from jose import jwt, JWTError
+# Import OAuth2PasswordBearer security scheme from FastAPI
 from fastapi.security import OAuth2PasswordBearer
 
+# Algorithm specification constant for signing JWT tokens with HMAC-SHA256
 ALGORITHM = "HS256"
+# Instantiate OAuth2 password bearer token extractor with login URL
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False)
 
 
 # Function validating a plaintext password against bcrypt or legacy salted hash
 def verify_password(plain_password: str, hashed_password: str) -> bool:
+    # Function docstring explaining password verification
     """Verifies a password against bcrypt hash or legacy PBKDF2 hash."""
+    # Check if hashed_password is empty or None
     if not hashed_password:
+        # Return False when no hash exists
         return False
-    # Check for bcrypt format ($2b$, $2a$, $2y$)
+    # Check for bcrypt format prefix ($2b$, $2a$, $2y$)
     if hashed_password.startswith("$2"):
+        # Wrap bcrypt verification in try block to catch byte decoding errors
         try:
+            # Verify plaintext password against bcrypt hash using constant-time comparison
             return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+        # Catch exceptions during bcrypt verification
         except Exception:
+            # Return False on verification failure
             return False
-    # Check for PBKDF2 legacy format
+    # Check for PBKDF2 legacy format containing dollar sign separators
     if "$" in hashed_password and hashed_password.startswith("pbkdf2_sha256$"):
+        # Split legacy hash string by dollar sign delimiters
         parts = hashed_password.split("$")
+        # Ensure legacy hash contains three parts: algorithm, salt, and digest
         if len(parts) == 3:
+            # Extract cryptographic salt string
             salt = parts[1]
+            # Extract expected hex-encoded hash digest
             expected_hash = parts[2]
+            # Compute PBKDF2-HMAC-SHA256 hash using 100,000 iterations
             computed_hash = hashlib.pbkdf2_hmac("sha256", plain_password.encode("utf-8"), salt.encode("utf-8"), 100000).hex()
+            # Compare computed hash with expected hash in constant time
             return hmac.compare_digest(computed_hash, expected_hash)
+    # Return False if hash matches neither bcrypt nor supported legacy formats
     return False
 
 
 # Function generating a bcrypt password hash for new user accounts
 def get_password_hash(password: str) -> str:
+    # Function docstring explaining password hash generation
     """Generates bcrypt password hash with rounds=12."""
+    # Generate random salt with cost factor of 12 rounds
     salt = bcrypt.gensalt(rounds=12)
+    # Hash password bytes with generated salt and decode to UTF-8 string
     return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
 
 
 # Function generating a signed JWT Bearer access token for authenticated client sessions
 def create_access_token(data: Union[dict, str, Any], expires_delta: Optional[timedelta] = None) -> str:
+    # Function docstring explaining token creation
     """Creates a signed JWT access token using python-jose and HS256."""
+    # Check if input data is a dictionary of claims
     if isinstance(data, dict):
+        # Create shallow copy of claims dictionary to avoid mutating input
         to_encode = data.copy()
+    # Otherwise treat input as subject identifier string
     else:
+        # Wrap subject identifier in claims dictionary under sub key
         to_encode = {"sub": str(data)}
 
+    # Get current UTC timestamp
     now = datetime.now(timezone.utc)
+    # Check if custom expiration delta was provided
     if expires_delta:
+        # Calculate expiration timestamp using custom delta
         expire = now + expires_delta
+    # Otherwise apply default configured token expiration minutes
     else:
+        # Calculate expiration timestamp using application settings
         expire = now + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
 
+    # Add expiration timestamp and issued-at timestamp to claims dictionary
     to_encode.update({"exp": expire, "iat": now})
+    # Sign and encode JWT token using application secret key and HS256 algorithm
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=ALGORITHM)
 
 
 # Function verifying and decoding a JWT Bearer token into its claims dictionary
 def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
+    # Function docstring explaining token decoding
     """Decodes and verifies a JWT token."""
+    # Wrap decoding in try block to catch signature verification and expiration errors
     try:
+        # Decode and verify JWT token signature and claims using secret key
         return jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+    # Catch JWT errors and expired token exceptions
     except Exception:
+        # Return None when token is invalid or expired
         return None
 
 
+# Authentication dependency proxy resolving current user from token
 def get_current_user(*args, **kwargs):
+    # Function docstring explaining dependency behavior
     """Authentication dependency to protect authenticated routes."""
+    # Lazy import get_current_user from auth router to prevent circular dependencies
     from app.api.v1.auth import get_current_user as _get_current_user
+    # Invoke and return current user dependency resolution
     return _get_current_user(*args, **kwargs)
+

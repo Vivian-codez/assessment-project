@@ -21,6 +21,18 @@ from app.schemas.job import BatchEvaluationRequest, BatchJobResponse
 from app.schemas.gradebook import GradebookEntryResponse, GradebookResponse
 # Import analytics and export report models from the report schema module
 from app.schemas.report import ReportResponse
+# Import multi-tenant evaluation schemas
+from app.schemas.tenant_evaluation import (
+    EvaluationOutput,
+    AssignmentFolderCreate,
+    AssignmentFolderUpdate,
+    AssignmentFolderResponse,
+    FolderSubmissionCreate,
+    FolderSubmissionResponse,
+    EvaluationResultResponse,
+    MonthlyUsageResponse,
+    EvaluateFolderResponse,
+)
 
 # Define the explicit list of symbols exported when importing from the schemas package
 __all__ = [
@@ -84,4 +96,14 @@ __all__ = [
     "GradebookResponse",
     # Export summary report response schema
     "ReportResponse",
+    # Multi-tenant evaluation schemas
+    "EvaluationOutput",
+    "AssignmentFolderCreate",
+    "AssignmentFolderUpdate",
+    "AssignmentFolderResponse",
+    "FolderSubmissionCreate",
+    "FolderSubmissionResponse",
+    "EvaluationResultResponse",
+    "MonthlyUsageResponse",
+    "EvaluateFolderResponse",
 ]

@@ -89,7 +89,9 @@ export function AssignmentBatchUploadRoute() {
   const [submissions, setSubmissions] = useState<SubmissionItem[]>([]);
   const [unmatchedItems, setUnmatchedItems] = useState<ClassroomBatchUploadItem[]>([]);
   const [searchFilter, setSearchFilter] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "unmatched" | "flagged" | "completed">("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | "unmatched" | "flagged" | "completed">(
+    "all",
+  );
   const [expandedSubId, setExpandedSubId] = useState<string | null>(null);
   const [resolvingStudentId, setResolvingStudentId] = useState<Record<string, string>>({});
   const [overrideScores, setOverrideScores] = useState<Record<string, number>>({});
@@ -124,7 +126,7 @@ export function AssignmentBatchUploadRoute() {
           let targetClassroomId = "";
           if (assignData?.course_id && clList.some((c) => c.id === assignData.course_id)) {
             targetClassroomId = assignData.course_id;
-          } else if (clList.length > 0) {
+          } else if (clList.length > 0 && clList[0]) {
             targetClassroomId = clList[0].id;
           }
           setSelectedClassroomId(targetClassroomId);
@@ -139,7 +141,7 @@ export function AssignmentBatchUploadRoute() {
               setRubrics(rbList);
               if (assignData?.rubric_id) {
                 setSelectedRubricId(assignData.rubric_id);
-              } else if (rbList.length > 0) {
+              } else if (rbList.length > 0 && rbList[0]) {
                 setSelectedRubricId(rbList[0].id);
               }
             }
@@ -180,7 +182,7 @@ export function AssignmentBatchUploadRoute() {
         if (isMounted) {
           setStudents(stList);
           setRubrics(rbList);
-          if (rbList.length > 0 && !selectedRubricId) {
+          if (rbList.length > 0 && rbList[0] && !selectedRubricId) {
             setSelectedRubricId(rbList[0].id);
           }
         }
@@ -249,7 +251,7 @@ export function AssignmentBatchUploadRoute() {
           await refreshSubmissions();
         } else if (res.status === "FAILURE") {
           if (pollTimerRef.current) clearInterval(pollTimerRef.current);
-          setPollError(res.details?.error || "Evaluation job encountered an error");
+          setPollError(res.details?.["error"] || "Evaluation job encountered an error");
           showToast("Job finished with warnings. Reviewing completed drafts.");
           setStage("review");
           await refreshSubmissions();
@@ -282,12 +284,13 @@ export function AssignmentBatchUploadRoute() {
       setStage("uploading");
       showToast("Uploading payload and matching student roll numbers...");
 
-      const payload = selectedFiles.length === 1 ? selectedFiles[0] : selectedFiles;
+      const payload =
+        selectedFiles.length === 1 && selectedFiles[0] ? selectedFiles[0] : selectedFiles;
       const resp = await api.submissions.batchUploadClassroom(
         selectedClassroomId,
         assignmentId,
         payload,
-        selectedRubricId || undefined
+        selectedRubricId || undefined,
       );
 
       setBatchJobId(resp.batch_job_id);
@@ -361,12 +364,20 @@ export function AssignmentBatchUploadRoute() {
     return true;
   });
 
-  const unmatchedCount = submissions.filter((s) => s.status === "unmatched" || !s.student_id).length;
-  const flaggedCount = submissions.filter((s) => s.similarity > 0.75 || s.status === "flagged").length;
-  const completedCount = submissions.filter((s) => s.status === "completed" || s.status === "approved").length;
+  const unmatchedCount = submissions.filter(
+    (s) => s.status === "unmatched" || !s.student_id,
+  ).length;
+  const flaggedCount = submissions.filter(
+    (s) => s.similarity > 0.75 || s.status === "flagged",
+  ).length;
+  const completedCount = submissions.filter(
+    (s) => s.status === "completed" || s.status === "approved",
+  ).length;
   const avgScore =
     submissions.length > 0
-      ? (submissions.reduce((acc, curr) => acc + (curr.score || 0), 0) / submissions.length).toFixed(1)
+      ? (
+          submissions.reduce((acc, curr) => acc + (curr.score || 0), 0) / submissions.length
+        ).toFixed(1)
       : "0.0";
 
   return (
@@ -444,7 +455,9 @@ export function AssignmentBatchUploadRoute() {
               1
             </div>
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Step 1</p>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                Step 1
+              </p>
               <p className="text-sm font-medium">Batch Ingestion</p>
             </div>
           </div>
@@ -460,7 +473,9 @@ export function AssignmentBatchUploadRoute() {
               2
             </div>
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Step 2</p>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                Step 2
+              </p>
               <p className="text-sm font-medium">Roll Matching & Qdrant</p>
             </div>
           </div>
@@ -476,7 +491,9 @@ export function AssignmentBatchUploadRoute() {
               3
             </div>
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Step 3</p>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                Step 3
+              </p>
               <p className="text-sm font-medium">Gemini 2.5 Rubric Eval</p>
             </div>
           </div>
@@ -492,7 +509,9 @@ export function AssignmentBatchUploadRoute() {
               4
             </div>
             <div>
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Step 4</p>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                Step 4
+              </p>
               <p className="text-sm font-medium">Instructor Stamp</p>
             </div>
           </div>
@@ -508,8 +527,9 @@ export function AssignmentBatchUploadRoute() {
                   <span>Batch Assignment Ingestion</span>
                 </h2>
                 <p className="text-sm text-slate-400 mt-1">
-                  Upload a ZIP archive or multi-file payload containing student submissions. The backend will parse roll numbers,
-                  resolve enrolled students in database roster, and stream evaluations through Celery and Gemini.
+                  Upload a ZIP archive or multi-file payload containing student submissions. The
+                  backend will parse roll numbers, resolve enrolled students in database roster, and
+                  stream evaluations through Celery and Gemini.
                 </p>
               </div>
 
@@ -547,7 +567,8 @@ export function AssignmentBatchUploadRoute() {
                     <option value="">Default Criterion Matrix</option>
                     {rubrics.map((r) => (
                       <option key={r.id} value={r.id}>
-                        {r.title || r.name} ({r.criteria.length} criteria, {r.total_marks || r.total_max_score} pts)
+                        {r.title || r.name} ({r.criteria.length} criteria,{" "}
+                        {r.total_marks || r.total_max_score} pts)
                       </option>
                     ))}
                   </select>
@@ -564,8 +585,8 @@ export function AssignmentBatchUploadRoute() {
                   isDragging
                     ? "border-teal-400 bg-teal-500/10 shadow-lg shadow-teal-500/10 scale-[1.01]"
                     : selectedFiles.length > 0
-                    ? "border-teal-500/40 bg-slate-800/40"
-                    : "border-slate-700/80 bg-slate-800/20 hover:border-slate-600 hover:bg-slate-800/30"
+                      ? "border-teal-500/40 bg-slate-800/40"
+                      : "border-slate-700/80 bg-slate-800/20 hover:border-slate-600 hover:bg-slate-800/30"
                 }`}
               >
                 <input
@@ -617,7 +638,9 @@ export function AssignmentBatchUploadRoute() {
                     </div>
                     <div>
                       <p className="text-base font-semibold text-teal-300">
-                        {selectedFiles.length === 1 ? selectedFiles[0].name : `${selectedFiles.length} files selected`}
+                        {selectedFiles.length === 1 && selectedFiles[0]
+                          ? selectedFiles[0].name
+                          : `${selectedFiles.length} files selected`}
                       </p>
                       <p className="text-xs text-slate-400 mt-1">
                         Total size:{" "}
@@ -699,8 +722,9 @@ export function AssignmentBatchUploadRoute() {
                   <span>Evaluating Submissions in Background</span>
                 </h2>
                 <p className="text-sm text-slate-400 mt-1">
-                  Worker task <code className="text-teal-300 font-mono text-xs">{batchJobId}</code> is generating
-                  embeddings, querying Qdrant peer cosine similarity, and calling Gemini 2.5 Flash with strict rubric criteria.
+                  Worker task <code className="text-teal-300 font-mono text-xs">{batchJobId}</code>{" "}
+                  is generating embeddings, querying Qdrant peer cosine similarity, and calling
+                  Gemini 2.5 Flash with strict rubric criteria.
                 </p>
               </div>
               <div className="text-right">
@@ -708,7 +732,9 @@ export function AssignmentBatchUploadRoute() {
                   {jobStatus ? `${jobStatus.percent}%` : "0%"}
                 </p>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  {jobStatus ? `${jobStatus.current} of ${jobStatus.total} evaluated` : "Initializing worker..."}
+                  {jobStatus
+                    ? `${jobStatus.current} of ${jobStatus.total} evaluated`
+                    : "Initializing worker..."}
                 </p>
               </div>
             </div>
@@ -762,7 +788,9 @@ export function AssignmentBatchUploadRoute() {
             {/* Overview Metric Banner */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <div className="bg-slate-900/80 border border-slate-800 p-5 rounded-2xl">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Submissions</p>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                  Total Submissions
+                </p>
                 <p className="text-2xl font-bold text-slate-100 mt-1">{submissions.length}</p>
                 <p className="text-xs text-teal-400 mt-1 flex items-center gap-1">
                   <CheckCircle2 className="size-3.5" />
@@ -771,20 +799,28 @@ export function AssignmentBatchUploadRoute() {
               </div>
 
               <div className="bg-slate-900/80 border border-slate-800 p-5 rounded-2xl">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Average Score</p>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                  Average Score
+                </p>
                 <p className="text-2xl font-bold text-teal-300 mt-1">{avgScore} / 100</p>
                 <p className="text-xs text-slate-400 mt-1">Rubric benchmarked</p>
               </div>
 
               <div className="bg-slate-900/80 border border-slate-800 p-5 rounded-2xl">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Peer Plagiarism Flags</p>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                  Peer Plagiarism Flags
+                </p>
                 <p className="text-2xl font-bold text-amber-300 mt-1">{flaggedCount}</p>
                 <p className="text-xs text-slate-400 mt-1">&gt;75% Qdrant vector match</p>
               </div>
 
               <div className="bg-slate-900/80 border border-slate-800 p-5 rounded-2xl">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Unmatched Files</p>
-                <p className={`text-2xl font-bold mt-1 ${unmatchedCount > 0 ? "text-red-400" : "text-emerald-400"}`}>
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                  Unmatched Files
+                </p>
+                <p
+                  className={`text-2xl font-bold mt-1 ${unmatchedCount > 0 ? "text-red-400" : "text-emerald-400"}`}
+                >
                   {unmatchedCount}
                 </p>
                 <p className="text-xs text-slate-400 mt-1">
@@ -803,8 +839,8 @@ export function AssignmentBatchUploadRoute() {
                       {unmatchedCount} Unmatched Submission(s) Require Manual Roster Assignment
                     </h3>
                     <p className="text-xs text-amber-300/80 mt-0.5">
-                      The filename roll number did not match any enrolled student in this classroom. Select an enrolled
-                      student from the dropdown to assign the submission.
+                      The filename roll number did not match any enrolled student in this classroom.
+                      Select an enrolled student from the dropdown to assign the submission.
                     </p>
                   </div>
                 </div>
@@ -824,8 +860,11 @@ export function AssignmentBatchUploadRoute() {
                           <div>
                             <p className="text-sm font-semibold text-slate-100">{sub.file_name}</p>
                             <p className="text-xs text-slate-400">
-                              Detected Roll: <code className="text-amber-300 font-mono">{sub.roll}</code> • ID:{" "}
-                              <span className="font-mono text-[10px] text-slate-500">{sub.id.slice(0, 8)}...</span>
+                              Detected Roll:{" "}
+                              <code className="text-amber-300 font-mono">{sub.roll}</code> • ID:{" "}
+                              <span className="font-mono text-[10px] text-slate-500">
+                                {sub.id.slice(0, 8)}...
+                              </span>
                             </p>
                           </div>
                         </div>
@@ -850,7 +889,9 @@ export function AssignmentBatchUploadRoute() {
                           </select>
                           <Button
                             size="sm"
-                            onClick={() => handleAssignStudent(sub.id, resolvingStudentId[sub.id])}
+                            onClick={() =>
+                              handleAssignStudent(sub.id, resolvingStudentId[sub.id] || "")
+                            }
                             className="bg-amber-500 hover:bg-amber-600 text-slate-950 font-semibold text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5"
                           >
                             <UserCheck className="size-3.5" />
@@ -902,7 +943,9 @@ export function AssignmentBatchUploadRoute() {
                 <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-12 text-center">
                   <FileText className="size-10 text-slate-600 mx-auto mb-3" />
                   <p className="text-base font-semibold text-slate-300">No submissions found</p>
-                  <p className="text-xs text-slate-500 mt-1">Try adjusting your search query or status filter.</p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Try adjusting your search query or status filter.
+                  </p>
                 </div>
               ) : (
                 filteredSubmissions.map((sub) => {
@@ -918,8 +961,8 @@ export function AssignmentBatchUploadRoute() {
                         isFlagged
                           ? "border-amber-500/40 shadow-lg shadow-amber-500/5"
                           : isUnmatched
-                          ? "border-red-500/30"
-                          : "border-slate-800 hover:border-slate-700"
+                            ? "border-red-500/30"
+                            : "border-slate-800 hover:border-slate-700"
                       }`}
                     >
                       {/* Main Card Header */}
@@ -930,8 +973,8 @@ export function AssignmentBatchUploadRoute() {
                               isFlagged
                                 ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
                                 : isUnmatched
-                                ? "bg-red-500/10 text-red-400 border border-red-500/20"
-                                : "bg-teal-500/10 text-teal-400 border border-teal-500/20"
+                                  ? "bg-red-500/10 text-red-400 border border-red-500/20"
+                                  : "bg-teal-500/10 text-teal-400 border border-teal-500/20"
                             }`}
                           >
                             {sub.roll || "N/A"}
@@ -1013,7 +1056,11 @@ export function AssignmentBatchUploadRoute() {
                             onClick={() => setExpandedSubId(isExpanded ? null : sub.id)}
                             className="text-slate-300 hover:text-white p-2"
                           >
-                            {isExpanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+                            {isExpanded ? (
+                              <ChevronUp className="size-4" />
+                            ) : (
+                              <ChevronDown className="size-4" />
+                            )}
                           </Button>
                         </div>
                       </div>
@@ -1044,13 +1091,17 @@ export function AssignmentBatchUploadRoute() {
                                       </span>
                                     </div>
                                     {crit.rationale && (
-                                      <p className="text-xs text-slate-400 leading-relaxed">{crit.rationale}</p>
+                                      <p className="text-xs text-slate-400 leading-relaxed">
+                                        {crit.rationale}
+                                      </p>
                                     )}
                                   </div>
                                 ))}
                               </div>
                             ) : (
-                              <p className="text-xs text-slate-500 italic">No structured criteria saved.</p>
+                              <p className="text-xs text-slate-500 italic">
+                                No structured criteria saved.
+                              </p>
                             )}
                           </div>
 
@@ -1090,7 +1141,9 @@ export function AssignmentBatchUploadRoute() {
                             </div>
 
                             <div className="space-y-1.5 md:col-span-1">
-                              <label className="text-xs font-semibold text-slate-300">Teacher Feedback Note</label>
+                              <label className="text-xs font-semibold text-slate-300">
+                                Teacher Feedback Note
+                              </label>
                               <Input
                                 type="text"
                                 placeholder="Add custom instructor feedback..."

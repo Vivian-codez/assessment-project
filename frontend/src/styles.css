@@ -113,7 +113,7 @@
   --sage: oklch(0.65 0.12 165);
   --sage-soft: oklch(0.92 0.055 165);
   --sage-ink: oklch(0.44 0.1 168);
-  --clay: oklch(0.60 0.16 27);
+  --clay: oklch(0.6 0.16 27);
   --clay-soft: oklch(0.93 0.048 27);
   --clay-ink: oklch(0.47 0.15 27);
   --background: oklch(0.985 0.01 205);
@@ -151,59 +151,59 @@
 }
 
 .dark {
-  --paper: oklch(0.20 0.045 252);
+  --paper: oklch(0.2 0.045 252);
   --card: oklch(0.25 0.05 252);
   --ink: oklch(0.95 0.02 200);
   --muted-ink: oklch(0.76 0.03 210);
   --faint: oklch(0.62 0.03 215);
   --line: oklch(0.36 0.05 240);
-  --lav: oklch(0.80 0.12 200);
-  --lav-soft: oklch(0.30 0.06 205);
+  --lav: oklch(0.8 0.12 200);
+  --lav-soft: oklch(0.3 0.06 205);
   --lav-ink: oklch(0.85 0.09 200);
   --blue: oklch(0.78 0.13 195);
-  --blue-soft: oklch(0.30 0.06 195);
-  --blue-ink: oklch(0.85 0.10 195);
+  --blue-soft: oklch(0.3 0.06 195);
+  --blue-ink: oklch(0.85 0.1 195);
   --amber: oklch(0.78 0.13 80);
   --amber-ink: oklch(0.85 0.09 82);
-  --amber-soft: oklch(0.30 0.06 82);
+  --amber-soft: oklch(0.3 0.06 82);
   --sage: oklch(0.75 0.12 165);
-  --sage-soft: oklch(0.30 0.06 165);
+  --sage-soft: oklch(0.3 0.06 165);
   --sage-ink: oklch(0.85 0.09 165);
-  --clay: oklch(0.70 0.15 27);
+  --clay: oklch(0.7 0.15 27);
   --clay-soft: oklch(0.32 0.07 27);
   --clay-ink: oklch(0.85 0.09 27);
-  --background: oklch(0.20 0.045 252);
+  --background: oklch(0.2 0.045 252);
   --foreground: oklch(0.95 0.02 200);
   --card: oklch(0.25 0.05 252);
   --card-foreground: oklch(0.95 0.02 200);
   --popover: oklch(0.25 0.05 252);
   --popover-foreground: oklch(0.95 0.02 200);
-  --primary: oklch(0.80 0.12 200);
-  --primary-foreground: oklch(0.20 0.045 252);
+  --primary: oklch(0.8 0.12 200);
+  --primary-foreground: oklch(0.2 0.045 252);
   --secondary: oklch(0.32 0.05 250);
   --secondary-foreground: oklch(0.95 0.02 200);
   --muted: oklch(0.32 0.05 250);
   --muted-foreground: oklch(0.76 0.03 210);
   --accent: oklch(0.32 0.06 205);
   --accent-foreground: oklch(0.95 0.02 200);
-  --destructive: oklch(0.70 0.17 25);
+  --destructive: oklch(0.7 0.17 25);
   --destructive-foreground: oklch(0.95 0.02 200);
   --border: oklch(0.95 0.02 200 / 14%);
   --input: oklch(0.95 0.02 200 / 20%);
-  --ring: oklch(0.80 0.12 200);
-  --chart-1: oklch(0.80 0.12 200);
+  --ring: oklch(0.8 0.12 200);
+  --chart-1: oklch(0.8 0.12 200);
   --chart-2: oklch(0.78 0.13 195);
-  --chart-3: oklch(0.80 0.13 82);
+  --chart-3: oklch(0.8 0.13 82);
   --chart-4: oklch(0.75 0.12 165);
   --chart-5: oklch(0.72 0.15 27);
   --sidebar: oklch(0.22 0.048 252);
   --sidebar-foreground: oklch(0.95 0.02 200);
-  --sidebar-primary: oklch(0.80 0.12 200);
-  --sidebar-primary-foreground: oklch(0.20 0.045 252);
+  --sidebar-primary: oklch(0.8 0.12 200);
+  --sidebar-primary-foreground: oklch(0.2 0.045 252);
   --sidebar-accent: oklch(0.32 0.06 205);
   --sidebar-accent-foreground: oklch(0.95 0.02 200);
   --sidebar-border: oklch(0.95 0.02 200 / 14%);
-  --sidebar-ring: oklch(0.80 0.12 200);
+  --sidebar-ring: oklch(0.8 0.12 200);
 }
 
 @layer base {
@@ -218,7 +218,12 @@
     letter-spacing: 0;
   }
 
-  button, input, textarea, select { font: inherit; }
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
 
   /* Matched phrases in submissions and comparisons: brand aqua, not browser yellow. */
   mark {
@@ -231,12 +236,20 @@
 }
 
 @keyframes fade-up {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes progress-draw {
-  from { width: 0; }
+  from {
+    width: 0;
+  }
 }
 
 @utility animate-fade-up {
@@ -253,34 +266,97 @@
  * pills, chart bars, and metric dots on-palette.
  */
 @layer components {
-  .soft-lav { background-color: var(--lav-soft); }
-  .soft-blue { background-color: var(--blue-soft); }
-  .soft-amber { background-color: var(--amber-soft); }
-  .soft-sage { background-color: var(--sage-soft); }
-  .soft-clay { background-color: var(--clay-soft); }
+  .soft-lav {
+    background-color: var(--lav-soft);
+  }
+  .soft-blue {
+    background-color: var(--blue-soft);
+  }
+  .soft-amber {
+    background-color: var(--amber-soft);
+  }
+  .soft-sage {
+    background-color: var(--sage-soft);
+  }
+  .soft-clay {
+    background-color: var(--clay-soft);
+  }
 
-  .icon-lav { color: var(--lav-ink); }
-  .icon-blue { color: var(--blue-ink); }
-  .icon-amber { color: var(--amber-ink); }
-  .icon-sage { color: var(--sage-ink); }
-  .icon-clay { color: var(--clay-ink); }
+  .icon-lav {
+    color: var(--lav-ink);
+  }
+  .icon-blue {
+    color: var(--blue-ink);
+  }
+  .icon-amber {
+    color: var(--amber-ink);
+  }
+  .icon-sage {
+    color: var(--sage-ink);
+  }
+  .icon-clay {
+    color: var(--clay-ink);
+  }
 
-  .tone-neutral { background-color: var(--line); color: var(--muted-ink); }
-  .tone-lav { background-color: var(--lav-soft); color: var(--lav-ink); }
-  .tone-blue { background-color: var(--blue-soft); color: var(--blue-ink); }
-  .tone-amber { background-color: var(--amber-soft); color: var(--amber-ink); }
-  .tone-sage { background-color: var(--sage-soft); color: var(--sage-ink); }
-  .tone-clay { background-color: var(--clay-soft); color: var(--clay-ink); }
+  .tone-neutral {
+    background-color: var(--line);
+    color: var(--muted-ink);
+  }
+  .tone-lav {
+    background-color: var(--lav-soft);
+    color: var(--lav-ink);
+  }
+  .tone-blue {
+    background-color: var(--blue-soft);
+    color: var(--blue-ink);
+  }
+  .tone-amber {
+    background-color: var(--amber-soft);
+    color: var(--amber-ink);
+  }
+  .tone-sage {
+    background-color: var(--sage-soft);
+    color: var(--sage-ink);
+  }
+  .tone-clay {
+    background-color: var(--clay-soft);
+    color: var(--clay-ink);
+  }
 
-  .chart-lav, .bar-lav { background-color: var(--lav); }
-  .chart-blue, .bar-blue { background-color: var(--blue); }
-  .chart-amber, .bar-amber { background-color: var(--amber); }
-  .chart-sage, .bar-sage { background-color: var(--sage); }
-  .chart-clay, .bar-clay { background-color: var(--clay); }
+  .chart-lav,
+  .bar-lav {
+    background-color: var(--lav);
+  }
+  .chart-blue,
+  .bar-blue {
+    background-color: var(--blue);
+  }
+  .chart-amber,
+  .bar-amber {
+    background-color: var(--amber);
+  }
+  .chart-sage,
+  .bar-sage {
+    background-color: var(--sage);
+  }
+  .chart-clay,
+  .bar-clay {
+    background-color: var(--clay);
+  }
 
-  .dot-lav { background-color: var(--lav); }
-  .dot-blue { background-color: var(--blue); }
-  .dot-amber { background-color: var(--amber); }
-  .dot-sage { background-color: var(--sage); }
-  .dot-clay { background-color: var(--clay); }
+  .dot-lav {
+    background-color: var(--lav);
+  }
+  .dot-blue {
+    background-color: var(--blue);
+  }
+  .dot-amber {
+    background-color: var(--amber);
+  }
+  .dot-sage {
+    background-color: var(--sage);
+  }
+  .dot-clay {
+    background-color: var(--clay);
+  }
 }

@@ -566,3 +566,60 @@ CREATE TABLE IF NOT EXISTS public.file_storage (
     -- UTC timestamp when the file asset was written to disk and cataloged
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+
+-- ==============================================================================
+-- SECTION 18: Multi-Tenant AI Assignment Evaluation Pipeline
+-- Assignment folders, evaluation results, and monthly quota tracking
+-- ==============================================================================
+
+-- Create assignment folders table
+CREATE TABLE IF NOT EXISTS public.assignment_folders (
+    id VARCHAR(64) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    user_id VARCHAR(64) NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    title VARCHAR(255) NOT NULL,
+    rubric_text TEXT NOT NULL,
+    status VARCHAR(32) DEFAULT 'pending' NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_assignment_folders_user ON public.assignment_folders(user_id);
+CREATE INDEX IF NOT EXISTS idx_assignment_folders_status ON public.assignment_folders(status);
+
+-- Create folder submissions table for multi-tenant assignment pipeline
+CREATE TABLE IF NOT EXISTS public.folder_submissions (
+    id VARCHAR(64) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    folder_id VARCHAR(64) NOT NULL REFERENCES public.assignment_folders(id) ON DELETE CASCADE,
+    student_identifier VARCHAR(255),
+    file_path VARCHAR(512),
+    extracted_text TEXT,
+    evaluation_status VARCHAR(32) DEFAULT 'unprocessed' NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_folder_submissions_folder ON public.folder_submissions(folder_id);
+CREATE INDEX IF NOT EXISTS idx_folder_submissions_student ON public.folder_submissions(student_identifier);
+CREATE INDEX IF NOT EXISTS idx_folder_submissions_status ON public.folder_submissions(evaluation_status);
+
+-- Create evaluation results table
+CREATE TABLE IF NOT EXISTS public.evaluation_results (
+    id VARCHAR(64) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    submission_id VARCHAR(64) NOT NULL UNIQUE REFERENCES public.folder_submissions(id) ON DELETE CASCADE,
+    score NUMERIC(5,2) NOT NULL,
+    feedback_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+    evaluated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_evaluation_results_sub ON public.evaluation_results(submission_id);
+
+-- Create monthly usages table
+CREATE TABLE IF NOT EXISTS public.monthly_usages (
+    id VARCHAR(64) PRIMARY KEY DEFAULT gen_random_uuid()::text,
+    user_id VARCHAR(64) NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    billing_month VARCHAR(7) NOT NULL,
+    submissions_evaluated INT DEFAULT 0 NOT NULL,
+    token_count BIGINT DEFAULT 0 NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT uq_user_billing_month UNIQUE (user_id, billing_month)
+);
+CREATE INDEX IF NOT EXISTS idx_monthly_usages_user_month ON public.monthly_usages(user_id, billing_month);
+

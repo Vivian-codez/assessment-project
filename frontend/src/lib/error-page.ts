@@ -1,4 +1,6 @@
+// Export function to render a standalone fallback HTML error page string
 export function renderErrorPage(): string {
+  // Return complete responsive HTML template with inline styles and user action buttons
   return `<!doctype html>
 <html lang="en">
   <head>

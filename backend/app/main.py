@@ -7,26 +7,46 @@ Configures:
 - Health checks and system diagnostics
 """
 
-# Import asynchronous context manager decorator to handle FastAPI application lifespan events
 from contextlib import asynccontextmanager
-# Import FastAPI core application class
 from fastapi import FastAPI
-# Import Cross-Origin Resource Sharing (CORS) middleware to allow browser frontend communication
 from fastapi.middleware.cors import CORSMiddleware
-# Import JSONResponse utility for returning structured JSON payloads
 from fastapi.responses import JSONResponse
 
-# Import global application configuration settings
 from app.core.config import settings
-# Import SQLAlchemy database engine and declarative Base for table schema creation
-from app.core.database import engine, Base
-# Import application logger for runtime event tracking
+from app.core.database import engine, Base, check_db_health, TRANSIENT_DB_EXCEPTIONS
 from app.core.logging import logger
-# Import API version 1 aggregated router containing all domain endpoints
 from app.api.v1.api_router import api_v1_router
-# Import models to ensure they register on Base
-# Import all database models so their table schemas attach to Base.metadata before create_all
+from app.api.health import router as health_router, db_health_check
 import app.models  # noqa
+
+
+class DatabaseResilienceMiddleware:
+    """Pure ASGI middleware catching transient database connection drops and logging reconnection events."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        try:
+            await self.app(scope, receive, send)
+        except TRANSIENT_DB_EXCEPTIONS as exc:
+            logger.error(
+                f"[DB-DROPPED] Database connection dropped during request {scope.get('method')} {scope.get('path')}: {exc}"
+            )
+            response = JSONResponse(
+                status_code=503,
+                content={
+                    "error": "Database connection drop detected",
+                    "detail": "Transient connection reset or severed socket. Connection pool is auto-reconnecting.",
+                    "status": "reconnecting",
+                },
+                headers={"Retry-After": "1"},
+            )
+            await response(scope, receive, send)
 
 
 # Define asynchronous lifespan context manager managing application startup and shutdown hooks
@@ -69,6 +89,12 @@ async def lifespan(app: FastAPI):
                 "ALTER TABLE submissions ADD COLUMN classroom_id TEXT;",
                 # Add student identifier association column to submissions table
                 "ALTER TABLE submissions ADD COLUMN student_id TEXT;",
+                # Add folder identifier association column to submissions table for multi-tenant pipeline
+                "ALTER TABLE submissions ADD COLUMN folder_id VARCHAR(64);",
+                # Add student identifier string column to submissions table
+                "ALTER TABLE submissions ADD COLUMN student_identifier VARCHAR(255);",
+                # Add evaluation status column to submissions table
+                "ALTER TABLE submissions ADD COLUMN evaluation_status VARCHAR(32) DEFAULT 'unprocessed';",
                 # Add calculated total score column to draft grades table
                 "ALTER TABLE draft_grades ADD COLUMN total_score REAL;",
                 # Add maximum possible score column with default 100.0 to draft grades table
@@ -153,6 +179,9 @@ if isinstance(cors_origins, str):
 # Combine built-in origins with configured settings origins, removing duplicate entries
 combined_origins = list(dict.fromkeys(origins + (cors_origins or [])))
 
+# Add Database Resilience Middleware to catch transient connection drops
+app.add_middleware(DatabaseResilienceMiddleware)
+
 # Add CORS middleware to the FastAPI application pipeline
 app.add_middleware(
     # Specify the CORSMiddleware class
@@ -178,6 +207,11 @@ app.include_router(api_v1_router, prefix="/api")
 # Register API v1 router at root for backward compatibility
 app.include_router(api_v1_router)
 
+# Mount health diagnostic router
+app.include_router(health_router, prefix=settings.API_V1_STR)
+app.include_router(health_router, prefix="/api")
+app.include_router(health_router)
+
 
 # Root health probe endpoint returning service metadata
 @app.get("/", tags=["Health"])
@@ -196,6 +230,14 @@ def root():
         # Teacher-in-the-loop philosophy motto
         "philosophy": "AI suggests. You stamp. Every grade waits for your approval.",
     }
+
+
+# Live database health probe endpoint with latency and pool status
+@app.get("/api/health/db", tags=["Health"])
+@app.get("/health/db", tags=["Health"])
+def health_db():
+    """Live database connectivity probe returning latency and pool status."""
+    return db_health_check()
 
 
 # Health diagnostic endpoint returning system status and component checks

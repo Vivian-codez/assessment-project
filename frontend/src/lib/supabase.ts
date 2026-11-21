@@ -71,10 +71,16 @@ class _NoOpClient {
   // Chainable table method returning a proxy query builder
   table(_name: string) {
     // Create a recursive JavaScript Proxy to absorb method chains (select, eq, order, etc.)
-    const chain: any = new Proxy({}, {
-      // Dynamic getter returning a function that returns the proxy chain
-      get: (_target, _prop) => (..._args: unknown[]) => chain,
-    });
+    const chain: any = new Proxy(
+      {},
+      {
+        // Dynamic getter returning a function that returns the proxy chain
+        get:
+          (_target, _prop) =>
+          (..._args: unknown[]) =>
+            chain,
+      },
+    );
     // Terminal execute method returning empty data array
     chain.execute = async () => ({ data: [], error: null });
     // Return proxy chain instance
@@ -91,33 +97,33 @@ let _client: any;
 
 // Check if cloud Supabase is requested via environment configuration
 if (_useSupabase) {
-    // Attempt dynamic import to avoid bundling supabase-js when not needed
-    try {
-      // Dynamically import createClient from @supabase/supabase-js package
-      const { createClient } = await import("@supabase/supabase-js");
-      // Instantiate real Supabase client with auto-refresh and session persistence
-      _client = createClient(_supabaseUrl, _supabaseAnonKey, {
-        // Configure authentication options
-        auth: {
-          // Persist user session to localStorage
-          persistSession: true,
-          // Automatically refresh expired session tokens
-          autoRefreshToken: true,
-          // Detect incoming OAuth or magic-link tokens in URL hash
-          detectSessionInUrl: true,
-        },
-      });
+  // Attempt dynamic import to avoid bundling supabase-js when not needed
+  try {
+    // Dynamically import createClient from @supabase/supabase-js package
+    const { createClient } = await import("@supabase/supabase-js");
+    // Instantiate real Supabase client with auto-refresh and session persistence
+    _client = createClient(_supabaseUrl, _supabaseAnonKey, {
+      // Configure authentication options
+      auth: {
+        // Persist user session to localStorage
+        persistSession: true,
+        // Automatically refresh expired session tokens
+        autoRefreshToken: true,
+        // Detect incoming OAuth or magic-link tokens in URL hash
+        detectSessionInUrl: true,
+      },
+    });
     // Catch module resolution or network initialization errors
-    } catch {
-      // Log warning when SDK cannot be loaded
-      console.warn("[supabase] @supabase/supabase-js not available – using no-op stub.");
-      // Fallback to local no-op client stub
-      _client = new _NoOpClient();
-    }
-// If USE_SUPABASE is false, instantiate the local no-op stub directly
-} else {
-    // Instantiate local no-op client stub
+  } catch {
+    // Log warning when SDK cannot be loaded
+    console.warn("[supabase] @supabase/supabase-js not available – using no-op stub.");
+    // Fallback to local no-op client stub
     _client = new _NoOpClient();
+  }
+  // If USE_SUPABASE is false, instantiate the local no-op stub directly
+} else {
+  // Instantiate local no-op client stub
+  _client = new _NoOpClient();
 }
 
 /** Exported Supabase client (active SDK or lightweight local stub). */

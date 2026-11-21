@@ -22,7 +22,8 @@ from app.core.config import settings
 
 # Export app ASGI callable for uvicorn/gunicorn
 # Declare the public ASGI interface for WSGI/ASGI application servers
-__all__ = ["app"]
+application = app
+__all__ = ["app", "application"]
 
 # Check if this script is being executed directly rather than imported as a library
 if __name__ == "__main__":

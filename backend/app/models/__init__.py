@@ -15,6 +15,8 @@ from app.models.student import Student
 from app.models.rubric import Rubric, RubricCriterion
 # Import Assignment task definition and prompt exemplar model from app.models.assignment
 from app.models.assignment import Assignment
+# Import multi-tenant evaluation folder, result, and usage models
+from app.models.assignment_folder import AssignmentFolder, FolderSubmission, EvaluationResult, MonthlyUsage
 # Import Submission student document and evaluation state model from app.models.submission
 from app.models.submission import Submission
 # Import DraftGrade AI evaluation recommendation and teacher approval model from app.models.draft_grade
@@ -46,6 +48,14 @@ __all__ = [
     "Rubric",
     # Detailed rubric criterion model
     "RubricCriterion",
+    # Multi-tenant assignment folder
+    "AssignmentFolder",
+    # Folder submission model
+    "FolderSubmission",
+    # Evaluation result model
+    "EvaluationResult",
+    # Monthly usage and quota tracking model
+    "MonthlyUsage",
     # Student assignment model
     "Assignment",
     # Student work submission model

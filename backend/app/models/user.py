@@ -1,7 +1,13 @@
+# Module docstring explaining local user account and session database entities
+"""User and UserSession database models."""
+
+# Import uuid library to generate cryptographically unique random identifiers
 import uuid
+# Import datetime and timezone utilities for UTC timestamping
 from datetime import datetime, timezone
 # Import SQLAlchemy column and data type primitives for table definitions
 from sqlalchemy import Column, String, DateTime, JSON
+from sqlalchemy.orm import relationship
 
 # Import declarative Base class from app.core.database to register ORM models
 from app.core.database import Base
@@ -38,12 +44,21 @@ class User(Base):
     # UTC timestamp when user profile was last updated
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
+    # Relationships
+    assignment_folders = relationship("AssignmentFolder", back_populates="user", cascade="all, delete-orphan")
+    monthly_usages = relationship("MonthlyUsage", back_populates="user", cascade="all, delete-orphan")
+
+    # Constructor method synchronizing full_name and legacy name keyword arguments
     def __init__(self, **kwargs):
-        # Sync full_name and name
+        # Check if full_name was supplied but name was omitted
         if "full_name" in kwargs and "name" not in kwargs:
+            # Mirror full_name value into name attribute for backward compatibility
             kwargs["name"] = kwargs["full_name"]
+        # Check if name was supplied but full_name was omitted
         elif "name" in kwargs and "full_name" not in kwargs:
+            # Mirror name value into full_name attribute
             kwargs["full_name"] = kwargs["name"]
+        # Call base SQLAlchemy declarative class initializer with processed kwargs
         super().__init__(**kwargs)
 
 
