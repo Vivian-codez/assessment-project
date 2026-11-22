@@ -1,7 +1,7 @@
 # Verism AI — Version Release History & Changelog
 
-> **Core Philosophy:** *"AI suggests. You stamp. Every grade waits for your approval."*  
-> **Current Version:** 2.4.0 (Enterprise SaaS Edition)
+> **Core Philosophy:** *"AI suggests. You stamp. Every grade waits for your approval. Grading never starts without your command."*  
+> **Current Version:** 2.5.0 (Professional Single-Teacher SaaS Edition)
 
 ---
 
@@ -9,6 +9,7 @@
 
 | Version | Release Phase | Focus Area | Key Deliverables |
 | :--- | :--- | :--- | :--- |
+| **v2.5.0** | Professional Polish & Supabase | Managed Cloud DB & UX Integrity | Supabase PostgreSQL (`uljtqfbkxsqzmboilwvw`, `aws-1-ap-south-1`), Decoupled Grading Start (`status="ready"`), Prompt-Fix Review Mode (`/api/v1/review-mode`), 360px-1920px responsive polish, Getting Started checklist, Help Drawer with hotkeys, zero-placeholder honest indicators. |
 | **v2.4.0** | Phase 12 | System Documentation Suite | 17-document comprehensive architectural, API, and operational manual suite. |
 | **v2.3.0** | Phase 11 | Automated Testing & CI | 35 Pytest suites passing (100%), GitHub Actions CI workflow. |
 | **v2.2.0** | Phase 10 | Frontend Polish & Sellable Layer | Recharts analytics dashboard, Gradebook export menu, Trash Bin modal, Data privacy UI. |
@@ -25,6 +26,18 @@
 ---
 
 ## Detailed Chronological Changelog
+
+### Version 2.5.0 — Professional UX Polish, Managed Supabase Database & Decoupled Grading
+- **Supabase Cloud PostgreSQL Migration:** Connected backend to managed cloud PostgreSQL instance on Supabase (`uljtqfbkxsqzmboilwvw`, `ap-south-1` region) via QueuePool with `pool_recycle=1800` and `pool_pre_ping=True`. Docker Postgres container isolated under compose profile `local-db`.
+- **Database RLS & Index Optimization:** Enabled Row Level Security (RLS) on all 37 database tables with covering foreign key indexes (0 Supabase advisor warnings). Added `grading_run_id` foreign key and index to `grade_history`.
+- **Decoupled Grading Workflow:** Uploaded submissions transition to status `"ready"` (extracted and hash-checked) and never auto-grade. Teacher explicitly initiates grading via Start Grading panel with scope, filtering, and pre-flight estimation.
+- **Prompt-Fix Review Mode (`/api/v1/review-mode`):** Added live prompt iteration endpoints: pre-flight checks, Start Grading orchestration, prompt versioning, structured feedback tags, Gemini-assisted prompt refinement, 3-sample dry runs with before/after diffs, and teacher grade override history.
+- **Responsive Layout Stabilization (360px - 1920px):**
+  - Eliminated horizontal header overflow at 360px viewport by constraining TopBar search and course selector widths.
+  - Redesigned manual student enrollment modal for touch-friendly stacked inputs on mobile.
+  - Added Help & Shortcuts slide-over drawer with hotkeys (`?`, `Esc`, `J/K`, `A`).
+  - Added Getting Started 5-step onboarding checklist tracking real database progress.
+- **Trust & Honesty Audit:** Removed unverified marketing claims; replaced with accurate technical disclaimers. Replaced fake placeholder percentages with real calculations or honest `"—"`. Added pluralization engine and detected CSV header reporting with sample template download.
 
 ### Version 2.4.0 — Phase 12: Comprehensive Documentation Suite
 - Published the authoritative 17-document technical and operational suite in `/docs/`:

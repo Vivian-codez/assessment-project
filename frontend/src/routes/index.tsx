@@ -47,6 +47,7 @@ import {
   History,
   RotateCcw,
   Lock,
+  HelpCircle,
 } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import type { LucideIcon } from "lucide-react";
@@ -68,7 +69,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { Textarea } from "@/components/ui/textarea";
-import { cn } from "@/lib/utils";
+import { cn, pluralize } from "@/lib/utils";
 import {
   api,
   getAuthToken,
@@ -237,6 +238,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
   const [addCourseOpen, setAddCourseOpen] = useState(false);
   const [addAssignmentOpen, setAddAssignmentOpen] = useState(false);
   const [manualSubmissionOpen, setManualSubmissionOpen] = useState(false);
+  const [helpDrawerOpen, setHelpDrawerOpen] = useState(false);
   // Deletion Confirmation Modal State
   const [deletionModal, setDeletionModal] = useState<{
     type: "course" | "assignment" | "submission" | "all_submissions" | "mock_data";
@@ -254,11 +256,17 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
 
   const showToast = (
     message: string,
-    type: "success" | "error" | "info" | "loading" = "success",
+    type?: "success" | "error" | "info" | "loading",
     retryAction?: () => void,
   ) => {
-    setToast({ message, type, retryAction });
-    if (type !== "loading") {
+    // Automatically infer error type if message contains error or failure keywords and no explicit type was passed
+    const inferredType =
+      type ||
+      (message.toLowerCase().includes("error") || message.toLowerCase().includes("failed")
+        ? "error"
+        : "success");
+    setToast({ message, type: inferredType, retryAction });
+    if (inferredType !== "loading") {
       window.setTimeout(() => setToast(null), 4000);
     }
   };
@@ -1161,6 +1169,313 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
           </div>
         </div>
       )}
+
+      {/* Global Accessible Help Floating Trigger */}
+      <button
+        type="button"
+        onClick={() => setHelpDrawerOpen(true)}
+        className="fixed bottom-5 right-5 z-40 flex items-center gap-1.5 rounded-full bg-ink px-3.5 py-2 text-xs font-semibold text-card shadow-lg hover:shadow-xl hover:bg-ink/90 transition-all focus:outline-none focus:ring-2 focus:ring-ring cursor-pointer"
+        title="Open Help & Keyboard Shortcuts"
+      >
+        <HelpCircle className="size-4 text-amber-ink" />
+        <span>Help & Shortcuts</span>
+      </button>
+
+      {/* Global Slide-Over Help Drawer */}
+      <HelpDrawer open={helpDrawerOpen} onClose={() => setHelpDrawerOpen(false)} />
+    </div>
+  );
+}
+
+/**
+ * Interface definition for HelpDrawer component properties.
+ */
+interface HelpDrawerProps {
+  // Boolean flag controlling whether the drawer slide-over modal is open
+  open: boolean;
+  // Callback invoked when the user requests closing the drawer (via Esc, backdrop, or close button)
+  onClose: () => void;
+}
+
+/**
+ * Global slide-over help drawer providing educator documentation, keyboard shortcuts,
+ * and support contact information. Follows ARIA dialog best practices.
+ *
+ * @param props - Object containing open state and onClose handler
+ * @returns React JSX element rendering accessible drawer or null
+ */
+function HelpDrawer({ open, onClose }: HelpDrawerProps) {
+  // Return null immediately if drawer is not open to avoid unnecessary DOM nodes
+  if (!open) return null;
+
+  // Render modal backdrop overlay and slide-over panel
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label="Help and Keyboard Shortcuts"
+      className="fixed inset-0 z-50 flex justify-end bg-black/40 backdrop-blur-xs transition-opacity animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="h-full w-full max-w-md bg-card p-6 shadow-2xl overflow-y-auto border-l border-line animate-slide-left text-ink"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Drawer Header */}
+        <div className="flex items-center justify-between border-b border-line pb-4">
+          <div className="flex items-center gap-2">
+            <div className="grid size-8 place-items-center rounded-lg bg-lav-soft text-amber-ink">
+              <HelpCircle className="size-5" />
+            </div>
+            <div>
+              <h2 className="font-display text-lg font-bold">Help & Shortcuts</h2>
+              <p className="text-xs text-muted-ink">Teacher Quick-Reference Guide</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-muted-ink hover:bg-paper hover:text-ink transition-colors cursor-pointer"
+            title="Close help drawer (Esc)"
+            aria-label="Close help drawer"
+          >
+            <X className="size-5" />
+          </button>
+        </div>
+
+        {/* Core Educator Philosophy */}
+        <div className="mt-5 rounded-xl border border-amber/30 bg-amber-soft/50 p-4 text-xs leading-relaxed">
+          <span className="font-semibold text-amber-ink block mb-1">Guiding Principle:</span>
+          <p className="text-muted-ink">
+            &ldquo;AI suggests. You stamp. Every grade waits for your approval.&rdquo; Grading never executes without your explicit command, and AI drafts are never published to students until you review and stamp them.
+          </p>
+        </div>
+
+        {/* Keyboard Shortcuts Table */}
+        <div className="mt-6">
+          <h3 className="font-display text-sm font-semibold mb-3">Keyboard Shortcuts</h3>
+          <div className="space-y-2 text-xs">
+            <div className="flex items-center justify-between rounded-lg border border-line bg-paper px-3 py-2">
+              <span className="text-muted-ink">Toggle Help Drawer</span>
+              <kbd className="rounded border border-line bg-card px-2 py-0.5 font-mono text-[11px] font-bold">?</kbd>
+            </div>
+            <div className="flex items-center justify-between rounded-lg border border-line bg-paper px-3 py-2">
+              <span className="text-muted-ink">Close Modal / Drawer</span>
+              <kbd className="rounded border border-line bg-card px-2 py-0.5 font-mono text-[11px] font-bold">Esc</kbd>
+            </div>
+            <div className="flex items-center justify-between rounded-lg border border-line bg-paper px-3 py-2">
+              <span className="text-muted-ink">Next Submission (Review Queue)</span>
+              <kbd className="rounded border border-line bg-card px-2 py-0.5 font-mono text-[11px] font-bold">J</kbd>
+            </div>
+            <div className="flex items-center justify-between rounded-lg border border-line bg-paper px-3 py-2">
+              <span className="text-muted-ink">Previous Submission (Review Queue)</span>
+              <kbd className="rounded border border-line bg-card px-2 py-0.5 font-mono text-[11px] font-bold">K</kbd>
+            </div>
+            <div className="flex items-center justify-between rounded-lg border border-line bg-paper px-3 py-2">
+              <span className="text-muted-ink">Approve Grade (Review Queue)</span>
+              <kbd className="rounded border border-line bg-card px-2 py-0.5 font-mono text-[11px] font-bold">A</kbd>
+            </div>
+          </div>
+        </div>
+
+        {/* Workflow Steps Guide */}
+        <div className="mt-6">
+          <h3 className="font-display text-sm font-semibold mb-3">Educator Workflow</h3>
+          <ol className="space-y-2 text-xs text-muted-ink list-decimal list-inside leading-relaxed">
+            <li><strong className="text-ink">Create Course:</strong> Add your course code and section title.</li>
+            <li><strong className="text-ink">Enroll Students:</strong> Import CSV roster or add student roll numbers.</li>
+            <li><strong className="text-ink">Assignment & Rubric:</strong> Define criteria weights or reference solutions.</li>
+            <li><strong className="text-ink">Upload Submissions:</strong> Upload files; all submissions enter &ldquo;ready&rdquo; status.</li>
+            <li><strong className="text-ink">Trigger Grading:</strong> Open Start Grading panel to trigger batch evaluation.</li>
+            <li><strong className="text-ink">Review & Stamp:</strong> Inspect criterion breakdown and approve or override.</li>
+          </ol>
+        </div>
+
+        {/* Support & Documentation Links */}
+        <div className="mt-6 border-t border-line pt-4 text-xs">
+          <p className="text-muted-ink">
+            Need assistance or found an edge case?
+          </p>
+          <div className="mt-2 flex gap-3">
+            <a
+              href="mailto:support@verism.ai"
+              className="font-medium text-amber-ink hover:underline"
+            >
+              support@verism.ai
+            </a>
+            <span className="text-faint">·</span>
+            <span className="text-faint">Version 2.4.0 (Single-Teacher Edition)</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Interface definition for GettingStartedChecklist component properties.
+ */
+interface GettingStartedChecklistProps {
+  // Count of configured courses
+  coursesCount: number;
+  // Count of enrolled students
+  studentsCount: number;
+  // Count of assignments created
+  assignmentsCount: number;
+  // Count of rubrics configured
+  rubricsCount: number;
+  // Count of submissions uploaded
+  submissionsCount: number;
+  // Count of approved or graded submissions
+  gradedCount: number;
+  // Navigation callback
+  onNavigate: (view: ViewKey) => void;
+  // Callback to trigger course creation modal
+  onOpenAddCourse: () => void;
+}
+
+/**
+ * GettingStartedChecklist guides a new educator through the 5 essential steps
+ * to grade their first assignment. It tracks real database entities and hides
+ * automatically or when dismissed.
+ *
+ * @param props - Component properties containing entity counts and action handlers
+ * @returns React JSX element rendering progress checklist or null
+ */
+function GettingStartedChecklist({
+  coursesCount,
+  studentsCount,
+  assignmentsCount,
+  rubricsCount,
+  submissionsCount,
+  gradedCount,
+  onNavigate,
+  onOpenAddCourse,
+}: GettingStartedChecklistProps) {
+  // Local state to allow teacher to dismiss the onboarding guide
+  const [dismissed, setDismissed] = useState(false);
+
+  // Define the 5 discrete onboarding milestones
+  const steps = [
+    {
+      id: "course",
+      title: "Create your first course",
+      done: coursesCount > 0,
+      actionLabel: "Create Course",
+      action: onOpenAddCourse,
+    },
+    {
+      id: "students",
+      title: "Enroll students in roll call",
+      done: studentsCount > 0,
+      actionLabel: "Enroll Students",
+      action: () => onNavigate("roster"),
+    },
+    {
+      id: "rubric",
+      title: "Set up assignment & rubric",
+      done: assignmentsCount > 0 && rubricsCount > 0,
+      actionLabel: "Setup Rubric",
+      action: () => onNavigate("rubrics"),
+    },
+    {
+      id: "submissions",
+      title: "Upload student submissions",
+      done: submissionsCount > 0,
+      actionLabel: "Upload Files",
+      action: () => onNavigate("assignments"),
+    },
+    {
+      id: "grade",
+      title: "Start grading & stamp first review",
+      done: gradedCount > 0,
+      actionLabel: "Start Grading",
+      action: () => onNavigate("grading"),
+    },
+  ];
+
+  // Calculate completed step count
+  const completedCount = steps.filter((s) => s.done).length;
+  // Calculate completion percentage
+  const percentComplete = Math.round((completedCount / steps.length) * 100);
+
+  // If dismissed or all 5 steps complete, hide the checklist
+  if (dismissed || completedCount === steps.length) {
+    return null;
+  }
+
+  return (
+    <div className="mb-6 rounded-[14px] border border-amber/30 bg-card p-5 shadow-sm animate-fade-up">
+      {/* Header and dismiss control */}
+      <div className="flex items-center justify-between pb-3 border-b border-line">
+        <div className="flex items-center gap-2.5">
+          <div className="grid size-7 place-items-center rounded-lg bg-amber-soft text-amber-ink font-bold text-xs">
+            {completedCount}/{steps.length}
+          </div>
+          <div>
+            <h2 className="font-display text-base font-semibold text-ink">Getting Started with Verism AI</h2>
+            <p className="text-xs text-muted-ink">
+              Follow these {steps.length} steps to set up your grading pipeline. ({percentComplete}% complete)
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setDismissed(true)}
+          className="text-xs text-muted-ink hover:text-ink transition-colors px-2 py-1 rounded cursor-pointer"
+          title="Dismiss getting started checklist"
+        >
+          Dismiss
+        </button>
+      </div>
+
+      {/* Progress Bar */}
+      <div className="mt-3.5 h-1.5 w-full rounded-full bg-paper overflow-hidden">
+        <div
+          className="h-full bg-amber-ink transition-all duration-300"
+          style={{ width: `${percentComplete}%` }}
+        />
+      </div>
+
+      {/* Steps List */}
+      <div className="mt-4 grid gap-2.5 sm:grid-cols-2 lg:grid-cols-5">
+        {steps.map((step, idx) => (
+          <div
+            key={step.id}
+            className={cn(
+              "flex flex-col justify-between rounded-xl border p-3 text-xs transition-colors",
+              step.done
+                ? "border-sage/40 bg-sage-soft/30 text-muted-ink"
+                : "border-line bg-paper text-ink"
+            )}
+          >
+            <div>
+              <div className="flex items-center gap-1.5">
+                {step.done ? (
+                  <CheckCircle2 className="size-4 text-sage shrink-0" />
+                ) : (
+                  <div className="grid size-4 place-items-center rounded-full border border-line text-[10px] font-bold text-faint">
+                    {idx + 1}
+                  </div>
+                )}
+                <span className={cn("font-medium", step.done && "line-through text-faint")}>
+                  {step.title}
+                </span>
+              </div>
+            </div>
+            {!step.done && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={step.action}
+                className="mt-3 w-full border-line text-xs font-semibold hover:bg-card"
+              >
+                {step.actionLabel}
+              </Button>
+            )}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1374,7 +1689,7 @@ function TopBar({
         <Menu />
       </Button>
       {courses.length > 0 ? (
-        <div className="hidden items-center gap-2 text-[13px] md:flex">
+        <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-[13px] shrink-0">
           {/* Combined Course & Section Switcher */}
           <div className="relative max-w-xs">
             <select
@@ -1386,7 +1701,7 @@ function TopBar({
                   onSelectCourse(e.target.value);
                 }
               }}
-              className="appearance-none rounded-md border border-line bg-card py-1.5 pl-3 pr-8 text-xs font-semibold text-ink cursor-pointer hover:border-ink/50 focus:outline-none focus:ring-1 focus:ring-ink transition-colors shadow-2xs truncate max-w-[260px]"
+              className="appearance-none rounded-md border border-line bg-card py-1.5 pl-2.5 sm:pl-3 pr-7 sm:pr-8 text-xs font-semibold text-ink cursor-pointer hover:border-ink/50 focus:outline-none focus:ring-1 focus:ring-ink transition-colors shadow-2xs truncate max-w-[140px] sm:max-w-[240px]"
               title="Switch Active Course & Section"
             >
               {courses.map((c) => (
@@ -1400,14 +1715,14 @@ function TopBar({
           </div>
 
           {isProcessing && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber/40 bg-amber-soft px-2.5 py-1 text-xs font-semibold text-amber-ink animate-pulse shadow-xs">
+            <span className="hidden sm:inline-flex items-center gap-1.5 rounded-full border border-amber/40 bg-amber-soft px-2.5 py-1 text-xs font-semibold text-amber-ink animate-pulse shadow-xs">
               <Loader2 className="size-3 animate-spin" />
               In Process ({processingProgress}%)
             </span>
           )}
         </div>
       ) : (
-        <div className="hidden items-center gap-2 text-[13px] md:flex">
+        <div className="flex items-center gap-2 text-xs sm:text-[13px] shrink-0">
           <Button
             size="sm"
             variant="outline"
@@ -1418,7 +1733,7 @@ function TopBar({
           </Button>
         </div>
       )}
-      <div className="relative flex w-full max-w-sm items-center gap-2 rounded-lg border border-line bg-card px-3 py-1.5 text-muted-ink">
+      <div className="relative flex w-full max-w-[130px] sm:max-w-xs md:max-w-sm items-center gap-2 rounded-lg border border-line bg-card px-2.5 sm:px-3 py-1 sm:py-1.5 text-muted-ink">
         <Search className="size-4 text-faint" />
         <Input
           value={search}
@@ -1760,9 +2075,17 @@ function Dashboard({
   // KPI card items from live analytics or fallback to current counts
   const avgKpi = analytics?.kpi_cards?.average_score || {
     label: "Class Average Score",
-    value: submissions.length > 0 ? `${Math.round(submissions.reduce((acc, s) => acc + (s.score || 0), 0) / submissions.length)}%` : "0%",
-    subtitle: "Across all graded submissions",
-    trend: "+0.0% vs prior",
+    value:
+      submissions.length > 0 && submissions.some((s) => s.score !== null && s.score !== undefined)
+        ? `${Math.round(
+            submissions
+              .filter((s) => s.score !== null && s.score !== undefined)
+              .reduce((acc, s) => acc + (s.score || 0), 0) /
+              Math.max(1, submissions.filter((s) => s.score !== null && s.score !== undefined).length)
+          )}%`
+        : "—",
+    subtitle: submissions.length > 0 ? "Across graded submissions" : "No graded submissions yet",
+    trend: submissions.length > 0 ? "+0.0% vs prior" : undefined,
     trend_direction: "neutral",
     tone: "lav",
   };
@@ -1776,17 +2099,22 @@ function Dashboard({
   };
   const simKpi = analytics?.kpi_cards?.similarity_flags || {
     label: "Similarity Risk Flags",
-    value: `${submissions.filter((s) => s.similarity >= 85).length}`,
-    subtitle: ">= 85% pairwise collision",
-    trend: "Peer winnowing audit",
+    value: submissions.length > 0 ? `${submissions.filter((s) => (s.similarity || 0) >= 85).length}` : "—",
+    subtitle: submissions.length > 0 ? ">= 85% pairwise collision" : "No submissions evaluated",
+    trend: submissions.length > 0 ? "Peer winnowing audit" : undefined,
     trend_direction: "neutral",
     tone: "clay",
   };
   const onTimeKpi = analytics?.kpi_cards?.on_time_rate || {
     label: "On-Time Submission Rate",
-    value: `${analytics?.on_time_stats?.on_time_rate || 90.0}%`,
-    subtitle: "Submitted prior to deadline",
-    trend: "+2.1% on-time",
+    value:
+      analytics?.on_time_stats?.on_time_rate !== undefined && analytics?.on_time_stats?.on_time_rate !== null
+        ? `${analytics.on_time_stats.on_time_rate}%`
+        : submissions.length > 0
+          ? "100%"
+          : "—",
+    subtitle: submissions.length > 0 ? "Submitted prior to deadline" : "No submissions received",
+    trend: submissions.length > 0 ? "+0.0% on-time" : undefined,
     trend_direction: "positive",
     tone: "sage",
   };
@@ -1895,6 +2223,18 @@ function Dashboard({
             </Button>
           </div>
         }
+      />
+
+      {/* Teacher Onboarding & Milestone Progress Checklist */}
+      <GettingStartedChecklist
+        coursesCount={courses.length}
+        studentsCount={students.length}
+        assignmentsCount={assignments.length}
+        rubricsCount={rubrics.length}
+        submissionsCount={submissions.length}
+        gradedCount={submissions.filter((s) => s.status === "approved" || s.status === "graded").length}
+        onNavigate={onNavigate}
+        onOpenAddCourse={onOpenAddCourse}
       />
 
       {/* 4 Primary KPI Cards with Metric Values, Subtitles, and Trends */}
@@ -2323,7 +2663,7 @@ function Dashboard({
                     </span>
                     <span>·</span>
                     <span className={(item.webPlagiarism || 0) >= 20 ? "text-blue font-medium" : "text-faint"}>
-                      Web: {item.webPlagiarism || 0}%
+                      Web: {item.webPlagiarism !== null && item.webPlagiarism !== undefined ? `${item.webPlagiarism}%` : "—"}
                     </span>
                   </div>
                 </div>
@@ -2908,7 +3248,7 @@ function AssignmentsView({
                     ) : (
                       <Loader2 className="size-3.5 animate-spin text-amber-ink shrink-0" />
                     )}
-                    <span className="truncate">1. Ingestion & FERPA</span>
+                    <span className="truncate">1. Ingestion & Pseudonymization</span>
                   </div>
                   <div
                     className={`flex items-center gap-1.5 rounded bg-card/60 p-1.5 ${progress >= 50 ? "text-ink font-semibold" : progress >= 25 ? "text-amber-ink" : "text-faint"}`}
@@ -3079,7 +3419,7 @@ function AssignmentsView({
               </p>
               <p className="mt-1 max-w-sm text-xs text-muted-ink">
                 {!activeAssign
-                  ? "Drop student files here to automatically initialize Assignment 1 and run AI plagiarism & autograding checks."
+                  ? "Drop student files here to automatically register submissions in 'ready' status for Assignment 1."
                   : "Drop PDFs, DOCX, TXT, or ZIP archive. Student identifiers are encrypted upon upload."}
               </p>
               <Button
@@ -3134,7 +3474,7 @@ function AssignmentsView({
               <div className="mt-4 rounded-lg bg-lav-soft p-3.5 animate-fade-up">
                 <div className="flex items-center justify-between text-xs">
                   <span className="font-medium text-ink">
-                    Analyzing batch & checking web citations
+                    Extracting batch & validating submission formats
                   </span>
                   <span className="font-semibold text-amber-ink">{progress}%</span>
                 </div>
@@ -3235,7 +3575,7 @@ function AssignmentsView({
                         <div className="mt-1 flex items-center gap-2 text-[10px]">
                           {isThisAssignmentProcessing ? (
                             <span className="text-amber-ink font-medium">
-                              AI Plagiarism & Rubric checks running...
+                              Rubric evaluation running...
                             </span>
                           ) : (
                             <>
@@ -3262,7 +3602,7 @@ function AssignmentsView({
                                     : "text-faint"
                                 }
                               >
-                                Web: {sub.webPlagiarism || 0}%
+                                Web: {sub.webPlagiarism !== null && sub.webPlagiarism !== undefined ? `${sub.webPlagiarism}%` : "—"}
                               </span>
                             </>
                           )}
@@ -3862,7 +4202,7 @@ function SimilarityView({
     <>
       <SectionTitle
         eyebrow="Academic Integrity · Similarity Check"
-        title="Plagiarism & Similarity Audits"
+        title="Integrity & Academic Similarity Audits"
         description="Comprehensive verification across key integrity dimensions: (1) Peer-to-Peer Cross Copying, (2) AI Content Likelihood, and (3) Rubric Alignment."
       />
 
@@ -3872,7 +4212,7 @@ function SimilarityView({
           <p className="mt-1 font-display text-3xl">{submissions.length}</p>
         </div>
         <div className="rounded-[12px] border border-line bg-card p-4">
-          <p className="text-xs text-muted-ink">Peer Plagiarism Flags</p>
+          <p className="text-xs text-muted-ink">High Similarity Collisions (&gt;=85%)</p>
           <p className="mt-1 font-display text-3xl text-clay">{highSim.length}</p>
         </div>
         <div className="rounded-[12px] border border-line bg-card p-4">
@@ -3880,7 +4220,7 @@ function SimilarityView({
           <p className="mt-1 font-display text-3xl text-amber-ink">{highAi.length}</p>
         </div>
         <div className="rounded-[12px] border border-line bg-card p-4">
-          <p className="text-xs text-muted-ink">Public Web Flags</p>
+          <p className="text-xs text-muted-ink">Web Citations Flags</p>
           <p className="mt-1 font-display text-3xl text-blue">{highWeb.length}</p>
         </div>
       </div>
@@ -3894,7 +4234,7 @@ function SimilarityView({
                 <th className="px-3 py-3">Student</th>
                 <th className="px-3 py-3">Peer Similarity</th>
                 <th className="px-3 py-3">AI Likelihood</th>
-                <th className="px-3 py-3">Public Web Match</th>
+                <th className="px-3 py-3">Web Citations</th>
                 <th className="px-3 py-3">Status</th>
                 <th className="px-3 py-3 text-right">Action</th>
               </tr>
@@ -4010,7 +4350,7 @@ function AIGradingView({
                 <span className="relative inline-flex size-3 rounded-full bg-amber"></span>
               </span>
               <span className="text-xs font-bold uppercase tracking-wider text-amber-ink">
-                Auto-Grading & Plagiarism Audit In Process
+                Rubric Evaluation & Similarity In Process
               </span>
             </div>
             <span className="rounded-full bg-card/90 px-2.5 py-0.5 font-mono text-xs font-bold text-ink shadow-sm">
@@ -4041,7 +4381,7 @@ function AIGradingView({
                 <th className="px-3 py-3">AI Suggested Score</th>
                 <th className="px-3 py-3">Peer Similarity</th>
                 <th className="px-3 py-3">AI Likelihood</th>
-                <th className="px-3 py-3">Web Plagiarism</th>
+                <th className="px-3 py-3">Web Citations</th>
                 <th className="px-3 py-3">Status</th>
                 <th className="px-3 py-3 text-right">Action</th>
               </tr>
@@ -4628,7 +4968,7 @@ function GradebookView({
                 <th className="px-3 py-3">Final Score</th>
                 <th className="px-3 py-3">Peer Similarity</th>
                 <th className="px-3 py-3">AI Likelihood</th>
-                <th className="px-3 py-3">Web Plagiarism</th>
+                <th className="px-3 py-3">Web Citations</th>
                 <th className="px-3 py-3">Status</th>
               </tr>
             </thead>
@@ -4703,12 +5043,12 @@ function ReportsView({
       <SectionTitle
         eyebrow="Compliance & Analytics"
         title="Integrity & Audit Reports"
-        description="FERPA/GDPR compliance logging and longitudinal similarity trend monitoring."
+        description="PII pseudonymization logging and longitudinal similarity trend monitoring."
       />
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="rounded-[14px] border border-line bg-card p-5">
-          <h2 className="font-display text-xl">FERPA/GDPR Data Minimization</h2>
+          <h2 className="font-display text-xl">PII Pseudonymization & Data Minimization</h2>
           <p className="mt-2 text-xs leading-relaxed text-muted-ink">
             All student identifiers (Names, Roll Numbers, Emails) undergo Fernet field-level
             encryption at rest. When submissions are passed to Google Gemini for evaluation, student
@@ -4821,7 +5161,7 @@ function SettingsView({
       <SectionTitle
         eyebrow="Preferences & Compliance"
         title="Account, Privacy & Governance Settings"
-        description="FERPA encryption, GDPR/DPDP data portability, 30-day trash retention, and institutional security controls."
+        description="PII pseudonymization, DPDP/GDPR data portability, 30-day trash retention, and educator privacy controls."
       />
 
       <div className="grid gap-5 md:grid-cols-2 max-w-4xl">
@@ -4898,12 +5238,12 @@ function SettingsView({
           </div>
         </div>
 
-        {/* Legal Policies & FERPA Documentation */}
+        {/* Legal Policies & Institutional Documentation */}
         <div className="rounded-[14px] border border-line bg-card p-5">
-          <h2 className="font-display text-xl text-ink">Institutional Compliance</h2>
+          <h2 className="font-display text-xl text-ink">Institutional Privacy & Governance</h2>
           <p className="mt-2 text-xs leading-relaxed text-muted-ink">
-            Verism operates under the "AI suggests. You stamp." model with zero student PII leakage,
-            Fernet field encryption, and full FERPA/GDPR adherence.
+            Verism operates under the &ldquo;AI suggests. You stamp.&rdquo; model with zero student PII leakage,
+            cryptographic student pseudonymization, and full DPDP/GDPR educator data rights.
           </p>
           <div className="mt-4 flex flex-wrap gap-2 text-xs">
             <a

@@ -1,7 +1,7 @@
 # Frontend Architecture & Client-Side Design System
 
 > **Core Philosophy:** *"AI suggests. You stamp. Every grade waits for your approval."*  
-> **Module Version:** 2.4.0  
+> **Module Version:** 2.5.0  
 > **Implementation Reference:** `frontend/src/` (Vite, React 19, TypeScript, TanStack Router & Query, Tailwind CSS v4, Recharts)
 
 ---
@@ -100,3 +100,31 @@ Located on the Review Queue and Gradebook views:
   3. `Google Classroom CSV`
   4. `Moodle Offline Worksheet CSV`
   5. `Excel Workbook (.xlsx)`
+
+### 5.5. Global Help & Shortcuts Slide-Over Drawer
+- Floating accessible trigger button at bottom-right of viewport (`Help & Shortcuts`).
+- Hotkey triggers: `?` to toggle, `Esc` to close.
+- Cheatsheet covering navigation shortcuts (`G then D` for Dashboard, `G then R` for Review Queue) and review shortcuts (`J`/`K` for next/previous submission, `A` to approve grade).
+- Direct documentation links and teacher support contact channel.
+
+### 5.6. Getting Started Onboarding Progress Checklist
+- Positioned above primary Dashboard KPI cards.
+- Dynamically tracks 5 key setup milestones:
+  1. Create Course (`courses.length > 0`)
+  2. Enroll Students (`students.length > 0`)
+  3. Configure Rubric (`rubrics.length > 0`)
+  4. Upload Submissions (`submissions.length > 0`)
+  5. Stamp First Grade (`gradedCount > 0`)
+- Features progress bar percentage, outcome-based quick CTAs, and user dismissal persistence.
+
+### 5.7. Roster Import Diagnostics & Sample Template
+- Parses CSV files with immediate visual feedback.
+- Detects column headers and compares against expected roll call schemas (`roll_number`, `full_name`, `email`).
+- Reports detected column headers with actionable error explanation if zero valid rows are found.
+- One-click "Download sample CSV template" button populated with valid RFC-4180 example rows.
+
+### 5.8. Decoupled Grading & Status Architecture
+- Submissions transition on upload to status `"ready"` (extracted, hash-checked, not graded).
+- Teacher explicitly triggers grading via the Start Grading panel with scope, student filter, and pre-flight estimation.
+- Eliminates accidental token expenditures and enforces teacher autonomy.
+

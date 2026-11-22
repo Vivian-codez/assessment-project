@@ -20,6 +20,7 @@ import Papa from "papaparse";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 import { api, type Classroom, type Student } from "@/lib/api";
 
 interface RosterViewProps {
@@ -72,6 +73,7 @@ export function RosterView({
   const [csvUploading, setCsvUploading] = useState(false);
   const [aiParsing, setAiParsing] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [detectedHeaders, setDetectedHeaders] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Student deletion state
@@ -179,9 +181,16 @@ export function RosterView({
     }
 
     setAiParsing(true);
+    setDetectedHeaders([]);
     try {
       // Use backend multi-format extraction endpoint
       const result = await api.classrooms.parseRoster(classroom.id, file);
+      // Record any detected header columns returned by parser or inferred from records
+      if ((result as any).detected_columns) {
+        setDetectedHeaders((result as any).detected_columns);
+      } else if (result.students && result.students.length > 0) {
+        setDetectedHeaders(Object.keys(result.students[0]));
+      }
       const seenInFile = new Set<string>();
       const preview = (result.students || []).map((s) => {
         const roll = (s.roll_number || "").trim();
@@ -219,6 +228,9 @@ export function RosterView({
           header: true,
           skipEmptyLines: true,
           complete: (results) => {
+            if (results.meta && results.meta.fields) {
+              setDetectedHeaders(results.meta.fields);
+            }
             const parsedRows = results.data as Record<string, string>[];
             const preview: Array<{
               roll_number: string;
@@ -419,34 +431,67 @@ export function RosterView({
             </select>
           )}
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleExportCSV}
-            disabled={students.length === 0}
-            className="text-xs"
-          >
-            <Download className="mr-1.5 size-3.5" /> Export CSV
-          </Button>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleExportCSV}
+                    disabled={students.length === 0}
+                    className="text-xs"
+                  >
+                    <Download className="mr-1.5 size-3.5" /> Export roll call (CSV)
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {students.length === 0 && (
+                <TooltipContent>Cannot export an empty roll call. Enroll at least one student first.</TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
 
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setCsvModalOpen(true)}
-            disabled={!classroom}
-            className="text-xs"
-          >
-            <Upload className="mr-1.5 size-3.5 text-amber-ink" /> Import Roster (Any Format)
-          </Button>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setCsvModalOpen(true)}
+                    disabled={!classroom}
+                    className="text-xs"
+                  >
+                    <Upload className="mr-1.5 size-3.5 text-amber-ink" /> Import roll call
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {!classroom && (
+                <TooltipContent>Select or create a course before importing roll call.</TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
 
-          <Button
-            size="sm"
-            onClick={() => setManualModalOpen(true)}
-            disabled={!classroom}
-            className="bg-primary text-primary-foreground text-xs hover:bg-primary/90"
-          >
-            <UserPlus className="mr-1.5 size-3.5" /> Manual Enrollment
-          </Button>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    size="sm"
+                    onClick={() => setManualModalOpen(true)}
+                    disabled={!classroom}
+                    className="bg-primary text-primary-foreground text-xs hover:bg-primary/90"
+                  >
+                    <UserPlus className="mr-1.5 size-3.5" /> Add students manually
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {!classroom && (
+                <TooltipContent>Select or create a course before adding students.</TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
         </div>
       </div>
 
@@ -628,7 +673,7 @@ export function RosterView({
             </div>
 
             <div className="mt-4 max-h-[50vh] overflow-y-auto space-y-3 pr-1">
-              <div className="grid grid-cols-12 gap-2 text-[11px] font-semibold uppercase text-muted-foreground">
+              <div className="hidden sm:grid sm:grid-cols-12 sm:gap-2 text-[11px] font-semibold uppercase text-muted-foreground">
                 <div className="col-span-3">Roll Number *</div>
                 <div className="col-span-4">Full Name *</div>
                 <div className="col-span-4">Email (Optional)</div>
@@ -636,8 +681,14 @@ export function RosterView({
               </div>
 
               {manualRows.map((row, idx) => (
-                <div key={row.id} className="grid grid-cols-12 items-center gap-2">
-                  <div className="col-span-3">
+                <div
+                  key={row.id}
+                  className="rounded-lg border border-line bg-card/60 p-3 sm:border-0 sm:bg-transparent sm:p-0 space-y-2 sm:space-y-0 sm:grid sm:grid-cols-12 sm:items-center sm:gap-2"
+                >
+                  <div className="sm:col-span-3">
+                    <label className="block text-[10px] uppercase font-semibold text-muted-foreground sm:hidden mb-1">
+                      Roll Number *
+                    </label>
                     <Input
                       placeholder={`e.g. CS2024-0${idx + 1}`}
                       value={row.roll_number}
@@ -645,7 +696,10 @@ export function RosterView({
                       className="text-xs"
                     />
                   </div>
-                  <div className="col-span-4">
+                  <div className="sm:col-span-4">
+                    <label className="block text-[10px] uppercase font-semibold text-muted-foreground sm:hidden mb-1">
+                      Full Name *
+                    </label>
                     <Input
                       placeholder="Student full name"
                       value={row.full_name}
@@ -653,7 +707,10 @@ export function RosterView({
                       className="text-xs"
                     />
                   </div>
-                  <div className="col-span-4">
+                  <div className="sm:col-span-4">
+                    <label className="block text-[10px] uppercase font-semibold text-muted-foreground sm:hidden mb-1">
+                      Email
+                    </label>
                     <Input
                       type="email"
                       placeholder="student@univ.edu"
@@ -662,16 +719,28 @@ export function RosterView({
                       className="text-xs"
                     />
                   </div>
-                  <div className="col-span-1 flex justify-center">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => handleRemoveManualRow(row.id)}
-                      className="size-8 text-muted-foreground hover:text-destructive"
-                      disabled={manualRows.length === 1}
-                    >
-                      <Trash2 className="size-3.5" />
-                    </Button>
+                  <div className="sm:col-span-1 flex justify-end sm:justify-center pt-1 sm:pt-0">
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => handleRemoveManualRow(row.id)}
+                              className="size-8 text-muted-foreground hover:text-destructive"
+                              disabled={manualRows.length === 1}
+                              title={manualRows.length === 1 ? "At least one student row is required" : "Remove row"}
+                            >
+                              <Trash2 className="size-3.5" />
+                            </Button>
+                          </span>
+                        </TooltipTrigger>
+                        {manualRows.length === 1 && (
+                          <TooltipContent>At least one student row is required.</TooltipContent>
+                        )}
+                      </Tooltip>
+                    </TooltipProvider>
                   </div>
                 </div>
               ))}
@@ -822,10 +891,15 @@ export function RosterView({
               <div className="mt-4 rounded-xl border border-destructive/20 bg-destructive/5 p-5 text-center">
                 <AlertCircle className="mx-auto size-6 text-destructive mb-1.5" />
                 <p className="text-xs font-semibold text-foreground">
-                  No rows found in {csvFile.name}
+                  No valid student rows found in {csvFile.name}
                 </p>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  Expected columns: <span className="font-mono font-medium text-foreground">roll_number, full_name, email</span>. Please ensure your file headers match.
+                <p className="mt-1 text-[11px] text-muted-foreground leading-relaxed">
+                  Expected columns: <span className="font-mono font-medium text-foreground">roll_number, full_name, email</span>.
+                  {detectedHeaders.length > 0 ? (
+                    <> Detected: <span className="font-mono font-medium text-destructive">{detectedHeaders.join(", ")}</span>.</>
+                  ) : (
+                    " No header columns detected."
+                  )}
                 </p>
                 <Button
                   variant="outline"
@@ -834,7 +908,7 @@ export function RosterView({
                   className="mt-3 h-7 text-xs gap-1.5"
                 >
                   <Download className="size-3.5" />
-                  Download Sample Template
+                  Download Sample CSV Template
                 </Button>
               </div>
             )}

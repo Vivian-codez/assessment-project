@@ -207,8 +207,8 @@ function LoginPage() {
         <div className="absolute -bottom-40 -right-40 size-96 rounded-full bg-emerald-100/60 blur-3xl" />
       </div>
 
-      {/* Glassmorphic card container hosting authentication forms */}
-      <div className="relative w-full max-w-md rounded-2xl border border-gray-200/80 bg-white/95 p-8 shadow-xl backdrop-blur-md">
+      {/* Glassmorphic card container hosting authentication forms (responsive padding for 360px viewports) */}
+      <div className="relative w-full max-w-md rounded-2xl border border-gray-200/80 bg-white/95 p-5 sm:p-8 shadow-xl backdrop-blur-md">
         {/* Brand header displaying icon, console title, and subhead */}
         <div className="mb-6 flex flex-col items-center text-center">
           {/* Circular badge container for brand icon */}
@@ -498,8 +498,7 @@ function LoginPage() {
         {/* Security and compliance footer banner */}
         <div className="mt-6 border-t border-gray-100 pt-4 text-center">
           <p className="flex items-center justify-center gap-1.5 text-[11px] text-gray-400">
-            <ShieldCheck className="size-3.5 text-emerald-500" /> Protected by Local JWT
-            Authentication & FERPA Encryption
+            <ShieldCheck className="size-3.5 text-emerald-500" /> Protected by Local Authentication & Private Workspace Security
           </p>
         </div>
       </div>
