@@ -32,7 +32,7 @@ While core mathematical and cryptographic algorithms (FERPA AES-256 pseudonymiza
 | **Vector Similarity & P2P Collision Engine** | `backend/app/services/vector_service.py` | **Operational.** Generates 768-dimensional document embeddings, calculates cosine similarity matrices across student submissions, and executes exact n-gram matching heuristics (minimum 4-word overlap windows) with in-memory fallback. |
 | **Multi-Format Document Text Extraction** | `backend/app/services/roster_parser_service.py`<br>`backend/app/services/gemini_service.py` | **Operational.** Handles text extraction from UTF-8/ASCII plain text, PDF via `pypdf`, DOCX via `python-docx`, Excel via `openpyxl`, and scanned images via Gemini 2.5 Flash Vision OCR fallback. |
 | **Frontend Production Build Pipeline** | `frontend/vite.config.ts`<br>`frontend/package.json` | **Operational.** Vite builds with zero TypeScript compilation errors, generating client assets, SSR server bundles, and Cloudflare Nitro worker output (`dist/client`, `dist/server`). |
-| **Automated Backend Regression Suite** | `backend/tests/test_backend.py` | **Operational.** 35 test suites covering auth, encryption, course management, rubric validation, submission serialization, and grading calculations pass at 100% in 117s. |
+| **Automated Backend Regression Suite** | `backend/tests/test_backend.py`<br>`backend/tests/test_database_connection.py`<br>`backend/tests/test_tenant_evaluation.py` | **Operational.** 46 automated test suites covering auth, encryption, course management, rubric matrix validation, submission extraction, decoupled grading runs, review mode prompt versioning, and live Supabase PostgreSQL connection pass at 100%. |
 
 ---
 

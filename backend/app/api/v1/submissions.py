@@ -20,8 +20,8 @@ from io import BytesIO
 from datetime import datetime, timezone
 # Import List, Optional, Union from typing
 from typing import List, Optional, Union
-# Import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, status, BackgroundTasks from fastapi
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, status, BackgroundTasks
+# Import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, Response, status, BackgroundTasks from fastapi
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, Response, status, BackgroundTasks
 # Import Session from sqlalchemy.orm
 from sqlalchemy.orm import Session
 
@@ -494,8 +494,8 @@ def _create_single_submission(
         content=extracted_text or file_content_str,
         # Execute statement: file_content=file_content_str
         file_content=file_content_str,
-        # Execute statement: status="pending",
-        status="pending",
+        # Execute statement: status="unmatched" if is_unmatched else "ready",
+        status="unmatched" if is_unmatched else "ready",
     )
     # Uses FERPA transparent encryption setters
     sub.student_name = student_name
@@ -706,8 +706,8 @@ async def batch_upload_classroom_assignment(
 
         # Verify condition: student_match
         if student_match:
-            # Set sub_status to "queued"
-            sub_status = "queued"
+            # Set sub_status to "ready" (extracted and matched; awaiting teacher command to start AI grading)
+            sub_status = "ready"
             # Set student_id to str(student_match.get("id"))
             student_id = str(student_match.get("id"))
             # Set student_name to student_match.get("full_name") or student_match.get("name") or f"Student {detected_roll}"
@@ -804,8 +804,8 @@ async def batch_upload_classroom_assignment(
         # Execute statement: )
         )
 
-        # Verify condition: sub_status == "queued"
-        if sub_status == "queued":
+        # Verify condition: sub_status in ("ready", "queued")
+        if sub_status in ("ready", "queued"):
             # Execute statement: queued_items.append(item)
             queued_items.append(item)
             # Execute statement: queued_submission_ids.append(sub_id)
@@ -900,14 +900,14 @@ async def batch_upload_classroom_assignment(
         id=batch_job_id,
         # Execute statement: assignment_id=assignment_id
         assignment_id=assignment_id,
-        # Execute statement: status="queued" if total_evaluable > 0 else "completed"
-        status="queued" if total_evaluable > 0 else "completed",
-        # Execute statement: progress_pct=0.0 if total_evaluable > 0 else 100.0
-        progress_pct=0.0 if total_evaluable > 0 else 100.0,
-        # Execute statement: total_items=total_evaluable
+        # Execute statement: status="ready" if total_evaluable > 0 else "completed",
+        status="ready" if total_evaluable > 0 else "completed",
+        # Execute statement: progress_pct=100.0,
+        progress_pct=100.0,
+        # Execute statement: total_items=total_evaluable,
         total_items=total_evaluable,
-        # Execute statement: processed_items=0
-        processed_items=0,
+        # Execute statement: processed_items=total_evaluable,
+        processed_items=total_evaluable,
     # Execute statement: )
     )
     # Add entity record to database session
@@ -915,69 +915,8 @@ async def batch_upload_classroom_assignment(
     # Commit transaction modifications to local database
     db.commit()
 
-    # Verify condition: total_evaluable > 0
-    if total_evaluable > 0:
-        # Set dispatched_celery to False
-        dispatched_celery = False
-        # Verify condition: is_redis_available()
-        if is_redis_available():
-            # Begin try block to execute operations safely
-            try:
-                # Celery task dispatch via Redis: evaluate_batch_task.delay(batch_submission_ids, rubric_id, assignment_id)
-                celery_task = evaluate_batch_task.delay(
-                    # Execute statement: batch_submission_ids=queued_submission_ids
-                    batch_submission_ids=queued_submission_ids,
-                    # Execute statement: rubric_id=assignment.rubric_id
-                    rubric_id=assignment.rubric_id,
-                    # Execute statement: assignment_id=assignment_id
-                    assignment_id=assignment_id,
-                # Execute statement: )
-                )
-                # Verify condition: celery_task and celery_task.id
-                if celery_task and celery_task.id:
-                    # Set old_id to job_record.id
-                    old_id = job_record.id
-                    # Set job_record.id to celery_task.id
-                    job_record.id = celery_task.id
-                    # Set batch_job_id to celery_task.id
-                    batch_job_id = celery_task.id
-                    # Commit transaction modifications to local database
-                    db.commit()
-                    # Verify condition: old_id != batch_job_id
-                    if old_id != batch_job_id:
-                        # Delete entity record from database session
-                        db.query(BatchJob).filter(BatchJob.id == old_id).delete()
-                        # Commit transaction modifications to local database
-                        db.commit()
-                    # Set dispatched_celery to True
-                    dispatched_celery = True
-                    # Log informational message to runtime logger
-                    logger.info(f"Dispatched Celery task {celery_task.id} via Redis for {total_evaluable} submissions")
-            # Catch and handle exception: except Exception as celery_err
-            except Exception as celery_err:
-                # Log warning notice message to runtime logger
-                logger.warning(f"Celery dispatch failed: {celery_err}. Using BackgroundTasks async execution fallback.")
-
-        # Verify condition: not dispatched_celery
-        if not dispatched_celery:
-            # Execute statement: background_tasks.add_task(
-            background_tasks.add_task(
-                # Execute statement: run_evaluation_batch_logic
-                run_evaluation_batch_logic,
-                # Execute statement: job_id=batch_job_id
-                job_id=batch_job_id,
-                # Execute statement: assignment_id=assignment_id
-                assignment_id=assignment_id,
-                # Execute statement: submission_ids=queued_submission_ids
-                submission_ids=queued_submission_ids,
-                # Execute statement: rubric_id=assignment.rubric_id
-                rubric_id=assignment.rubric_id,
-                # Execute statement: title=assignment.title
-                title=assignment.title,
-                # Execute statement: reference_assignment_text=assignment.reference_assignment_text
-                reference_assignment_text=assignment.reference_assignment_text,
-            # Execute statement: )
-            )
+    # Submissions sit in status 'ready' per rule 1: AI auto-grading is never dispatched automatically upon upload
+    logger.info(f"Submissions for assignment {assignment_id} sitting in status 'ready'. Awaiting teacher-controlled grading start.")
 
     # Return result: ClassroomBatchUploadResponse(
     return ClassroomBatchUploadResponse(
@@ -1182,8 +1121,8 @@ async def batch_upload_submissions(
             file_name=s.file_name,
             # Execute statement: status=s.status
             status=s.status,
-            # Execute statement: score=s.draft_grade.suggested_score if s.draft_grade else 0.0
-            score=s.draft_grade.suggested_score if s.draft_grade else 0.0,
+            # Execute statement: score=s.draft_grade.suggested_score if s.draft_grade else None
+            score=s.draft_grade.suggested_score if s.draft_grade else None,
             # Execute statement: similarity=s.similarity_score
             similarity=s.similarity_score,
             # Execute statement: ai_content=s.ai_content_probability
@@ -1324,8 +1263,8 @@ async def upload_single_file_submission(
             "web_plagiarism_score": 0.0,
             # Execute statement: "web_sources": []
             "web_sources": [],
-            # Execute statement: "status": "pending"
-            "status": "pending",
+            # Execute statement: "status": sub.status
+            "status": sub.status,
         # Execute statement: }).execute()
         }).execute()
     # Catch and handle exception: except Exception as e
@@ -1347,14 +1286,14 @@ async def upload_single_file_submission(
         file_name=sub.file_name,
         # Execute statement: status=sub.status
         status=sub.status,
-        # Execute statement: score=0.0
-        score=0.0,
-        # Execute statement: similarity=0.0
-        similarity=0.0,
-        # Execute statement: ai_content=0.0
-        ai_content=0.0,
-        # Execute statement: web_plagiarism=0.0
-        web_plagiarism=0.0,
+        # Execute statement: score=sub.draft_grade.suggested_score if sub.draft_grade else None
+        score=sub.draft_grade.suggested_score if sub.draft_grade else None,
+        # Execute statement: similarity=sub.similarity_score
+        similarity=sub.similarity_score,
+        # Execute statement: ai_content=sub.ai_content_probability
+        ai_content=sub.ai_content_probability,
+        # Execute statement: web_plagiarism=sub.web_plagiarism_score
+        web_plagiarism=sub.web_plagiarism_score,
         # Execute statement: file_url=sub.file_url
         file_url=sub.file_url,
         # Execute statement: created_at=sub.created_at
@@ -1717,15 +1656,15 @@ def get_assignment_submissions(
     res_list = []
     # Iterate through: s in submissions
     for s in submissions:
-        # Set score to 0.0
-        score = 0.0
-        # Set max_s to 100.0
-        max_s = 100.0
-        # Set crit to None
+        # Score defaults to None when submission has not yet been evaluated by educator command
+        score = None
+        # Max score defaults to None when submission is ungraded
+        max_s = None
+        # Criteria breakdown defaults to None
         crit = None
-        # Set fb to None
+        # Qualitative feedback defaults to None
         fb = None
-        # Set plag to None
+        # Plagiarism report defaults to None
         plag = None
         # Verify condition: s.draft_grade
         if s.draft_grade:
@@ -1780,10 +1719,10 @@ def get_assignment_submissions(
                 max_score=max_s,
                 # Execute statement: similarity=s.similarity_score or 0.0
                 similarity=s.similarity_score or 0.0,
-                # Execute statement: ai_content=s.ai_content_probability or 0.0
-                ai_content=s.ai_content_probability or 0.0,
-                # Execute statement: web_plagiarism=s.web_plagiarism_score or 0.0
-                web_plagiarism=s.web_plagiarism_score or 0.0,
+                # AI content probability, None until evaluation has run
+                ai_content=s.ai_content_probability if s.draft_grade else None,
+                # Web search plagiarism score, None until checked
+                web_plagiarism=s.web_plagiarism_score if s.draft_grade else None,
                 # Execute statement: file_url=s.file_url
                 file_url=s.file_url,
                 # Execute statement: criteria_scores=crit
@@ -1886,15 +1825,15 @@ def assign_submission_student(
         # Log warning notice message to runtime logger
         logger.warning(f"Error updating submission in Supabase: {e}")
 
-    # Set score to 0.0
-    score = 0.0
-    # Set max_s to 100.0
-    max_s = 100.0
-    # Set crit to None
+    # Score defaults to None when submission is ungraded
+    score = None
+    # Max score defaults to None when submission is ungraded
+    max_s = None
+    # Criteria breakdown defaults to None
     crit = None
-    # Set fb to None
+    # Qualitative feedback defaults to None
     fb = None
-    # Set plag to None
+    # Plagiarism report defaults to None
     plag = None
     # Verify condition: sub.draft_grade
     if sub.draft_grade:
@@ -1947,10 +1886,10 @@ def assign_submission_student(
         max_score=max_s,
         # Execute statement: similarity=sub.similarity_score or 0.0
         similarity=sub.similarity_score or 0.0,
-        # Execute statement: ai_content=sub.ai_content_probability or 0.0
-        ai_content=sub.ai_content_probability or 0.0,
-        # Execute statement: web_plagiarism=sub.web_plagiarism_score or 0.0
-        web_plagiarism=sub.web_plagiarism_score or 0.0,
+        # AI content probability, None until evaluation has run
+        ai_content=sub.ai_content_probability if sub.draft_grade else None,
+        # Web search plagiarism score, None until checked
+        web_plagiarism=sub.web_plagiarism_score if sub.draft_grade else None,
         # Execute statement: file_url=sub.file_url
         file_url=sub.file_url,
         # Execute statement: criteria_scores=crit
@@ -1974,8 +1913,9 @@ def delete_single_submission(
 ):
     """Delete a single student submission and cleanly cascade associated similarity matches."""
     sub = db.query(Submission).filter(Submission.id == submission_id).first()
+    # Idempotent deletion: if submission is already removed or does not exist, return 204
     if not sub:
-        raise HTTPException(status_code=404, detail="Submission not found")
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # Validate instructor ownership if assignment/course is found
     assign = db.query(Assignment).filter(Assignment.id == sub.assignment_id).first()

@@ -140,9 +140,28 @@ def soft_delete_course(
     Returns:
         dict: Confirmation with retention expiration details.
     """
-    course = db.query(Course).filter(Course.id == course_id, Course.deleted_at.is_(None)).first()
+    # Query course matching course_id
+    course = db.query(Course).filter(Course.id == course_id).first()
+    # Idempotent guard: if course does not exist, return success
     if not course:
-        raise HTTPException(status_code=404, detail="Course not found or already deleted")
+        return {
+            "status": "success",
+            "message": "Course already removed or not found.",
+            "entity_type": "Course",
+            "entity_id": course_id,
+            "deleted_at": datetime.now(timezone.utc).isoformat(),
+            "days_remaining": 30,
+        }
+    # Idempotent guard: if already soft-deleted, return success
+    if course.deleted_at is not None:
+        return {
+            "status": "success",
+            "message": f"Course '{course.name}' already moved to Trash.",
+            "entity_type": "Course",
+            "entity_id": course_id,
+            "deleted_at": course.deleted_at.isoformat(),
+            "days_remaining": 30,
+        }
 
     # Mark soft-deleted timestamp
     course.deleted_at = datetime.utcnow()
@@ -185,9 +204,28 @@ def soft_delete_assignment(
     Returns:
         dict: Confirmation with retention expiration details.
     """
-    assignment = db.query(Assignment).filter(Assignment.id == assignment_id, Assignment.deleted_at.is_(None)).first()
+    # Query target assignment by ID
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    # Idempotent guard: if assignment does not exist, return success
     if not assignment:
-        raise HTTPException(status_code=404, detail="Assignment not found or already deleted")
+        return {
+            "status": "success",
+            "message": "Assignment already removed or not found.",
+            "entity_type": "Assignment",
+            "entity_id": assignment_id,
+            "deleted_at": datetime.now(timezone.utc).isoformat(),
+            "days_remaining": 30,
+        }
+    # Idempotent guard: if already soft-deleted, return success
+    if assignment.deleted_at is not None:
+        return {
+            "status": "success",
+            "message": f"Assignment '{assignment.title}' already moved to Trash.",
+            "entity_type": "Assignment",
+            "entity_id": assignment_id,
+            "deleted_at": assignment.deleted_at.isoformat(),
+            "days_remaining": 30,
+        }
 
     # Mark soft-deleted timestamp
     assignment.deleted_at = datetime.utcnow()
@@ -230,9 +268,28 @@ def soft_delete_submission(
     Returns:
         dict: Confirmation with retention expiration details.
     """
-    submission = db.query(Submission).filter(Submission.id == submission_id, Submission.deleted_at.is_(None)).first()
+    # Query target submission by ID
+    submission = db.query(Submission).filter(Submission.id == submission_id).first()
+    # Idempotent guard: if submission does not exist, return success
     if not submission:
-        raise HTTPException(status_code=404, detail="Submission not found or already deleted")
+        return {
+            "status": "success",
+            "message": "Submission already removed or not found.",
+            "entity_type": "Submission",
+            "entity_id": submission_id,
+            "deleted_at": datetime.now(timezone.utc).isoformat(),
+            "days_remaining": 30,
+        }
+    # Idempotent guard: if already soft-deleted, return success
+    if submission.deleted_at is not None:
+        return {
+            "status": "success",
+            "message": f"Submission '{submission.file_name}' already moved to Trash.",
+            "entity_type": "Submission",
+            "entity_id": submission_id,
+            "deleted_at": submission.deleted_at.isoformat(),
+            "days_remaining": 30,
+        }
 
     # Mark soft-deleted timestamp
     submission.deleted_at = datetime.utcnow()
@@ -275,9 +332,28 @@ def soft_delete_student(
     Returns:
         dict: Confirmation with retention expiration details.
     """
-    student = db.query(Student).filter(Student.id == student_id, Student.deleted_at.is_(None)).first()
+    # Query target student by ID
+    student = db.query(Student).filter(Student.id == student_id).first()
+    # Idempotent guard: if student does not exist, return success
     if not student:
-        raise HTTPException(status_code=404, detail="Student not found or already deleted")
+        return {
+            "status": "success",
+            "message": "Student already removed or not found.",
+            "entity_type": "Student",
+            "entity_id": student_id,
+            "deleted_at": datetime.now(timezone.utc).isoformat(),
+            "days_remaining": 30,
+        }
+    # Idempotent guard: if already soft-deleted, return success
+    if student.deleted_at is not None:
+        return {
+            "status": "success",
+            "message": f"Student '{student.full_name}' already moved to Trash.",
+            "entity_type": "Student",
+            "entity_id": student_id,
+            "deleted_at": student.deleted_at.isoformat(),
+            "days_remaining": 30,
+        }
 
     # Mark soft-deleted timestamp
     student.deleted_at = datetime.utcnow()

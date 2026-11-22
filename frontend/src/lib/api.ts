@@ -1345,7 +1345,7 @@ export const api = {
   },
 
   // ==========================================
-  // Batch AI Evaluation with 3-Way Plagiarism
+  // Batch AI Evaluation with Academic Similarity Check
   // ==========================================
   evaluations: {
     // Specify triggerBatch property (async ()
@@ -1662,6 +1662,158 @@ export const api = {
     submitErasureRequest: async (reason?: string): Promise<any> => {
       const q = reason ? `?reason=${encodeURIComponent(reason)}` : "";
       return request<any>(`/privacy/erasure-request${q}`, { method: "POST" });
+    },
+  },
+
+  // ==========================================
+  // Review Mode, Prompt Fixing & Teacher Start
+  // ==========================================
+  reviewMode: {
+    /**
+     * Fetch pre-flight check calculations and blocker validation before starting grading.
+     *
+     * @param {string} assignmentId - Unique identifier of the assignment.
+     * @returns {Promise<any>} Pre-flight calculation summary including counts, duration, and token estimates.
+     */
+    // Define asynchronous method to fetch preflight grading check data
+    getPreflight: async (assignmentId: string): Promise<any> => {
+      // Execute GET request to preflight endpoint
+      return request<any>(`/review-mode/preflight/${assignmentId}`);
+    },
+
+    /**
+     * Start teacher-controlled grading execution immediately, on schedule, or as draft.
+     *
+     * @param {Object} data - Grading start parameters.
+     * @returns {Promise<any>} Dispatch response containing run ID and execution status.
+     */
+    // Define asynchronous method to start teacher-controlled grading
+    startGrading: async (data: {
+      assignment_id?: string;
+      scope?: string;
+      filter_mode?: string;
+      when?: string;
+      scheduled_for?: string;
+      timezone?: string;
+      concurrency_limit?: number;
+      max_cost_limit_usd?: number;
+    }): Promise<any> => {
+      // Execute POST request to start grading endpoint
+      return request<any>("/review-mode/start-grading", {
+        // Specify HTTP POST verb
+        method: "POST",
+        // Serialize request configuration payload
+        body: JSON.stringify(data),
+      });
+    },
+
+    /**
+     * Retrieve all prompt versions associated with an assignment.
+     *
+     * @param {string} assignmentId - Unique identifier of the assignment.
+     * @returns {Promise<any>} Array of versioned prompt records.
+     */
+    // Define asynchronous method to list prompt versions
+    listPromptVersions: async (assignmentId: string): Promise<any> => {
+      // Execute GET request to fetch prompt versions
+      return request<any>(`/review-mode/assignments/${assignmentId}/prompt-versions`);
+    },
+
+    /**
+     * Submit structured teacher feedback on AI grading mistakes to train meta-prompt fixes.
+     *
+     * @param {string} assignmentId - Unique identifier of the assignment.
+     * @param {Object} data - Feedback categorization and explanation payload.
+     * @returns {Promise<any>} Created feedback record.
+     */
+    // Define asynchronous method to submit teacher evaluation mistake feedback
+    submitFeedback: async (
+      assignmentId: string,
+      data: {
+        submission_id?: string;
+        error_category: string;
+        explanation: string;
+        expected_behavior?: string;
+      },
+    ): Promise<any> => {
+      // Execute POST request to submit error feedback
+      return request<any>(`/review-mode/assignments/${assignmentId}/feedback`, {
+        // Specify HTTP POST verb
+        method: "POST",
+        // Serialize feedback payload
+        body: JSON.stringify(data),
+      });
+    },
+
+    /**
+     * Trigger Gemini meta-prompt assistant to analyze teacher feedback and propose prompt diffs.
+     *
+     * @param {string} assignmentId - Unique identifier of the assignment.
+     * @param {string} [notes] - Optional teacher guidance or instructions.
+     * @returns {Promise<any>} Proposed prompt version and unified diff.
+     */
+    // Define asynchronous method to request AI assistant prompt fix
+    assistantFix: async (assignmentId: string, notes?: string): Promise<any> => {
+      // Build query string parameter for teacher guidance notes
+      const q = notes ? `?teacher_notes=${encodeURIComponent(notes)}` : "";
+      // Execute POST request to assistant fix endpoint
+      return request<any>(`/review-mode/assignments/${assignmentId}/assistant-fix${q}`, {
+        // Specify HTTP POST verb
+        method: "POST",
+      });
+    },
+
+    /**
+     * Run a non-destructive dry-run sandbox on sampled submissions using a revised prompt.
+     *
+     * @param {string} assignmentId - Unique identifier of the assignment.
+     * @param {string} [promptText] - Prompt text candidate to benchmark.
+     * @returns {Promise<any>} Dry run execution results with before/after score comparisons.
+     */
+    // Define asynchronous method to run non-destructive dry run
+    dryRun: async (assignmentId: string, promptText?: string): Promise<any> => {
+      // Execute POST request to trigger sandbox dry run
+      return request<any>(`/review-mode/assignments/${assignmentId}/dry-run`, {
+        // Specify HTTP POST verb
+        method: "POST",
+        // Serialize prompt text candidate payload
+        body: JSON.stringify({ prompt_text: promptText }),
+      });
+    },
+
+    /**
+     * Override submission score with audit trail recording old score, new score, and rationale.
+     *
+     * @param {Object} data - Override parameters including submission ID, new score, and reason.
+     * @returns {Promise<any>} Updated submission and audit history record.
+     */
+    // Define asynchronous method to execute teacher grade override
+    overrideGrade: async (data: {
+      submission_id: string;
+      new_score: number;
+      reason: string;
+      teacher_feedback?: string;
+      criteria_scores?: any[];
+    }): Promise<any> => {
+      // Execute POST request to grade override endpoint
+      return request<any>("/review-mode/grade-override", {
+        // Specify HTTP POST verb
+        method: "POST",
+        // Serialize grade override payload
+        body: JSON.stringify(data),
+      });
+    },
+
+    /**
+     * Fetch immutable grade override audit history for a submission.
+     *
+     * @param {string} submissionId - Unique identifier of the submission.
+     * @returns {Promise<any>} Audit trail history entries for the submission.
+     */
+    // Define asynchronous method to fetch submission grade audit history
+    getGradeHistory: async (submissionId: string): Promise<any> => {
+      // Execute GET request to fetch grade audit history
+      return request<any>(`/review-mode/grade-history/${submissionId}`);
     },
   },
 };

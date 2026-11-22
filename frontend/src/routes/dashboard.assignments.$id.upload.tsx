@@ -685,7 +685,7 @@ export function AssignmentBatchUploadRoute() {
               <div className="flex items-center justify-between pt-2">
                 <div className="text-xs text-slate-400 flex items-center gap-2">
                   <ShieldAlert className="size-4 text-teal-400" />
-                  <span>FERPA-compliant AES-256 identifier encryption & Secure Storage.</span>
+                  <span>Authenticated field encryption & secure cloud storage.</span>
                 </div>
                 <Button
                   onClick={handleUploadAndEvaluate}
@@ -1017,7 +1017,7 @@ export function AssignmentBatchUploadRoute() {
 
                         {/* Badges & Metrics Bar */}
                         <div className="flex flex-wrap items-center gap-3">
-                          {/* 3-Way Plagiarism Badges */}
+                          {/* Peer Similarity & Integrity Badges */}
                           <div className="flex items-center gap-2">
                             {isFlagged ? (
                               <span className="px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center gap-1.5">

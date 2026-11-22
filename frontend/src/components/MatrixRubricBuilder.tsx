@@ -319,13 +319,13 @@ export function MatrixRubricBuilder({
           </div>
         </div>
 
-        {/* Scrollable Matrix */}
-        <div className="overflow-x-auto">
+        {/* Scrollable Matrix with sticky headers and left column */}
+        <div className="overflow-x-auto max-h-[680px]">
           <table className="w-full border-collapse text-left text-xs">
-            <thead>
-              <tr className="border-b border-line bg-muted/30">
-                {/* Criterion Header */}
-                <th className="w-72 min-w-[280px] border-r border-line p-3 font-semibold text-foreground">
+            <thead className="sticky top-0 z-20 bg-muted/95 backdrop-blur">
+              <tr className="border-b border-line">
+                {/* Sticky Criterion Column Header */}
+                <th className="sticky left-0 top-0 z-30 w-72 min-w-[280px] border-r border-line bg-muted p-3 font-semibold text-foreground shadow-sm">
                   Criteria / Skill Areas
                 </th>
 
@@ -333,7 +333,7 @@ export function MatrixRubricBuilder({
                 {tiers.map((tier) => (
                   <th
                     key={tier.id}
-                    className="min-w-[240px] border-r border-line p-3 last:border-r-0"
+                    className="min-w-[240px] border-r border-line p-3 last:border-r-0 bg-muted/95"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex-1 space-y-1">
@@ -374,8 +374,8 @@ export function MatrixRubricBuilder({
             <tbody className="divide-y divide-line">
               {criteriaRows.map((row, rowIdx) => (
                 <tr key={row.id} className="transition-colors hover:bg-muted/10">
-                  {/* Criterion Row Title */}
-                  <td className="align-top border-r border-line p-3">
+                  {/* Sticky Criterion Row Title Column */}
+                  <td className="sticky left-0 z-10 align-top border-r border-line bg-card p-3 shadow-sm">
                     <div className="space-y-2">
                       <div className="flex items-center justify-between">
                         <span className="text-[10px] font-bold uppercase tracking-wider text-primary">
@@ -395,8 +395,12 @@ export function MatrixRubricBuilder({
                       <Textarea
                         value={row.criterion_name}
                         onChange={(e) => handleUpdateCriterionName(row.id, e.target.value)}
-                        rows={3}
-                        className="text-xs font-medium resize-none"
+                        onInput={(e) => {
+                          e.currentTarget.style.height = "auto";
+                          e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`;
+                        }}
+                        rows={2}
+                        className="text-xs font-medium resize-none overflow-hidden"
                         placeholder="e.g. OOP Structure, Syntax & Real-time Instance Usage"
                       />
 
@@ -407,20 +411,24 @@ export function MatrixRubricBuilder({
                     </div>
                   </td>
 
-                  {/* Level Description Cells */}
+                  {/* Level Description Cells with Auto-Growing Textareas */}
                   {tiers.map((tier) => (
                     <td
                       key={tier.id}
-                      className="align-top border-r border-line p-3 last:border-r-0"
+                      className="min-w-[240px] align-top border-r border-line p-3 last:border-r-0"
                     >
                       <Textarea
                         value={row.descriptions[tier.id] || ""}
                         onChange={(e) =>
                           handleUpdateCellDescription(row.id, tier.id, e.target.value)
                         }
-                        rows={5}
+                        onInput={(e) => {
+                          e.currentTarget.style.height = "auto";
+                          e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`;
+                        }}
+                        rows={4}
                         placeholder={`Describe expectations for '${tier.level_name}' (${tier.points} pts)...`}
-                        className="w-full text-xs leading-relaxed resize-none bg-background/50 focus:bg-background"
+                        className="w-full text-xs leading-relaxed resize-none overflow-hidden bg-background/50 focus:bg-background transition-all"
                       />
                     </td>
                   ))}

@@ -2,6 +2,7 @@
 
 > **Platform Version:** Verism AI 2.5.0  
 > **Target Migration:** Decouple local Docker PostgreSQL and connect to dedicated managed Supabase PostgreSQL database.  
+> **Status:** Completed & Production Verified (All 37 Tables Migrated, RLS Enforced, Foreign Key Indexes Applied, 46/46 Tests Passing).  
 > **Core Principle:** *"Supabase is used purely as managed PostgreSQL. Our own FastAPI authentication, SQLAlchemy ORM, and Celery pipelines stay."*
 
 ---

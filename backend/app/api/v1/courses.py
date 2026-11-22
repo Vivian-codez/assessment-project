@@ -167,9 +167,9 @@ def get_courses(
 
         # Get live student count from Student table if enrolled
         # Count enrolled student records matching course ID as classroom ID
-        live_students = db.query(Student).filter(Student.classroom_id == c.id).count()
-        # Use live count if greater than zero, otherwise fallback to cached count
-        student_count = live_students if live_students > 0 else (c.students_count or 0)
+        live_students = db.query(Student).filter(Student.classroom_id == c.id, Student.deleted_at.is_(None)).count()
+        # Strictly use relational database count as single source of truth without legacy mock fallbacks
+        student_count = live_students
 
         # Append formatted CourseResponse model to results list
         results.append(
@@ -242,10 +242,10 @@ def get_course_detail(
         .count()
     ) if assignment_ids else 0
 
-    # Query live count of enrolled students in classroom
-    live_students = db.query(Student).filter(Student.classroom_id == course.id).count()
-    # Use live count if positive, otherwise fallback to cached students_count
-    student_count = live_students if live_students > 0 else (course.students_count or 0)
+    # Query live count of active enrolled students in classroom
+    live_students = db.query(Student).filter(Student.classroom_id == course.id, Student.deleted_at.is_(None)).count()
+    # Single source of truth: strictly use relational count without mock fallback
+    student_count = live_students
 
     # Return serialized CourseDetailResponse schema
     return CourseDetailResponse(

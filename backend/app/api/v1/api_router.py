@@ -64,3 +64,7 @@ api_v1_router.include_router(reports_router)
 api_v1_router.include_router(audit_router)
 # Mount multi-tenant assignment folders and evaluation endpoints onto v1 router
 api_v1_router.include_router(folders_router)
+# Import review mode, prompt assistant, and teacher-controlled grading router
+from app.api.v1.review_mode import router as review_mode_router
+# Mount review mode endpoints onto v1 router
+api_v1_router.include_router(review_mode_router)

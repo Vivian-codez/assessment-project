@@ -46,6 +46,16 @@ from app.models.deletion_request import DeletionRequest
 from app.models.batch_job import BatchJob
 # Import AuditLog immutable compliance and security audit trail model
 from app.models.audit_log import AuditLog
+# Import PromptVersion model for prompt version control
+from app.models.prompt_version import PromptVersion
+# Import PromptFeedback model for teacher error logging
+from app.models.prompt_feedback import PromptFeedback
+# Import DryRun and DryRunResult models for non-destructive simulation
+from app.models.dry_run import DryRun, DryRunResult
+# Import GradeHistory model for immutable grade audit trails
+from app.models.grade_history import GradeHistory
+# Import ReviewProgress model for review queue persistence
+from app.models.review_progress import ReviewProgress
 
 # Export public model symbols for easy package-level importing across backend services
 __all__ = [
@@ -100,4 +110,15 @@ __all__ = [
     "BatchJob",
     # FERPA security audit log model
     "AuditLog",
+    # Prompt version control model
+    "PromptVersion",
+    # Teacher error logging model
+    "PromptFeedback",
+    # Dry run simulation models
+    "DryRun",
+    "DryRunResult",
+    # Immutable grade audit trail model
+    "GradeHistory",
+    # Review queue persistence model
+    "ReviewProgress",
 ]

@@ -721,7 +721,7 @@ export function RosterView({
               <div>
                 <div className="flex items-center gap-2">
                   <h2 className="font-display text-xl font-semibold text-foreground">
-                    Multi-Format Roll Call Ingestion
+                    Import roll call
                   </h2>
                   <Badge variant="secondary" className="gap-1 bg-amber-soft text-amber-ink border-amber/30 text-[10px]">
                     <Sparkles className="size-3" />
@@ -814,6 +814,28 @@ export function RosterView({
                   <strong>AI Roster Parser Actively Extracting Records...</strong> Analyzing document
                   layout and extracting student entries.
                 </span>
+              </div>
+            )}
+
+            {/* Empty State when zero rows were parsed from uploaded file */}
+            {csvFile && !aiParsing && csvPreviewRows.length === 0 && (
+              <div className="mt-4 rounded-xl border border-destructive/20 bg-destructive/5 p-5 text-center">
+                <AlertCircle className="mx-auto size-6 text-destructive mb-1.5" />
+                <p className="text-xs font-semibold text-foreground">
+                  No rows found in {csvFile.name}
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  Expected columns: <span className="font-mono font-medium text-foreground">roll_number, full_name, email</span>. Please ensure your file headers match.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDownloadSampleTemplate}
+                  className="mt-3 h-7 text-xs gap-1.5"
+                >
+                  <Download className="size-3.5" />
+                  Download Sample Template
+                </Button>
               </div>
             )}
 
@@ -956,6 +978,15 @@ export function RosterView({
                   csvPreviewRows.filter((r) => r.valid).length === 0 ||
                   csvUploading ||
                   aiParsing
+                }
+                title={
+                  !csvFile
+                    ? "Select or drop a roster file to begin"
+                    : aiParsing
+                      ? "AI parser is analyzing student records"
+                      : csvPreviewRows.filter((r) => r.valid).length === 0
+                        ? "No valid student rows found to enroll. Ensure Roll Number and Full Name are populated."
+                        : `Confirm enrollment for ${csvPreviewRows.filter((r) => r.valid).length} valid students`
                 }
                 className="text-xs bg-primary text-primary-foreground"
               >

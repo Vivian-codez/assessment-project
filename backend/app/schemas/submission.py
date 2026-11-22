@@ -40,18 +40,18 @@ class SubmissionResponse(BaseModel):
     student_id: Optional[str] = None
     # Original filename of the uploaded submission document
     file_name: str
-    # Current workflow status (e.g., queued, graded, reviewed, flagged)
+    # Current workflow status (e.g., ready, queued, graded, approved)
     status: str
-    # Score awarded for the submission, defaulting to 0.0
-    score: float = 0.0
-    # Maximum possible score for the assignment, defaulting to 100.0
-    max_score: float = 100.0
-    # Peer similarity percentage score, defaulting to 0.0
-    similarity: float = 0.0
-    # AI generated content probability percentage, aliased to aiContent
-    ai_content: float = Field(default=0.0, alias="aiContent")
-    # Public web search plagiarism percentage, aliased to webPlagiarism
-    web_plagiarism: float = Field(default=0.0, alias="webPlagiarism")
+    # Score awarded for the submission, None when ungraded
+    score: Optional[float] = None
+    # Maximum possible score for the assignment
+    max_score: Optional[float] = None
+    # Peer similarity percentage score, None until similarity check runs
+    similarity: Optional[float] = None
+    # AI generated content probability percentage, None until evaluation runs
+    ai_content: Optional[float] = Field(default=None, alias="aiContent")
+    # Public web search plagiarism percentage, None until check runs
+    web_plagiarism: Optional[float] = Field(default=None, alias="webPlagiarism")
     # Optional download URL or storage path for the original file
     file_url: Optional[str] = None
     # Optional list of criterion scores breakdown dictionaries

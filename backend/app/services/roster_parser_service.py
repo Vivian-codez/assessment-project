@@ -322,13 +322,30 @@ class RosterParserService:
     def _find_column_indices(self, header: List[str]):
         """Identifies indices for roll number, name, and email from column headers."""
         roll_idx, name_idx, email_idx = None, None, None
+        # Comprehensive dictionary of roll number header synonyms
+        roll_aliases = {
+            "rollnumber", "rollno", "roll", "studentroll", "id", "roll#", "registrationno",
+            "regno", "studentno", "studentid", "urn", "usn", "matricno", "matriculationno",
+            "enrolmentno", "enrollmentno", "enrolment", "enrollment", "candidateid",
+            "scholarid", "admissionno", "admno", "studentcode", "univroll", "collegeroll",
+        }
+        # Comprehensive dictionary of student name header synonyms
+        name_aliases = {
+            "name", "fullname", "studentname", "names", "student", "candidatename",
+            "scholarname", "learnername", "firstandlastname", "studentfullname",
+        }
+        # Comprehensive dictionary of email header synonyms
+        email_aliases = {
+            "email", "emailaddress", "studentemail", "mail", "institutionalemail",
+            "universityemail", "contactemail", "emailid",
+        }
         for idx, col in enumerate(header):
-            c = col.strip()
-            if c in ("rollnumber", "rollno", "roll", "studentroll", "id", "roll#", "registrationno", "regno", "studentno"):
+            c = col.strip().lower().replace("_", "").replace(" ", "").replace("-", "").replace(".", "")
+            if c in roll_aliases:
                 roll_idx = idx
-            elif c in ("name", "fullname", "studentname", "names", "student"):
+            elif c in name_aliases:
                 name_idx = idx
-            elif c in ("email", "emailaddress", "studentemail", "mail"):
+            elif c in email_aliases:
                 email_idx = idx
         return roll_idx, name_idx, email_idx
 
@@ -352,6 +369,16 @@ class RosterParserService:
         try:
             if ext in {"csv", "tsv", "txt"}:
                 return content.decode("utf-8-sig", errors="replace")
+            if ext in {"xlsx", "xls"}:
+                import openpyxl
+                wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+                lines = []
+                for sheet in wb.worksheets:
+                    for row in sheet.iter_rows(values_only=True):
+                        row_vals = [str(c).strip() for c in row if c is not None and str(c).strip()]
+                        if row_vals:
+                            lines.append(" ".join(row_vals))
+                return "\n".join(lines)
             if ext == "pdf":
                 import pypdf
                 reader = pypdf.PdfReader(io.BytesIO(content))

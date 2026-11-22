@@ -90,6 +90,8 @@ import { RosterView } from "@/components/RosterView";
 import { MatrixRubricBuilder } from "@/components/MatrixRubricBuilder";
 import { RubricsListView } from "@/components/RubricsListView";
 import { AssignmentWizardModal } from "@/components/AssignmentWizardModal";
+import { StartGradingModal } from "@/components/StartGradingModal";
+import { ReviewAssistantModal } from "@/components/ReviewAssistantModal";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -98,7 +100,7 @@ export const Route = createFileRoute("/")({
       {
         name: "description",
         content:
-          "Authoritative, teacher-first workspace for automated rubric grading, reference assignment benchmarking, and 3-way plagiarism audits.",
+          "Authoritative, teacher-first workspace for automated rubric grading, reference assignment benchmarking, and academic similarity review.",
       },
       { property: "og:title", content: "Verism AI — Teacher Review & Auto-Grading Console" },
       { property: "og:type", content: "website" },
@@ -193,7 +195,20 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
   const [mobileNav, setMobileNav] = useState(false);
   const [notifications, setNotifications] = useState(false);
   const [search, setSearch] = useState("");
-  const [toast, setToast] = useState("");
+  const [toast, setToast] = useState<{
+    message: string;
+    type?: "success" | "error" | "info" | "loading";
+    retryAction?: () => void;
+  } | null>(null);
+
+  // Sidebar collapsible state
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // Teacher-controlled grading start panel modal
+  const [startGradingModalOpen, setStartGradingModalOpen] = useState(false);
+
+  // Review mode assistant & prompt-fix modal
+  const [reviewAssistantOpen, setReviewAssistantOpen] = useState(false);
 
   // Authentication State
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(getCachedUser());
@@ -237,9 +252,15 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
   const [processingAssignmentId, setProcessingAssignmentId] = useState<string>("");
   const [takingAssignment, setTakingAssignment] = useState(false);
 
-  const showToast = (message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(""), 3500);
+  const showToast = (
+    message: string,
+    type: "success" | "error" | "info" | "loading" = "success",
+    retryAction?: () => void,
+  ) => {
+    setToast({ message, type, retryAction });
+    if (type !== "loading") {
+      window.setTimeout(() => setToast(null), 4000);
+    }
   };
 
   // Initial Data Fetch & Auth Verification
@@ -439,7 +460,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
     assignments.find((a) => a.id === selectedAssignmentId) ||
     (assignments.length > 0 && assignments[0] ? assignments[0] : null);
 
-  const pendingCount = submissions.filter((s) => s.status !== "approved").length;
+  const pendingCount = submissions.filter((s) => s.status === "graded").length;
 
   const handleSelectClassroom = (classroomId: string) => {
     setSelectedClassroomId(classroomId);
@@ -616,7 +637,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
     }, 1200);
   };
 
-  // Trigger Live AI Auto-Grading & 3-Way Plagiarism Check
+  // Trigger Live AI Auto-Grading & Academic Similarity Review
   const startAIAutoGrading = async (assignId?: string) => {
     let targetId = assignId || selectedAssignmentId;
     if (!targetId && currentCourse) {
@@ -629,7 +650,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
     setIsProcessing(true);
     setProcessingAssignmentId(targetId);
     setProcessingProgress(8);
-    showToast("AI Auto-Grading & 3-Way Plagiarism Audit initiated. Evaluation is in process...");
+    showToast("AI Auto-Grading & Academic Similarity Review initiated. Evaluation is in process...");
 
     try {
       const assignObj = assignments.find((a) => a.id === targetId) || currentAssignment;
@@ -644,7 +665,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
     } catch (e: any) {
       setIsProcessing(false);
       setProcessingAssignmentId("");
-      showToast(`Error starting evaluation: ${e.message}`);
+      showToast(`Error starting evaluation: ${e.message}`, "error");
     }
   };
 
@@ -658,7 +679,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
       const title = `Assignment 1 · ${currentCourse.name || currentCourse.code} Submissions`;
       const created = await api.assignments.create(currentCourse.id, {
         title,
-        description: `Student submissions and benchmark solutions for ${currentCourse.name || currentCourse.code}. Evaluated against university rubric with 3-way plagiarism audit.`,
+        description: `Student submissions and benchmark solutions for ${currentCourse.name || currentCourse.code}. Evaluated against university rubric with academic similarity review.`,
         max_score: 100,
         reference_assignment_text:
           "Benchmark Reference Solution: Students must implement accurate algorithmic models, clean functional modularity, robust boundary test coverage, and comprehensive runtime complexity analysis.",
@@ -698,8 +719,15 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
           onClose={() => setMobileNav(false)}
           pendingCount={pendingCount}
           isProcessing={isProcessing}
+          collapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         />
-        <div className="flex min-w-0 flex-1 flex-col lg:ml-64">
+        <div
+          className={cn(
+            "flex min-w-0 flex-1 flex-col transition-all duration-300",
+            sidebarCollapsed ? "lg:ml-20" : "lg:ml-64",
+          )}
+        >
           <TopBar
             course={currentCourse}
             courses={courses}
@@ -838,7 +866,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 submissions={submissions}
                 isProcessing={isProcessing}
                 progress={processingProgress}
-                onStartGrading={startAIAutoGrading}
+                onStartGrading={() => setStartGradingModalOpen(true)}
                 onReloadSubmissions={loadSubmissions}
                 onNavigate={navigate}
                 showToast={showToast}
@@ -866,7 +894,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 assignment={currentAssignment}
                 isProcessing={isProcessing}
                 progress={processingProgress}
-                onStartGrading={startAIAutoGrading}
+                onStartGrading={() => setStartGradingModalOpen(true)}
                 onReview={(subId) => {
                   setSelectedSubmissionId(subId);
                   navigate("review");
@@ -882,6 +910,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 selectedSubmissionId={selectedSubmissionId}
                 onSelectSubmission={setSelectedSubmissionId}
                 onGraded={() => loadSubmissions(selectedAssignmentId)}
+                onOpenAssistant={() => setReviewAssistantOpen(true)}
                 onNavigate={navigate}
                 showToast={showToast}
               />
@@ -911,9 +940,45 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
 
       {/* Global Toast */}
       {toast && (
-        <div className="fixed bottom-5 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-lg bg-ink px-4 py-3 text-sm text-card shadow-xl animate-fade-up">
-          <CheckCircle2 className="size-4 text-sage" />
-          {toast}
+        <div
+          role={toast.type === "error" ? "alert" : "status"}
+          className={cn(
+            "fixed bottom-5 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2.5 rounded-xl px-4 py-3 text-xs font-medium shadow-2xl animate-fade-up max-w-md",
+            toast.type === "error"
+              ? "border border-destructive/30 bg-destructive/95 text-destructive-foreground"
+              : toast.type === "loading"
+                ? "border border-amber/30 bg-card text-foreground"
+                : "border border-line bg-ink text-card",
+          )}
+        >
+          {toast.type === "error" ? (
+            <AlertCircle className="size-4 shrink-0 text-destructive-foreground" role="alert" />
+          ) : toast.type === "loading" ? (
+            <Loader2 className="size-4 shrink-0 animate-spin text-amber" />
+          ) : (
+            <CheckCircle2 className="size-4 shrink-0 text-sage" />
+          )}
+          <span className="flex-1 leading-snug">{toast.message}</span>
+          {toast.type === "error" && toast.retryAction && (
+            <button
+              type="button"
+              onClick={() => {
+                const action = toast.retryAction;
+                setToast(null);
+                action?.();
+              }}
+              className="ml-2 rounded-md bg-white/20 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-white/30 transition-colors"
+            >
+              Retry
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setToast(null)}
+            className="ml-1 text-white/60 hover:text-white"
+          >
+            <X className="size-3.5" />
+          </button>
         </div>
       )}
 
@@ -999,6 +1064,41 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
         />
       )}
 
+      {/* Teacher-Controlled AI Grading Start Modal */}
+      {startGradingModalOpen && currentAssignment && (
+        <StartGradingModal
+          isOpen={startGradingModalOpen}
+          onClose={() => setStartGradingModalOpen(false)}
+          assignment={currentAssignment}
+          course={currentCourse}
+          submissions={submissions}
+          onGradingStarted={(runData) => {
+            setStartGradingModalOpen(false);
+            if (runData?.run_id || runData?.job_id) {
+              setProcessingAssignmentId(currentAssignment.id);
+              setIsProcessing(true);
+              setProcessingProgress(5);
+              pollGradingJob(runData.run_id || runData.job_id, currentAssignment.id);
+            }
+          }}
+          showToast={showToast}
+        />
+      )}
+
+      {/* Prompt-Fix Review Assistant Modal */}
+      {reviewAssistantOpen && currentAssignment && (
+        <ReviewAssistantModal
+          isOpen={reviewAssistantOpen}
+          onClose={() => setReviewAssistantOpen(false)}
+          assignment={currentAssignment}
+          submission={submissions.find((s) => s.id === selectedSubmissionId) as any}
+          showToast={showToast}
+          onPromptUpdated={() => {
+            loadSubmissions(currentAssignment.id);
+          }}
+        />
+      )}
+
       {/* Reusable Deletion Confirmation Modal */}
       {deletionModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-fade-in">
@@ -1077,17 +1177,32 @@ const navSections: {
     label: "Workspace",
     items: [
       { key: "dashboard", label: "Dashboard", icon: LayoutDashboard },
-      { key: "courses", label: "My Courses", icon: BookOpen },
-      { key: "roster", label: "Student Roll Call", icon: Users },
-      { key: "assignments", label: "Assignments & Submissions", icon: FolderOpen },
-      { key: "grading", label: "AI Auto-Grading", icon: Sparkles },
-      { key: "review", label: "Review Queue", icon: CheckCircle2 },
-      { key: "gradebook", label: "Live Gradebook", icon: BarChart3 },
-      { key: "similarity", label: "Similarity & Plagiarism", icon: ShieldAlert },
-      { key: "reports", label: "Integrity Reports", icon: Activity },
+      { key: "courses", label: "Courses", icon: BookOpen },
+      { key: "roster", label: "Students", icon: Users },
+      { key: "assignments", label: "Assignments", icon: FolderOpen },
+      { key: "rubrics", label: "Rubrics", icon: ClipboardCheck },
     ],
   },
-  { label: "Account", items: [{ key: "settings", label: "Settings", icon: Settings }] },
+  {
+    label: "Grading",
+    items: [
+      { key: "grading", label: "Grading", icon: Sparkles },
+      { key: "review", label: "Review Queue", icon: CheckCircle2 },
+      { key: "gradebook", label: "Gradebook", icon: BarChart3 },
+    ],
+  },
+  {
+    label: "Insights",
+    items: [
+      { key: "similarity", label: "Integrity", icon: ShieldAlert },
+    ],
+  },
+  {
+    label: "Account",
+    items: [
+      { key: "settings", label: "Settings", icon: Settings },
+    ],
+  },
 ];
 
 function Sidebar({
@@ -1097,6 +1212,8 @@ function Sidebar({
   onClose,
   pendingCount,
   isProcessing = false,
+  collapsed = false,
+  onToggleCollapse,
 }: {
   active: ViewKey;
   onNavigate: (view: ViewKey) => void;
@@ -1104,6 +1221,8 @@ function Sidebar({
   onClose: () => void;
   pendingCount: number;
   isProcessing?: boolean;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
 }) {
   return (
     <>
@@ -1116,20 +1235,34 @@ function Sidebar({
       )}
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-line bg-card px-5 py-6 transition-transform duration-300 lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-40 flex shrink-0 flex-col border-r border-line bg-card py-6 transition-all duration-300 lg:translate-x-0",
+          collapsed ? "w-20 px-2.5" : "w-64 px-5",
           mobileOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
         <div className="flex items-center gap-2.5 px-1">
-          <div className="grid size-8 place-items-center rounded-[7px] bg-ink text-card">
+          <div className="grid size-8 shrink-0 place-items-center rounded-[7px] bg-ink text-card">
             <span className="font-display text-base leading-none">V</span>
           </div>
-          <div className="leading-tight">
-            <p className="text-[13px] font-semibold tracking-tight">Verism AI</p>
-            <p className="mt-0.5 text-[10px] uppercase tracking-[0.18em] text-faint">
-              Academic Integrity & Review
-            </p>
-          </div>
+          {!collapsed && (
+            <div className="leading-tight min-w-0 flex-1 truncate">
+              <p className="text-[13px] font-semibold tracking-tight truncate">Verism AI</p>
+              <p className="mt-0.5 text-[10px] uppercase tracking-[0.18em] text-faint truncate">
+                Teacher Review
+              </p>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={onToggleCollapse}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className={cn(
+              "hidden lg:grid size-7 place-items-center rounded-md border border-line text-muted-ink hover:text-ink hover:bg-paper transition-colors",
+              collapsed && "mx-auto mt-2",
+            )}
+          >
+            {collapsed ? <ArrowRight className="size-3.5" /> : <ArrowLeft className="size-3.5" />}
+          </button>
           <Button
             size="icon"
             variant="ghost"
@@ -1139,12 +1272,14 @@ function Sidebar({
             <X />
           </Button>
         </div>
-        <nav className="mt-8 space-y-0.5 text-[13px]">
+        <nav className="mt-6 space-y-0.5 text-[13px] overflow-y-auto pr-1">
           {navSections.map((section) => (
-            <div key={section.label} className="mb-5">
-              <div className="mb-2 px-3 text-[10px] uppercase tracking-[0.16em] text-faint">
-                {section.label}
-              </div>
+            <div key={section.label} className="mb-4">
+              {!collapsed && (
+                <div className="mb-1.5 px-3 text-[10px] uppercase tracking-[0.16em] text-faint truncate">
+                  {section.label}
+                </div>
+              )}
               {section.items.map((item) => {
                 const Icon = item.icon;
                 const isActive = active === item.key;
@@ -1153,27 +1288,29 @@ function Sidebar({
                     key={item.key}
                     variant="ghost"
                     onClick={() => onNavigate(item.key)}
+                    title={item.label}
                     className={cn(
-                      "flex h-9 w-full justify-start gap-3 rounded-lg px-3 font-normal text-muted-ink hover:bg-paper hover:text-ink",
+                      "flex h-9 w-full rounded-lg font-normal text-muted-ink hover:bg-paper hover:text-ink transition-colors",
+                      collapsed ? "justify-center px-0" : "justify-start gap-3 px-3",
                       isActive && "bg-lav-soft font-medium text-ink hover:bg-lav-soft",
                     )}
                   >
-                    <Icon className={cn("size-4", isActive ? "text-amber-ink" : "text-faint")} />
-                    <span>{item.label}</span>
+                    <Icon className={cn("size-4 shrink-0", isActive ? "text-amber-ink" : "text-faint")} />
+                    {!collapsed && <span className="truncate">{item.label}</span>}
                     {item.key === "assignments" && isProcessing && (
-                      <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-amber-soft px-1.5 py-0.5 text-[9px] font-bold text-amber-ink animate-pulse">
-                        <Loader2 className="size-2.5 animate-spin" />
-                        In Process
-                      </span>
-                    )}
-                    {item.key === "grading" && isProcessing && (
-                      <span className="ml-auto inline-flex items-center gap-1 rounded-full bg-amber-soft px-1.5 py-0.5 text-[9px] font-bold text-amber-ink animate-pulse">
-                        <Loader2 className="size-2.5 animate-spin" />
-                        Auditing
+                      <span className={cn(
+                        "inline-flex items-center gap-1 rounded-full bg-amber-soft text-[9px] font-bold text-amber-ink animate-pulse",
+                        collapsed ? "absolute -top-1 -right-1 size-2 rounded-full bg-amber" : "ml-auto px-1.5 py-0.5"
+                      )}>
+                        {!collapsed && <Loader2 className="size-2.5 animate-spin" />}
+                        {!collapsed && "Auditing"}
                       </span>
                     )}
                     {item.key === "review" && pendingCount > 0 && (
-                      <span className="ml-auto rounded-full bg-lav px-1.5 py-0.5 text-[10px] text-card">
+                      <span className={cn(
+                        "rounded-full bg-lav text-[10px] text-card",
+                        collapsed ? "absolute -top-1 -right-1 size-4 grid place-items-center text-[9px]" : "ml-auto px-1.5 py-0.5"
+                      )}>
                         {pendingCount}
                       </span>
                     )}
@@ -1183,14 +1320,16 @@ function Sidebar({
             </div>
           ))}
         </nav>
-        <div className="mt-auto rounded-[10px] border border-line bg-paper px-3 py-3">
-          <p className="text-[11px] leading-snug text-muted-ink">
-            AI suggests. <span className="font-medium text-ink">You stamp.</span>
-          </p>
-          <p className="mt-1 text-[10px] leading-relaxed text-faint">
-            Strict FERPA/GDPR encryption. Every grade requires teacher approval.
-          </p>
-        </div>
+        {!collapsed && (
+          <div className="mt-auto rounded-[10px] border border-line bg-paper px-3 py-3">
+            <p className="text-[11px] leading-snug text-muted-ink">
+              AI suggests. <span className="font-medium text-ink">You stamp.</span>
+            </p>
+            <p className="mt-1 text-[10px] leading-relaxed text-faint">
+              Every grade waits for your direct approval.
+            </p>
+          </div>
+        )}
       </aside>
     </>
   );
@@ -1236,8 +1375,8 @@ function TopBar({
       </Button>
       {courses.length > 0 ? (
         <div className="hidden items-center gap-2 text-[13px] md:flex">
-          {/* Interactive Course Dropdown */}
-          <div className="relative">
+          {/* Combined Course & Section Switcher */}
+          <div className="relative max-w-xs">
             <select
               value={course?.id || ""}
               onChange={(e) => {
@@ -1247,37 +1386,17 @@ function TopBar({
                   onSelectCourse(e.target.value);
                 }
               }}
-              className="appearance-none rounded-md border border-line bg-card py-1.5 pl-3 pr-8 text-xs font-semibold text-ink cursor-pointer hover:border-ink/50 focus:outline-none focus:ring-1 focus:ring-ink transition-colors shadow-2xs"
-              title="Switch Active Course"
+              className="appearance-none rounded-md border border-line bg-card py-1.5 pl-3 pr-8 text-xs font-semibold text-ink cursor-pointer hover:border-ink/50 focus:outline-none focus:ring-1 focus:ring-ink transition-colors shadow-2xs truncate max-w-[260px]"
+              title="Switch Active Course & Section"
             >
               {courses.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.code} • {c.name}
+                  {c.code} · {c.name} ({c.section ? `Sec ${c.section}` : "Sec A"})
                 </option>
               ))}
               <option value="__new__">+ Add New Course...</option>
             </select>
             <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-ink" />
-          </div>
-
-          {/* Interactive Section Dropdown */}
-          <div className="relative">
-            <select
-              value={course?.section || "A"}
-              onChange={(e) => onSelectSection?.(e.target.value)}
-              className="appearance-none rounded-md border border-line bg-card py-1.5 pl-2.5 pr-7 text-xs font-medium text-muted-ink cursor-pointer hover:border-ink/50 focus:outline-none focus:ring-1 focus:ring-ink transition-colors shadow-2xs"
-              title="Switch Course Section"
-            >
-              {["Section A", "Section B", "Section C", "Section D"].map((sec) => {
-                const letter = sec.replace("Section ", "");
-                return (
-                  <option key={letter} value={letter}>
-                    {sec}
-                  </option>
-                );
-              })}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-faint" />
           </div>
 
           {isProcessing && (
@@ -1314,8 +1433,8 @@ function TopBar({
       <div className="ml-auto flex items-center gap-2 sm:gap-3">
         {currentUser ? (
           <div className="flex items-center gap-2">
-            <div className="grid size-8 place-items-center rounded-full bg-lav-soft text-[11px] font-medium text-ink">
-              {(currentUser.name || "User")
+            <div className="grid size-8 place-items-center rounded-full bg-lav-soft text-[11px] font-semibold text-ink">
+              {(currentUser.name || "Teacher")
                 .split(" ")
                 .map((n) => n[0])
                 .join("")
@@ -1323,7 +1442,9 @@ function TopBar({
                 .toUpperCase()}
             </div>
             <div className="hidden text-left leading-tight sm:block">
-              <p className="text-[12px] font-medium">{currentUser.name || "User"}</p>
+              <p className="text-[12px] font-semibold text-ink truncate max-w-[120px]">
+                {currentUser.name || "Teacher"}
+              </p>
               <p className="text-[10px] text-faint">{currentUser.role || "Instructor"}</p>
             </div>
             <Button
@@ -1559,7 +1680,7 @@ function Dashboard({
         {/* Philosophy subtitle */}
         <p className="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-muted-ink">
           "AI suggests. You stamp. Every grade waits for your approval." Experience fast, rubric-based
-          evaluation, reference benchmarking, and 3-way plagiarism review with zero mock data.
+          evaluation, reference benchmarking, and academic similarity review with zero mock data.
         </p>
         {/* Primary CTA Buttons */}
         <div className="mt-8 flex flex-wrap justify-center gap-3">
@@ -1622,7 +1743,7 @@ function Dashboard({
             <div className="grid size-9 place-items-center rounded-lg bg-amber-soft text-amber-ink mb-3 font-semibold">
               3
             </div>
-            <h3 className="font-display text-lg">3-Way Integrity & Export</h3>
+            <h3 className="font-display text-lg">Academic Integrity & Export</h3>
             <p className="mt-1 text-xs text-muted-ink">
               Winnowing AST peer comparison, AI indicator scoring, and RFC-4180 CSV / XLSX gradebook export.
             </p>
@@ -2334,11 +2455,11 @@ function CoursesView({
 // =========================================================================
 
 function getProcessingStage(p: number): string {
-  if (p < 25) return "Ingesting student documents & AES-256 FERPA verification";
-  if (p < 50) return "Computing dense semantic embeddings & Qdrant vector indexing";
-  if (p < 75) return "Executing peer-to-peer 3-way cross-similarity audit";
-  if (p < 90) return "Running Google Search citations check & synthetic AI scan";
-  return "Applying Gemini 2.5 rubric evaluation & calculating final integrity scores";
+  if (p < 25) return "Ingesting student documents & verifying field encryption";
+  if (p < 50) return "Computing dense semantic embeddings & text indexing";
+  if (p < 75) return "Executing peer-to-peer similarity cross-check";
+  if (p < 90) return "Evaluating synthetic AI likelihood & rubric directives";
+  return "Applying Gemini rubric evaluation & generating score breakdown";
 }
 
 function AssignmentsView({
@@ -2451,16 +2572,16 @@ function AssignmentsView({
     }
 
     setUploading(true);
-    showToast(`Uploading ${files.length} submission(s) with FERPA-grade AES-256 encryption...`);
+    showToast(`Uploading ${files.length} submission(s) with field-level encryption...`);
     try {
       await api.submissions.batchUpload(targetAssignId, Array.from(files));
       showToast(
-        `Uploaded ${files.length} submission(s). AI Auto-Grading & Plagiarism audit running...`,
+        `Uploaded ${files.length} submission(s). Ready for grading! Click "Start Grading" when ready.`,
+        "success",
       );
       await onReloadSubmissions(targetAssignId);
-      onStartGrading(targetAssignId);
     } catch (e: any) {
-      showToast(`Upload error: ${e.message}`);
+      showToast(`Upload error: ${e.message}`, "error");
     } finally {
       setUploading(false);
     }
@@ -2811,7 +2932,7 @@ function AssignmentsView({
                     ) : (
                       <div className="size-3.5 rounded-full border border-faint/30 shrink-0" />
                     )}
-                    <span className="truncate">3. 3-Way Plagiarism</span>
+                    <span className="truncate">3. Similarity & Integrity</span>
                   </div>
                   <div
                     className={`flex items-center gap-1.5 rounded bg-card/60 p-1.5 ${progress >= 100 ? "text-ink font-semibold" : progress >= 75 ? "text-amber-ink" : "text-faint"}`}
@@ -2959,7 +3080,7 @@ function AssignmentsView({
               <p className="mt-1 max-w-sm text-xs text-muted-ink">
                 {!activeAssign
                   ? "Drop student files here to automatically initialize Assignment 1 and run AI plagiarism & autograding checks."
-                  : "Drop PDFs, DOCX, TXT, or ZIP archive. Files are encrypted with FERPA-grade AES-256 upon upload."}
+                  : "Drop PDFs, DOCX, TXT, or ZIP archive. Student identifiers are encrypted upon upload."}
               </p>
               <Button
                 type="button"
@@ -2982,11 +3103,10 @@ function AssignmentsView({
             <div className="mt-5 flex items-center justify-between border-t border-line pt-4">
               <div>
                 <p className="text-sm font-medium">
-                  Ready for Auto-Grading & 3-Way Plagiarism Audit
+                  Ready for Auto-Grading & Similarity Review
                 </p>
                 <p className="mt-0.5 text-xs text-muted-ink">
-                  Executes peer cross-matching, synthetic AI probability, and public web search
-                  citations.
+                  Executes peer cross-matching, synthetic AI probability, and rubric criteria analysis.
                 </p>
               </div>
               <Button
@@ -3741,9 +3861,9 @@ function SimilarityView({
   return (
     <>
       <SectionTitle
-        eyebrow="Academic Integrity · 3-Way Plagiarism Check"
+        eyebrow="Academic Integrity · Similarity Check"
         title="Plagiarism & Similarity Audits"
-        description="Comprehensive verification across 3 dimensions: (1) Peer-to-Peer Cross Copying, (2) AI Content Likelihood, and (3) Public Web Search Grounding."
+        description="Comprehensive verification across key integrity dimensions: (1) Peer-to-Peer Cross Copying, (2) AI Content Likelihood, and (3) Rubric Alignment."
       />
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -3934,25 +4054,43 @@ function AIGradingView({
                     <p className="text-[11px] text-faint">{sub.roll}</p>
                   </td>
                   <td className="px-3 py-4 font-display text-xl">
-                    {sub.score}
-                    <span className="text-sm text-muted-ink">/100</span>
+                    {sub.score !== null && sub.score !== undefined ? (
+                      <>
+                        {sub.score}
+                        <span className="text-sm text-muted-ink">/100</span>
+                      </>
+                    ) : (
+                      <span className="text-sm text-muted-ink font-normal">—</span>
+                    )}
                   </td>
                   <td className="px-3 py-4">
-                    <span
-                      className={
-                        sub.similarity >= 85 ? "font-semibold text-clay" : "text-muted-ink"
-                      }
-                    >
-                      {sub.similarity}%
-                    </span>
+                    {sub.status === "ready" || sub.status === "unmatched" || sub.similarity === null || sub.similarity === undefined ? (
+                      <span className="text-sm text-muted-ink">—</span>
+                    ) : (
+                      <span
+                        className={
+                          sub.similarity >= 85 ? "font-semibold text-clay" : "text-muted-ink"
+                        }
+                      >
+                        {sub.similarity}%
+                      </span>
+                    )}
                   </td>
                   <td className="px-3 py-4">
-                    <Pill tone={sub.aiContent >= 60 ? "amber" : "sage"}>{sub.aiContent}%</Pill>
+                    {sub.status === "ready" || sub.status === "unmatched" || sub.aiContent === null || sub.aiContent === undefined ? (
+                      <span className="text-sm text-muted-ink">—</span>
+                    ) : (
+                      <Pill tone={sub.aiContent >= 60 ? "amber" : "sage"}>{sub.aiContent}%</Pill>
+                    )}
                   </td>
                   <td className="px-3 py-4">
-                    <Pill tone={(sub.webPlagiarism || 0) >= 20 ? "clay" : "sage"}>
-                      {sub.webPlagiarism || 0}%
-                    </Pill>
+                    {sub.status === "ready" || sub.status === "unmatched" || sub.webPlagiarism === null || sub.webPlagiarism === undefined ? (
+                      <span className="text-sm text-muted-ink">—</span>
+                    ) : (
+                      <Pill tone={(sub.webPlagiarism || 0) >= 20 ? "clay" : "sage"}>
+                        {sub.webPlagiarism || 0}%
+                      </Pill>
+                    )}
                   </td>
                   <td className="px-3 py-4">
                     <Pill
@@ -3961,14 +4099,18 @@ function AIGradingView({
                           ? "sage"
                           : sub.status === "flagged"
                             ? "clay"
-                            : "lav"
+                            : sub.status === "ready"
+                              ? "amber"
+                              : "lav"
                       }
                     >
                       {sub.status === "approved"
                         ? "Approved"
                         : sub.status === "flagged"
                           ? "Flagged"
-                          : "Pending"}
+                          : sub.status === "ready"
+                            ? "Ready"
+                            : "Pending"}
                     </Pill>
                   </td>
                   <td className="px-3 py-4 text-right">
@@ -3996,6 +4138,7 @@ function ReviewWorkspace({
   selectedSubmissionId,
   onSelectSubmission,
   onGraded,
+  onOpenAssistant,
   onNavigate,
   showToast,
 }: {
@@ -4004,6 +4147,7 @@ function ReviewWorkspace({
   selectedSubmissionId: string;
   onSelectSubmission: (id: string) => void;
   onGraded: () => void;
+  onOpenAssistant?: () => void;
   onNavigate: (view: ViewKey) => void;
   showToast: (msg: string) => void;
 }) {
@@ -4060,14 +4204,23 @@ function ReviewWorkspace({
       <SectionTitle
         eyebrow="Teacher Review Console · Authoritative Decision"
         title="Review & Stamp Grade"
-        description="Inspect the student's submission side-by-side with your Reference Assignment. Verify peer similarity, AI content, and public web search citations."
+        description="Inspect the student's submission side-by-side with your Reference Assignment. Verify peer similarity, AI probability, and rubric criteria."
         action={
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onOpenAssistant}
+              className="gap-1.5 text-xs border-amber/40 text-amber-ink hover:bg-amber-soft/50"
+            >
+              <Sparkles className="size-3.5 text-amber-600" />
+              Fix Prompt with AI Assistant
+            </Button>
             <Pill tone="sage">
               {submissions.filter((s) => s.status === "approved").length} approved
             </Pill>
             <Pill tone="amber">
-              {submissions.filter((s) => s.status !== "approved").length} pending
+              {submissions.filter((s) => s.status === "graded").length} pending
             </Pill>
           </div>
         }
@@ -4086,7 +4239,7 @@ function ReviewWorkspace({
             className="shrink-0 text-xs"
             onClick={() => onSelectSubmission(sub.id)}
           >
-            {sub.student} ({sub.score}/100)
+            {sub.student} ({sub.score !== null && sub.score !== undefined ? `${sub.score}/100` : "—"})
           </Button>
         ))}
       </div>
@@ -4103,22 +4256,22 @@ function ReviewWorkspace({
                 <h2 className="mt-1 font-display text-2xl">{currentSub.student}</h2>
                 <p className="text-xs text-faint">Roll: {currentSub.roll}</p>
               </div>
-              <Pill tone={currentSub.similarity >= 85 ? "clay" : "sage"}>
-                {currentSub.similarity}% Peer Match
+              <Pill tone={currentSub.similarity && currentSub.similarity >= 85 ? "clay" : "sage"}>
+                {currentSub.similarity !== null && currentSub.similarity !== undefined ? `${currentSub.similarity}% Peer Match` : "—"}
               </Pill>
             </div>
 
-            {/* 3-Way Integrity Pill Indicators */}
+            {/* Academic Integrity Indicator Metrics */}
             <div className="mt-4 grid grid-cols-3 gap-2 border-y border-line py-3 text-center">
               <div>
                 <span className="text-[10px] uppercase text-faint">Peer Sim</span>
                 <p
                   className={cn(
                     "text-sm font-bold",
-                    currentSub.similarity >= 85 ? "text-clay" : "text-ink",
+                    currentSub.similarity && currentSub.similarity >= 85 ? "text-clay" : "text-ink",
                   )}
                 >
-                  {currentSub.similarity}%
+                  {currentSub.similarity !== null && currentSub.similarity !== undefined ? `${currentSub.similarity}%` : "—"}
                 </p>
               </div>
               <div>
@@ -4126,10 +4279,10 @@ function ReviewWorkspace({
                 <p
                   className={cn(
                     "text-sm font-bold",
-                    currentSub.aiContent >= 60 ? "text-amber-ink" : "text-ink",
+                    currentSub.aiContent && currentSub.aiContent >= 60 ? "text-amber-ink" : "text-ink",
                   )}
                 >
-                  {currentSub.aiContent}%
+                  {currentSub.aiContent !== null && currentSub.aiContent !== undefined ? `${currentSub.aiContent}%` : "—"}
                 </p>
               </div>
               <div>
@@ -4137,10 +4290,10 @@ function ReviewWorkspace({
                 <p
                   className={cn(
                     "text-sm font-bold",
-                    (currentSub.webPlagiarism || 0) >= 20 ? "text-blue" : "text-ink",
+                    currentSub.webPlagiarism && currentSub.webPlagiarism >= 20 ? "text-blue" : "text-ink",
                   )}
                 >
-                  {currentSub.webPlagiarism || 0}%
+                  {currentSub.webPlagiarism !== null && currentSub.webPlagiarism !== undefined ? `${currentSub.webPlagiarism}%` : "—"}
                 </p>
               </div>
             </div>
@@ -4557,7 +4710,7 @@ function ReportsView({
         <div className="rounded-[14px] border border-line bg-card p-5">
           <h2 className="font-display text-xl">FERPA/GDPR Data Minimization</h2>
           <p className="mt-2 text-xs leading-relaxed text-muted-ink">
-            All student identifiers (Names, Roll Numbers, Emails) undergo AES-256 Fernet field-level
+            All student identifiers (Names, Roll Numbers, Emails) undergo Fernet field-level
             encryption at rest. When submissions are passed to Google Gemini for evaluation, student
             identities are pseudonymized into deterministic tokens (e.g. STUDENT_A3F89B), ensuring
             zero student PII ever leaves your security perimeter.
@@ -4750,7 +4903,7 @@ function SettingsView({
           <h2 className="font-display text-xl text-ink">Institutional Compliance</h2>
           <p className="mt-2 text-xs leading-relaxed text-muted-ink">
             Verism operates under the "AI suggests. You stamp." model with zero student PII leakage,
-            AES-256 field encryption, and full FERPA/GDPR adherence.
+            Fernet field encryption, and full FERPA/GDPR adherence.
           </p>
           <div className="mt-4 flex flex-wrap gap-2 text-xs">
             <a
