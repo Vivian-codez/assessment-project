@@ -12,6 +12,8 @@ Provides:
 
 # Import time module for measurement of latency and retry sleep intervals
 import time
+# Import os module for reading process-level environment variables
+import os
 # Import sys module to inspect loaded modules for test execution
 import sys
 # Import functools module to preserve decorator metadata across wrappers
