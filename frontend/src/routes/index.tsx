@@ -91,7 +91,6 @@ import { RosterView } from "@/components/RosterView";
 import { MatrixRubricBuilder } from "@/components/MatrixRubricBuilder";
 import { RubricsListView } from "@/components/RubricsListView";
 import { AssignmentWizardModal } from "@/components/AssignmentWizardModal";
-import { StartGradingModal } from "@/components/StartGradingModal";
 import { ReviewAssistantModal } from "@/components/ReviewAssistantModal";
 
 export const Route = createFileRoute("/")({
@@ -204,9 +203,6 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
 
   // Sidebar collapsible state
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-
-  // Teacher-controlled grading start panel modal
-  const [startGradingModalOpen, setStartGradingModalOpen] = useState(false);
 
   // Review mode assistant & prompt-fix modal
   const [reviewAssistantOpen, setReviewAssistantOpen] = useState(false);
@@ -672,8 +668,8 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
     }, 1200);
   };
 
-  // Trigger Live AI Auto-Grading & Academic Similarity Review
-  const startAIAutoGrading = async (assignId?: string) => {
+  // Trigger Live AI Auto-Grading & Academic Similarity Review directly with one click
+  const startAIAutoGrading = async (assignId?: string, targetSubIds?: string[]) => {
     let targetId = assignId || selectedAssignmentId;
     if (!targetId && currentCourse) {
       const created = await handleTakeDefaultAssignment();
@@ -685,15 +681,22 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
     setIsProcessing(true);
     setProcessingAssignmentId(targetId);
     setProcessingProgress(8);
-    showToast("AI Auto-Grading & Academic Similarity Review initiated. Evaluation is in process...");
+    showToast("AI Auto-Grading & Academic Similarity Review initiated. Evaluation is in process...", "info");
 
     try {
       const assignObj = assignments.find((a) => a.id === targetId) || currentAssignment;
+      const subsToGrade =
+        targetSubIds ||
+        (reviewSelectionMode === "selective" && selectedReviewIds.length > 0
+          ? selectedReviewIds
+          : undefined);
+
       const job = await api.evaluations.triggerBatch(targetId, {
         similarity_threshold: 90.0,
         title: assignObj?.title,
         reference_assignment_text: assignObj?.reference_assignment_text,
         rubric_id: assignObj?.rubric_id,
+        submission_ids: subsToGrade,
       });
 
       pollBatchJob(job.job_id, targetId);
@@ -874,7 +877,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 submissions={submissions}
                 isProcessing={isProcessing}
                 progress={processingProgress}
-                onStartGrading={() => setStartGradingModalOpen(true)}
+                onStartGrading={(assignId) => startAIAutoGrading(assignId)}
                 onReloadSubmissions={loadSubmissions}
                 onNavigate={navigate}
                 showToast={showToast}
@@ -914,7 +917,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 submissions={submissions}
                 isProcessing={isProcessing}
                 progress={processingProgress}
-                onStartGrading={() => setStartGradingModalOpen(true)}
+                onStartGrading={(assignId) => startAIAutoGrading(assignId)}
                 onReloadSubmissions={loadSubmissions}
                 onNavigate={navigate}
                 showToast={showToast}
@@ -942,7 +945,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 assignment={currentAssignment}
                 isProcessing={isProcessing}
                 progress={processingProgress}
-                onStartGrading={() => setStartGradingModalOpen(true)}
+                onStartGrading={(assignId) => startAIAutoGrading(assignId)}
                 onReview={(subId) => {
                   setSelectedSubmissionId(subId);
                   setActiveReviewQueue([subId]);
@@ -1140,27 +1143,6 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
             setAssignments(assignments.map((a) => (a.id === updated.id ? updated : a)));
             setEditAssignmentOpen(false);
             showToast("Assignment & reference exemplar updated.");
-          }}
-          showToast={showToast}
-        />
-      )}
-
-      {/* Teacher-Controlled AI Grading Start Modal */}
-      {startGradingModalOpen && currentAssignment && (
-        <StartGradingModal
-          isOpen={startGradingModalOpen}
-          onClose={() => setStartGradingModalOpen(false)}
-          assignment={currentAssignment}
-          course={currentCourse}
-          submissions={submissions}
-          onGradingStarted={(runData) => {
-            setStartGradingModalOpen(false);
-            if (runData?.run_id || runData?.job_id) {
-              setProcessingAssignmentId(currentAssignment.id);
-              setIsProcessing(true);
-              setProcessingProgress(5);
-              pollBatchJob(runData.run_id || runData.job_id, currentAssignment.id);
-            }
           }}
           showToast={showToast}
         />
