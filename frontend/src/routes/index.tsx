@@ -879,6 +879,9 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 progress={processingProgress}
                 onStartGrading={(assignId) => startAIAutoGrading(assignId)}
                 onReloadSubmissions={loadSubmissions}
+                onUpdateAssignment={(updated) =>
+                  setAssignments((prev) => prev.map((a) => (a.id === updated.id ? updated : a)))
+                }
                 onNavigate={navigate}
                 showToast={showToast}
               />
@@ -919,6 +922,9 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 progress={processingProgress}
                 onStartGrading={(assignId) => startAIAutoGrading(assignId)}
                 onReloadSubmissions={loadSubmissions}
+                onUpdateAssignment={(updated) =>
+                  setAssignments((prev) => prev.map((a) => (a.id === updated.id ? updated : a)))
+                }
                 onNavigate={navigate}
                 showToast={showToast}
               />
@@ -2853,6 +2859,7 @@ function AssignmentsView({
   onNavigate,
   showToast,
   onOpenAddCourse,
+  onUpdateAssignment,
 }: {
   course: APICourse | null;
   courses: APICourse[];
@@ -2877,6 +2884,7 @@ function AssignmentsView({
   onStartGrading: (assignId?: string) => void;
   onReloadSubmissions: (assignId?: string) => void;
   onNavigate: (view: ViewKey) => void;
+  onUpdateAssignment?: (updated: APIAssignment) => void;
   // Toast notification callback accepting optional tone and retry handler
   showToast: (msg: string, type?: "success" | "error" | "info" | "loading", retryAction?: () => void) => void;
   onOpenAddCourse?: () => void;
@@ -3000,19 +3008,19 @@ function AssignmentsView({
 
   const handleAttachRubric = async (rubricId: string) => {
     if (!activeAssign) {
-      showToast("Select or create an assignment first to attach this rubric.");
+      showToast("Select or create an assignment first to attach this rubric.", "error");
       return;
     }
     setLinkingRubricId(rubricId);
     try {
-      await api.assignments.update(activeAssign.id, {
+      const updated = await api.assignments.update(activeAssign.id, {
         title: activeAssign.title || "Assignment",
         rubric_id: rubricId,
       });
       activeAssign.rubric_id = rubricId;
-      setAssignments((prev) =>
-        prev.map((a) => (a.id === activeAssign.id ? { ...a, rubric_id: rubricId } : a)),
-      );
+      if (onUpdateAssignment) {
+        onUpdateAssignment({ ...activeAssign, ...updated, rubric_id: rubricId });
+      }
       showToast(`Rubric attached to '${activeAssign.title}' successfully.`, "success");
       await onReloadRubrics();
     } catch (err: any) {
@@ -3025,14 +3033,14 @@ function AssignmentsView({
   const handleDetachRubric = async () => {
     if (!activeAssign) return;
     try {
-      await api.assignments.update(activeAssign.id, {
+      const updated = await api.assignments.update(activeAssign.id, {
         title: activeAssign.title || "Assignment",
         rubric_id: "",
       });
       activeAssign.rubric_id = undefined;
-      setAssignments((prev) =>
-        prev.map((a) => (a.id === activeAssign.id ? { ...a, rubric_id: undefined } : a)),
-      );
+      if (onUpdateAssignment) {
+        onUpdateAssignment({ ...activeAssign, ...updated, rubric_id: undefined });
+      }
       showToast(`Rubric detached from '${activeAssign.title}'.`, "info");
       await onReloadRubrics();
     } catch (err: any) {
