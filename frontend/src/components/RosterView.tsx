@@ -27,6 +27,8 @@ interface RosterViewProps {
   classroom: Classroom | null;
   classrooms: Classroom[];
   onSelectClassroom: (id: string) => void;
+  // Optional callback to refresh parent classrooms state
+  onRefreshClassrooms?: () => void;
   showToast: (msg: string) => void;
 }
 
@@ -41,6 +43,7 @@ export function RosterView({
   classroom,
   classrooms,
   onSelectClassroom,
+  onRefreshClassrooms,
   showToast,
 }: RosterViewProps) {
   const [students, setStudents] = useState<Student[]>([]);
@@ -48,6 +51,16 @@ export function RosterView({
   const [search, setSearch] = useState("");
   const [sortField, setSortField] = useState<"roll_number" | "full_name">("roll_number");
   const [sortAsc, setSortAsc] = useState(true);
+
+  // Create new classroom modal state
+  const [createClassroomModalOpen, setCreateClassroomModalOpen] = useState(false);
+  const [newClassroomName, setNewClassroomName] = useState("");
+  const [newClassroomCode, setNewClassroomCode] = useState("");
+  const [classroomSubmitting, setClassroomSubmitting] = useState(false);
+
+  // Delete classroom confirmation modal state
+  const [deleteClassroomModalOpen, setDeleteClassroomModalOpen] = useState(false);
+  const [deletingClassroomLoading, setDeletingClassroomLoading] = useState(false);
 
   // Manual modal state
   const [manualModalOpen, setManualModalOpen] = useState(false);
@@ -116,6 +129,75 @@ export function RosterView({
       await loadStudents(classroom.id);
     } finally {
       setDeleteLoading(false);
+    }
+  };
+
+  // Handler to create a new classroom/section with duplicate validation
+  const handleCreateClassroom = async (e: React.FormEvent) => {
+    // Prevent default form submit reload
+    e.preventDefault();
+    // Clean and validate inputs
+    const cleanName = newClassroomName.trim();
+    const cleanCode = (newClassroomCode.trim() || cleanName.substring(0, 6).toUpperCase().replace(/\s+/g, ""));
+    // Verify non-empty name
+    if (!cleanName) {
+      showToast("Please enter a classroom or section name.");
+      return;
+    }
+    // Client-side duplicate check
+    if (classrooms.some((c) => c.name.toLowerCase() === cleanName.toLowerCase())) {
+      showToast(`A classroom named "${cleanName}" already exists in your workspace.`);
+      return;
+    }
+    // Set submitting loading state
+    setClassroomSubmitting(true);
+    try {
+      // Call backend create classroom endpoint
+      const res = await api.classrooms.create({ name: cleanName, code: cleanCode });
+      // Show success notification
+      showToast(`Created classroom "${res.name}" (${res.code})!`);
+      // Reset form modal state
+      setCreateClassroomModalOpen(false);
+      setNewClassroomName("");
+      setNewClassroomCode("");
+      // Refresh parent classroom list if callback available
+      if (onRefreshClassrooms) {
+        onRefreshClassrooms();
+      }
+      // Auto-select the newly created classroom
+      onSelectClassroom(res.id);
+    } catch (err: any) {
+      // Show error toast
+      showToast(`Error creating classroom: ${err.message}`);
+    } finally {
+      // Clear submitting state
+      setClassroomSubmitting(false);
+    }
+  };
+
+  // Handler to delete the active classroom and move it to 30-day trash
+  const handleConfirmDeleteClassroom = async () => {
+    // Check if valid classroom is selected
+    if (!classroom?.id) return;
+    // Set loading indicator
+    setDeletingClassroomLoading(true);
+    try {
+      // Call backend delete endpoint
+      await api.classrooms.delete(classroom.id);
+      // Show success toast
+      showToast(`Classroom "${classroom.name}" moved to 30-day trash bin.`);
+      // Close confirmation dialog
+      setDeleteClassroomModalOpen(false);
+      // Refresh classroom roster list
+      if (onRefreshClassrooms) {
+        onRefreshClassrooms();
+      }
+    } catch (err: any) {
+      // Display failure notice
+      showToast(`Error deleting classroom: ${err.message}`);
+    } finally {
+      // Clear deletion loading state
+      setDeletingClassroomLoading(false);
     }
   };
 
@@ -417,19 +499,38 @@ export function RosterView({
 
         {/* Action Controls */}
         <div className="flex flex-wrap items-center gap-2">
-          {classrooms.length > 0 && (
+          <div className="flex items-center gap-1.5">
             <select
               value={classroom?.id || ""}
-              onChange={(e) => onSelectClassroom(e.target.value)}
-              className="rounded-lg border border-line bg-card px-3 py-2 text-xs font-medium text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+              onChange={(e) => {
+                if (e.target.value === "__create_classroom__") {
+                  setCreateClassroomModalOpen(true);
+                } else {
+                  onSelectClassroom(e.target.value);
+                }
+              }}
+              className="rounded-lg border border-line bg-card px-3 py-2 text-xs font-medium text-foreground focus:outline-none focus:ring-1 focus:ring-primary max-w-[240px] truncate cursor-pointer"
+              title="Select Active Classroom or Create New"
             >
               {classrooms.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.code} — {c.name}
                 </option>
               ))}
+              <option value="__create_classroom__">+ Create new classroom...</option>
             </select>
-          )}
+            {classroom && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setDeleteClassroomModalOpen(true)}
+                title="Delete this classroom (moves to 30-day trash)"
+                className="size-8 text-faint hover:text-clay hover:bg-paper"
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            )}
+          </div>
 
           <TooltipProvider>
             <Tooltip>
@@ -1077,6 +1178,126 @@ export function RosterView({
         </div>
       )}
 
+      {/* Modal: Create New Classroom */}
+      {createClassroomModalOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-ink/30 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-[16px] border border-line bg-card p-6 shadow-2xl animate-fade-up">
+            <div className="flex items-center justify-between">
+              <h2 className="font-display text-xl">Create New Classroom / Section</h2>
+              <Button size="icon" variant="ghost" onClick={() => setCreateClassroomModalOpen(false)}>
+                <X className="size-4" />
+              </Button>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Define a new instructional section or student cohort for roll call management.
+            </p>
+
+            <form onSubmit={handleCreateClassroom} className="mt-4 space-y-3">
+              <div>
+                <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Classroom / Section Name</label>
+                <Input
+                  required
+                  value={newClassroomName}
+                  onChange={(e) => setNewClassroomName(e.target.value)}
+                  placeholder="e.g. CS101 - Section B"
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Course Catalog Code</label>
+                <Input
+                  required
+                  value={newClassroomCode}
+                  onChange={(e) => setNewClassroomCode(e.target.value)}
+                  placeholder="e.g. CS101"
+                  className="mt-1"
+                />
+              </div>
+
+              <div className="mt-5 flex justify-end gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCreateClassroomModalOpen(false)}
+                  disabled={classroomSubmitting}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={classroomSubmitting}
+                  className="bg-primary text-primary-foreground"
+                >
+                  {classroomSubmitting ? (
+                    <>
+                      <Loader2 className="mr-1.5 size-3.5 animate-spin" /> Saving...
+                    </>
+                  ) : (
+                    "Save & Select Classroom"
+                  )}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Confirm Delete Classroom (30-day trash) */}
+      {deleteClassroomModalOpen && classroom && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-ink/40 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md rounded-2xl border border-line bg-card p-6 shadow-2xl animate-fade-up">
+            <div className="flex items-center gap-3 text-clay">
+              <div className="grid size-10 place-items-center rounded-full bg-clay-soft">
+                <Trash2 className="size-5" />
+              </div>
+              <div>
+                <h3 className="font-display text-lg font-semibold text-foreground">
+                  Move Classroom to 30-Day Trash?
+                </h3>
+                <p className="text-xs text-muted-foreground">This action preserves data for 30 days before purge.</p>
+              </div>
+            </div>
+
+            <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
+              Are you sure you want to delete classroom{" "}
+              <strong className="text-foreground">{classroom.name} ({classroom.code})</strong>?
+              Enrolled students and assignments associated with this classroom will be moved to the 30-day Trash Bin.
+            </p>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setDeleteClassroomModalOpen(false)}
+                disabled={deletingClassroomLoading}
+                className="text-xs"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleConfirmDeleteClassroom}
+                disabled={deletingClassroomLoading}
+                className="text-xs"
+              >
+                {deletingClassroomLoading ? (
+                  <>
+                    <Loader2 className="mr-1.5 size-3.5 animate-spin" /> Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="mr-1.5 size-3.5" /> Move to Trash
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ========================================================================= */}
       {/* Modal: Confirm Student Deletion                                          */}
       {/* ========================================================================= */}
@@ -1137,6 +1358,126 @@ export function RosterView({
                 ) : (
                   <>
                     <Trash2 className="mr-1.5 size-3.5" /> Confirm Delete
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Create New Classroom */}
+      {createClassroomModalOpen && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-ink/30 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-[16px] border border-line bg-card p-6 shadow-2xl animate-fade-up">
+            <div className="flex items-center justify-between">
+              <h2 className="font-display text-xl">Create New Classroom / Section</h2>
+              <Button size="icon" variant="ghost" onClick={() => setCreateClassroomModalOpen(false)}>
+                <X className="size-4" />
+              </Button>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Define a new instructional section or student cohort for roll call management.
+            </p>
+
+            <form onSubmit={handleCreateClassroom} className="mt-4 space-y-3">
+              <div>
+                <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Classroom / Section Name</label>
+                <Input
+                  required
+                  value={newClassroomName}
+                  onChange={(e) => setNewClassroomName(e.target.value)}
+                  placeholder="e.g. CS101 - Section B"
+                  className="mt-1"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] uppercase tracking-[0.12em] text-faint">Course Catalog Code</label>
+                <Input
+                  required
+                  value={newClassroomCode}
+                  onChange={(e) => setNewClassroomCode(e.target.value)}
+                  placeholder="e.g. CS101"
+                  className="mt-1"
+                />
+              </div>
+
+              <div className="mt-5 flex justify-end gap-2 pt-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCreateClassroomModalOpen(false)}
+                  disabled={classroomSubmitting}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={classroomSubmitting}
+                  className="bg-primary text-primary-foreground"
+                >
+                  {classroomSubmitting ? (
+                    <>
+                      <Loader2 className="mr-1.5 size-3.5 animate-spin" /> Saving...
+                    </>
+                  ) : (
+                    "Save & Select Classroom"
+                  )}
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Confirm Delete Classroom (30-day trash) */}
+      {deleteClassroomModalOpen && classroom && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-ink/40 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md rounded-2xl border border-line bg-card p-6 shadow-2xl animate-fade-up">
+            <div className="flex items-center gap-3 text-clay">
+              <div className="grid size-10 place-items-center rounded-full bg-clay-soft">
+                <Trash2 className="size-5" />
+              </div>
+              <div>
+                <h3 className="font-display text-lg font-semibold text-foreground">
+                  Move Classroom to 30-Day Trash?
+                </h3>
+                <p className="text-xs text-muted-foreground">This action preserves data for 30 days before purge.</p>
+              </div>
+            </div>
+
+            <p className="mt-4 text-xs leading-relaxed text-muted-foreground">
+              Are you sure you want to delete classroom{" "}
+              <strong className="text-foreground">{classroom.name} ({classroom.code})</strong>?
+              Enrolled students and assignments associated with this classroom will be moved to the 30-day Trash Bin.
+            </p>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setDeleteClassroomModalOpen(false)}
+                disabled={deletingClassroomLoading}
+                className="text-xs"
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleConfirmDeleteClassroom}
+                disabled={deletingClassroomLoading}
+                className="text-xs"
+              >
+                {deletingClassroomLoading ? (
+                  <>
+                    <Loader2 className="mr-1.5 size-3.5 animate-spin" /> Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="mr-1.5 size-3.5" /> Move to Trash
                   </>
                 )}
               </Button>

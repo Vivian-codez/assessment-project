@@ -168,30 +168,20 @@ class PDFService:
                         # If page produced text, append to list
                         if page_text:
                             # Append page text to extracted list
-                            extracted.append(page_text)
+                            extracted.append(page_text.strip())
                     # Combine all page texts joined by double newlines
                     full_text = "\n\n".join(extracted).strip()
-                    # If valid text was extracted, return it
-                    if full_text:
-                        # Return extracted PDF text
+                    # Verify text is non-empty and does NOT look like raw binary stream or PDF syntax header
+                    if full_text and not full_text.startswith("%PDF-") and "endobj" not in full_text:
+                        # Return cleanly extracted PDF text
                         return full_text
                 # Catch any pypdf extraction errors
                 except Exception as e:
                     # Log warning detailing pypdf failure
                     logger.warning(f"pypdf extraction failed for {filename}: {e}")
 
-            # Attempt fallback decoding using Latin-1 encoding for ASCII-like streams
-            try:
-                # Decode bytes using latin1 ignoring invalid characters
-                text = file_bytes.decode("latin1", errors="ignore")
-                # Filter text keeping only printable characters, newlines, and tabs
-                cleaned = "".join(c for c in text if c.isprintable() or c in "\n\r\t")
-                # Return first 4000 characters if cleaned text is non-empty, otherwise default string
-                return cleaned[:4000] if cleaned else "Extracted text content from " + filename
-            # Catch any fallback decoding exceptions
-            except Exception:
-                # Return placeholder string with filename
-                return f"Content extracted from {filename}"
+            # Return explicit human-readable failure notice instead of raw binary bytes
+            return "[Could not read this file: Scanned image or binary PDF stream without selectable text. Teacher review required on original document.]"
 
         # Universal fallback: attempt UTF-8 decoding on any unknown file format
         try:

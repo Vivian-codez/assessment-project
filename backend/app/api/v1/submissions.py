@@ -172,26 +172,9 @@ def _ensure_assignment_exists(db: Session, assignment_id: str) -> Optional[Assig
         course = db.query(Course).first()
         # Verify condition: not course
         if not course:
-            # Set course to Course(
-            course = Course(
-                # Execute statement: id=f"c_{uuid.uuid4().hex[:8]}"
-                id=f"c_{uuid.uuid4().hex[:8]}",
-                # Execute statement: name="Data Structures"
-                name="Data Structures",
-                # Execute statement: code="CS201"
-                code="CS201",
-                # Execute statement: section="A"
-                section="A",
-                # Execute statement: tone="lav"
-                tone="lav",
-            # Execute statement: )
-            )
-            # Add entity record to database session
-            db.add(course)
-            # Commit transaction modifications to local database
-            db.commit()
-            # Execute statement: db.refresh(course)
-            db.refresh(course)
+            # Do not auto-generate mock courses; require explicit teacher creation
+            logger.warning("No existing course found during assignment lookup fallback; skipping auto-course generation.")
+            return None
 
         # Pre-sync course to Supabase
         try:
@@ -423,6 +406,35 @@ def _create_single_submission(
                             matched_student = s
                             break
                     if matched_student:
+                        break
+
+        # Pass 4: Fallback match roll number or student name inside document text body
+        if not matched_student and extracted_text:
+            # Import text roll number extractor
+            from app.services.resolver import extract_roll_number_from_text
+            # Extract roll number from document body
+            text_roll = extract_roll_number_from_text(extracted_text)
+            # If roll number found in document text
+            if text_roll:
+                # Compare against enrolled students
+                for s in enrolled_students:
+                    # Match case-insensitively
+                    if s.roll_number.strip().lower() == text_roll.lower():
+                        # Set matched student
+                        matched_student = s
+                        # Break loop
+                        break
+            # Check student full name within document body if still unmatched
+            if not matched_student:
+                # Take sample of document text
+                sample_txt = extracted_text[:3000].lower()
+                # Iterate through enrolled students
+                for s in enrolled_students:
+                    # Check if student name appears in document
+                    if s.full_name.strip() and s.full_name.strip().lower() in sample_txt:
+                        # Match student
+                        matched_student = s
+                        # Break loop
                         break
 
         if matched_student:
@@ -693,15 +705,33 @@ async def batch_upload_classroom_assignment(
             # Log warning notice message to runtime logger
             logger.warning(f"Supabase Storage persistence notice for {fname}: {storage_err}")
 
-        # b. Resolve roll number and match to enrolled student in classroom
+        # b. In-memory clean document text/code extraction
+        ext = fname.lower().split(".")[-1] if "." in fname else "text"
+        # Set is_binary to ext in binary file formats
+        is_binary = ext in {"pdf", "docx", "doc", "zip", "png", "jpg", "jpeg"}
+        # Extract text using pdf_service
+        extracted_text = pdf_service.extract_text_from_bytes(fbytes, fname)
+        # Verify condition: not extracted_text and not is_binary
+        if not extracted_text and not is_binary:
+            # Begin try block to decode text files
+            try:
+                # Decode bytes to utf-8
+                extracted_text = fbytes.decode("utf-8", errors="replace")
+            # Catch decode exception
+            except Exception:
+                # Default to empty string
+                extracted_text = ""
+
+        # c. Resolve roll number and match to enrolled student in classroom (with body text fallback)
         student_id, sub_status, student_match, detected_roll = student_resolver.resolve_submission_file(
-            # Execute statement: classroom_id=classroom_id
+            # Classroom identifier
             classroom_id=classroom_id,
-            # Execute statement: filename=fname
+            # Uploaded file name
             filename=fname,
-            # Execute statement: roster_index=roster_index
+            # Pre-indexed roster dictionary
             roster_index=roster_index,
-        # Execute statement: )
+            # Extracted plain text content for fallback roll matching
+            text_content=extracted_text,
         )
 
         # Verify condition: student_match
@@ -728,23 +758,6 @@ async def batch_upload_classroom_assignment(
             student_name = f"Roll {detected_roll}" if detected_roll else f"Unmatched ({fname})"
             # Set student_email to f"unmatched_{sub_id[:8]}@university.edu"
             student_email = f"unmatched_{sub_id[:8]}@university.edu"
-
-        # c. In-memory text/code extraction
-        ext = fname.lower().split(".")[-1] if "." in fname else "text"
-        # Set is_binary to ext in {"pdf", "docx", "doc", "zip", "png", "jpg", "jpeg"}
-        is_binary = ext in {"pdf", "docx", "doc", "zip", "png", "jpg", "jpeg"}
-        # Set extracted_text to pdf_service.extract_text_from_bytes(fbytes, fname)
-        extracted_text = pdf_service.extract_text_from_bytes(fbytes, fname)
-        # Verify condition: not extracted_text and not is_binary
-        if not extracted_text and not is_binary:
-            # Begin try block to execute operations safely
-            try:
-                # Set extracted_text to fbytes.decode("utf-8", errors="replace")
-                extracted_text = fbytes.decode("utf-8", errors="replace")
-            # Catch and handle exception: except Exception
-            except Exception:
-                # Set extracted_text to ""
-                extracted_text = ""
 
         # d. Create Submission model
         sub = Submission(

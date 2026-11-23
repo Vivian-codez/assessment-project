@@ -60,50 +60,50 @@ def get_classrooms(
 ):
     # Docstring explaining retrieval of classrooms with live student counts
     """Retrieve all classrooms for the active instructor with live student counts."""
-    # Ensure any existing Course records have corresponding Classroom entries
-    # Query all existing Course entities in local database
-    courses = db.query(Course).all()
-    # Iterate through courses to ensure corresponding Classroom records exist
-    for crs in courses:
-        # Check if a classroom with the same ID already exists
-        existing_cl = db.query(Classroom).filter(Classroom.id == crs.id).first()
-        # If no matching classroom exists, create one from the course
-        if not existing_cl:
-            # Instantiate new Classroom mirroring course properties
-            new_cl = Classroom(
-                id=crs.id,
-                name=crs.name,
-                code=crs.code,
-                instructor_id=crs.instructor_id,
-                created_at=crs.created_at,
-            )
-            # Add newly created classroom to database session
-            db.add(new_cl)
-    # Commit changes to persist synchronized classrooms
-    db.commit()
+    # Ensure any existing Course records for this instructor have corresponding Classroom entries
+    if current_instructor and current_instructor.id:
+        # Query existing Course entities owned by this instructor
+        courses = db.query(Course).filter(
+            Course.instructor_id == current_instructor.id,
+            Course.deleted_at.is_(None),
+        ).all()
+        # Iterate through courses to ensure corresponding Classroom records exist
+        for crs in courses:
+            # Check if a classroom with the same ID already exists
+            existing_cl = db.query(Classroom).filter(Classroom.id == crs.id).first()
+            # If no matching classroom exists, create one from the course
+            if not existing_cl:
+                # Instantiate new Classroom mirroring course properties
+                new_cl = Classroom(
+                    id=crs.id,
+                    name=crs.name,
+                    code=crs.code,
+                    instructor_id=crs.instructor_id,
+                    created_at=crs.created_at,
+                )
+                # Add newly created classroom to database session
+                db.add(new_cl)
+        # Commit changes to persist synchronized classrooms
+        db.commit()
 
-    # Query all classrooms
-    # Initialize base query for Classroom model
+    # Query classrooms strictly scoped to current authenticated instructor
     query = db.query(Classroom)
     # Check if a valid current instructor with an ID is present
     if current_instructor and current_instructor.id:
-        # Show all instructor classrooms or general
-        # Query classrooms owned by this instructor or unassigned classrooms ordered by creation date
-        inst_cls = query.filter((Classroom.instructor_id == current_instructor.id) | (Classroom.instructor_id == None)).order_by(Classroom.created_at.desc()).all()
-        # Fall back to all classrooms if no instructor-specific classrooms are found
-        classrooms = inst_cls if inst_cls else query.order_by(Classroom.created_at.desc()).all()
+        # Retrieve all classrooms owned by this instructor ordered by creation date
+        classrooms = query.filter(Classroom.instructor_id == current_instructor.id).order_by(Classroom.created_at.desc()).all()
     # Fallback when no instructor filter applies
     else:
-        # Retrieve all classrooms sorted by creation date in descending order
-        classrooms = query.order_by(Classroom.created_at.desc()).all()
+        # Return empty list when no instructor identity is present
+        classrooms = []
 
     # Optional cloud sync if enabled
     # Check if cloud synchronization is enabled via settings
-    if settings.USE_SUPABASE:
+    if settings.USE_SUPABASE and current_instructor and current_instructor.id:
         # Begin try block to sync classrooms from Supabase
         try:
-            # Fetch remote classrooms from Supabase table
-            res = supabase.table("classrooms").select("*").execute()
+            # Fetch remote classrooms from Supabase table scoped to current instructor
+            res = supabase.table("classrooms").select("*").eq("instructor_id", current_instructor.id).execute()
             # Iterate through rows returned by Supabase
             for row in (res.data or []):
                 # Convert remote row ID to string
@@ -119,14 +119,14 @@ def get_classrooms(
                     )
                     # Add new classroom to database session
                     db.add(new_c)
-                    # Append new classroom to in-memory list
+                    # Append to in-memory list
                     classrooms.append(new_c)
-            # Commit newly synchronized remote classrooms to local database
+            # Commit newly synchronized cloud classrooms
             db.commit()
-        # Catch any remote sync errors
+        # Catch exceptions during cloud sync
         except Exception as e:
-            # Log debug message for remote classroom sync notice
-            logger.debug(f"Cloud classroom sync notice: {e}")
+            # Log warning notice for failed cloud sync
+            logger.warning(f"Cloud classroom sync notice: {e}")
 
     # Initialize results list for formatted response items
     results = []
@@ -161,18 +161,44 @@ def create_classroom(
     current_instructor: Instructor = Depends(get_current_instructor),
 ):
     # Docstring explaining classroom creation
-    """Create a new classroom / course for enrollment."""
-    # Generate a unique string UUID for the new classroom
-    c_id = str(uuid.uuid4())
+    """Create a new classroom / course for enrollment with duplicate validation."""
     # Determine instructor ID from current authenticated user
     inst_id = current_instructor.id if current_instructor else None
+    # Validate instructor identity exists
+    if not inst_id:
+        # Raise 401 Unauthorized
+        raise HTTPException(status_code=401, detail="Authentication required to create a classroom.")
+
+    # Clean inputs
+    clean_name = payload.name.strip()
+    clean_code = payload.code.strip()
+    # Check that required values are present
+    if not clean_name or not clean_code:
+        # Raise 400 Bad Request
+        raise HTTPException(status_code=400, detail="Classroom name and course code are required.")
+
+    # Check for duplicate classroom name or code within instructor workspace
+    existing_duplicate = db.query(Classroom).filter(
+        Classroom.instructor_id == inst_id,
+        (Classroom.name == clean_name) | (Classroom.code == clean_code),
+    ).first()
+    # If duplicate found, return explicit error message
+    if existing_duplicate:
+        # Raise 400 Bad Request exception
+        raise HTTPException(
+            status_code=400,
+            detail=f"A classroom or section named '{clean_name}' (code: '{clean_code}') already exists in your workspace.",
+        )
+
+    # Generate a unique string UUID for the new classroom
+    c_id = str(uuid.uuid4())
 
     # Persist Classroom to local database
     # Instantiate new Classroom model
     new_classroom = Classroom(
         id=c_id,
-        name=payload.name.strip(),
-        code=payload.code.strip(),
+        name=clean_name,
+        code=clean_code,
         instructor_id=inst_id,
     )
     # Add new classroom to local database session

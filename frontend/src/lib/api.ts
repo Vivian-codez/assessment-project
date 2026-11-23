@@ -431,31 +431,39 @@ export interface SimilarityMatch {
 
 // Token helper
 export function getAuthToken(): string | null {
-  // Evaluate condition: if (typeof window !== "undefined")
   if (typeof window !== "undefined") {
-    // Return value: localStorage.getItem("verism_token")
     return localStorage.getItem("verism_token");
   }
-  // Return value: null
+  return null;
+}
+
+// Refresh token helper
+export function getRefreshToken(): string | null {
+  if (typeof window !== "undefined") {
+    return localStorage.getItem("verism_refresh_token");
+  }
   return null;
 }
 
 // Define function setAuthToken
 export function setAuthToken(token: string): void {
-  // Evaluate condition: if (typeof window !== "undefined")
   if (typeof window !== "undefined") {
-    // Invoke method: localStorage.setItem("verism_token", token)
     localStorage.setItem("verism_token", token);
+  }
+}
+
+// Define function setRefreshToken
+export function setRefreshToken(token: string): void {
+  if (typeof window !== "undefined") {
+    localStorage.setItem("verism_refresh_token", token);
   }
 }
 
 // Define function clearAuthToken
 export function clearAuthToken(): void {
-  // Evaluate condition: if (typeof window !== "undefined")
   if (typeof window !== "undefined") {
-    // Invoke method: localStorage.removeItem("verism_token")
     localStorage.removeItem("verism_token");
-    // Invoke method: localStorage.removeItem("verism_user")
+    localStorage.removeItem("verism_refresh_token");
     localStorage.removeItem("verism_user");
   }
 }
@@ -513,8 +521,8 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 
   // Attach bearer authorization header when token exists and header not already set
   if (token && !headers["Authorization"]) {
-    // Set Authorization header with Bearer token
     headers["Authorization"] = `Bearer ${token}`;
+    headers["X-Auth-Token"] = token;
   }
 
   // Configure fetch options with credentials included for secure httpOnly refresh cookie
@@ -545,7 +553,8 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   if (response.status === 401 && !isAuthRoute) {
     // Attempt automatic refresh token rotation
     try {
-      // Call backend refresh endpoint with credentials included
+      const refToken = getRefreshToken();
+      // Call backend refresh endpoint with credentials included and optional body fallback
       const refreshRes = await fetch(`${API_BASE_URL}/auth/refresh`, {
         // Specify HTTP POST method
         method: "POST",
@@ -553,6 +562,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
         credentials: "include",
         // Specify JSON content type header
         headers: { "Content-Type": "application/json" },
+        body: refToken ? JSON.stringify({ refresh_token: refToken }) : undefined,
       });
 
       // Check if token refresh succeeded
@@ -563,18 +573,18 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
         if (refreshData.access_token) {
           // Persist rotated access token to storage
           setAuthToken(refreshData.access_token);
+          if (refreshData.refresh_token) {
+            setRefreshToken(refreshData.refresh_token);
+          }
           // Update Authorization header for retry
           headers["Authorization"] = `Bearer ${refreshData.access_token}`;
+          headers["X-Auth-Token"] = refreshData.access_token;
           // Retry original request with newly issued access token
           response = await fetch(url, { ...fetchOptions, headers });
         }
-      } else {
-        // Clear cached credentials when refresh token is invalid or expired
-        clearAuthToken();
       }
-    } catch {
-      // Clear cached credentials on network failure during refresh
-      clearAuthToken();
+    } catch (refreshErr) {
+      console.warn("Silent token refresh error:", refreshErr);
     }
   }
 
@@ -647,6 +657,9 @@ export const api = {
       });
       // Invoke method: setAuthToken(res.access_token)
       setAuthToken(res.access_token);
+      if ((res as any).refresh_token) {
+        setRefreshToken((res as any).refresh_token);
+      }
       // Invoke method: setCachedUser(res.user)
       setCachedUser(res.user);
       // Return value: res
@@ -669,6 +682,9 @@ export const api = {
       });
       // Invoke method: setAuthToken(res.access_token)
       setAuthToken(res.access_token);
+      if ((res as any).refresh_token) {
+        setRefreshToken((res as any).refresh_token);
+      }
       // Invoke method: setCachedUser(res.user)
       setCachedUser(res.user);
       // Return value: res

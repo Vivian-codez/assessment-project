@@ -40,13 +40,18 @@ export function RubricsListView({
 
   const loadRubrics = async () => {
     setLoading(true);
+    const timeout = setTimeout(() => {
+      setLoading(false);
+    }, 4000);
+
     try {
       const data = await api.rubrics.list(classroom?.id);
-      setRubrics(data || []);
+      setRubrics(Array.isArray(data) ? data : []);
     } catch (err: any) {
       console.warn("Failed to load rubrics:", err);
-      showToast(`Error fetching rubrics: ${err.message}`);
+      setRubrics([]);
     } finally {
+      clearTimeout(timeout);
       setLoading(false);
     }
   };

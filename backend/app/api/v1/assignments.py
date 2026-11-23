@@ -39,7 +39,7 @@ from app.models.draft_grade import DraftGrade
 from app.models.instructor import Instructor
 from app.api.v1.auth import get_current_instructor
 # Import assignment request and response Pydantic schemas
-from app.schemas.assignment import AssignmentCreate, AssignmentResponse
+from app.schemas.assignment import AssignmentCreate, AssignmentUpdate, AssignmentResponse
 # Import PDF and document extraction service
 from app.services.pdf_service import pdf_service
 # Import Redis helpers for live progress streaming
@@ -400,12 +400,13 @@ def get_assignment_detail(
 
 # Route handler to update an existing assignment
 @router.put("/assignments/{assignment_id}", response_model=AssignmentResponse)
+@router.patch("/assignments/{assignment_id}", response_model=AssignmentResponse)
 # Define route function receiving assignment ID, update payload, and database session
 def update_assignment(
     # Assignment ID string parameter from path
     assignment_id: str,
-    # Assignment update schema from request body
-    payload: AssignmentCreate,
+    # Assignment update schema from request body (optional fields)
+    payload: AssignmentUpdate,
     # Injected database session dependency
     db: Session = Depends(get_db),
 ):
@@ -418,8 +419,9 @@ def update_assignment(
         # Raise HTTP 404 exception indicating assignment not found
         raise HTTPException(status_code=404, detail="Assignment not found")
 
-    # Update assignment title from payload
-    assignment.title = payload.title
+    # Update assignment title from payload if provided
+    if payload.title is not None:
+        assignment.title = payload.title
     # Check if description was provided in payload
     if payload.description is not None:
         # Update assignment description

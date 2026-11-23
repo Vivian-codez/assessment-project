@@ -67,40 +67,82 @@ def extract_roll_number(filename: str) -> Optional[str]:
             # Return captured roll number
             return val
 
-    # Priority 2: Check for leading prefix digits followed by a delimiter (e.g. 12_OOP_Lab.py, 102_Lab1.pdf)
-    m = re.match(r'^(\d+)[_\-\s.]', stem)
-    # Check if leading prefix regex matched
+    # Priority 2: Check for leading prefix digits or alphanumeric roll followed by delimiter
+    m = re.match(r'^([a-zA-Z0-9\-]+)[_\-\s.]', stem)
+    # Check if leading prefix regex matched and contains digits
     if m:
-        # Return the captured leading numeric digits
-        return m.group(1)
+        # Extract candidate prefix
+        token = m.group(1).strip()
+        # Verify candidate contains digits and is not a generic keyword
+        if any(c.isdigit() for c in token) and token.lower() not in ("lab", "assign", "assignment", "hw", "homework", "task"):
+            # Return captured roll prefix
+            return token
 
-    # Priority 3: Check if the entire stem is a standalone numeric string (e.g. 102.cpp, 201.py)
-    if stem.isdigit():
+    # Priority 3: Check if the entire stem is a standalone alphanumeric roll string (e.g. 102.cpp, 21BCS045.pdf)
+    if any(c.isdigit() for c in stem) and len(stem) <= 20 and stem.lower() not in ("lab1", "lab2", "assign1", "assignment1"):
         # Return stem as the roll number
         return stem
 
-    # Priority 4: Check for course code or assignment prefix with hyphen/underscore followed by number
-    m = re.search(r'(?i)(?:[a-z]{2,}\d*|[a-z]+)[_-]+(\d+)(?:[_\-\s.]|$)', stem)
+    # Priority 4: Check for course code or assignment prefix with hyphen/underscore followed by roll number
+    m = re.search(r'(?i)(?:[a-z]{2,}\d*|[a-z]+)[_-]+([a-zA-Z0-9\-]+)(?:[_\-\s.]|$)', stem)
     # Check if assignment prefix regex matched
     if m:
-        # Return captured numeric roll digits
-        return m.group(1)
+        # Extract candidate
+        token = m.group(1).strip()
+        # Verify token contains digits
+        if any(c.isdigit() for c in token):
+            # Return captured numeric or alphanumeric roll digits
+            return token
 
-    # Priority 5: Check for trailing roll number at the end of the stem (e.g. Alice_102.pdf)
-    m = re.search(r'[_\-\s](\d+)$', stem)
+    # Priority 5: Check for trailing roll number at the end of the stem (e.g. Alice_102.pdf, Alice_21BCS045.pdf)
+    m = re.search(r'[_\-\s]([a-zA-Z0-9\-]+)$', stem)
     # Check if trailing suffix regex matched
     if m:
-        # Return captured trailing roll digits
-        return m.group(1)
+        # Extract candidate
+        token = m.group(1).strip()
+        # Verify token contains digits
+        if any(c.isdigit() for c in token):
+            # Return captured trailing roll digits
+            return token
 
     # Priority 6: Check for infix number surrounded by delimiters (e.g. CS301_201_Lab.pdf)
-    m = re.search(r'[_\-\s](\d+)[_\-\s]', stem)
+    m = re.search(r'[_\-\s]([a-zA-Z0-9\-]+)[_\-\s]', stem)
     # Check if infix regex matched
     if m:
-        # Return captured infix roll digits
-        return m.group(1)
+        # Extract candidate
+        token = m.group(1).strip()
+        # Verify token contains digits
+        if any(c.isdigit() for c in token):
+            # Return captured infix roll digits
+            return token
 
     # Return None if no roll number pattern matched the filename
+    return None
+
+
+# Function to extract student roll numbers from document text content
+def extract_roll_number_from_text(text: str) -> Optional[str]:
+    """Extracts student roll number from the document body text."""
+    # Guard against empty text content
+    if not text:
+        # Return None if no text is provided
+        return None
+    # Inspect first 3000 characters of document body for header metadata
+    sample = text[:3000]
+    # Search for explicit roll number or student ID labels
+    m = re.search(
+        r'(?i)(?:roll(?:\s*(?:no|num|number|#))?|student\s*id|registration\s*no|reg\s*no|urn|enrollment(?:\s*no)?)\s*[:=-]\s*([a-zA-Z0-9\-_]+)',
+        sample,
+    )
+    # If explicit pattern matched
+    if m:
+        # Extract and clean candidate
+        candidate = m.group(1).strip()
+        # Ensure candidate contains digits
+        if candidate and any(c.isdigit() for c in candidate):
+            # Return valid candidate
+            return candidate
+    # Return None if not found in text
     return None
 
 
@@ -314,6 +356,8 @@ class StudentResolverService:
         filename: str,
         # Optional pre-built roster index
         roster_index: Optional[Dict[str, Dict[str, Any]]] = None,
+        # Optional document plain text content for fallback roll matching
+        text_content: Optional[str] = None,
     # Return tuple of student_id, status, student_record, and extracted_roll
     ) -> Tuple[Optional[str], str, Optional[Dict[str, Any]], Optional[str]]:
         # Method docstring describing return tuple structure
@@ -325,6 +369,10 @@ class StudentResolverService:
         """
         # Extract roll number from the filename
         extracted_roll = extract_roll_number(filename)
+        # If filename extraction yielded nothing, inspect text content
+        if not extracted_roll and text_content:
+            # Extract roll number from document body
+            extracted_roll = extract_roll_number_from_text(text_content)
         # Check if roll number extraction failed
         if not extracted_roll:
             # Return unmatched status tuple

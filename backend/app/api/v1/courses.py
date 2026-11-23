@@ -53,14 +53,14 @@ def get_courses(
 ):
     # Route docstring describing course list retrieval
     """Retrieve all courses for the instructor dashboard."""
-    # 1. If cloud Supabase is enabled, optionally sync courses
-    if settings.USE_SUPABASE:
+    # 1. If cloud Supabase is enabled, optionally sync courses for active instructor
+    if settings.USE_SUPABASE and instructor and instructor.id:
         # Wrap Supabase synchronization in try-except block
         try:
             # Import Supabase client singleton dynamically
             from app.core.supabase import supabase
-            # Query all course rows from Supabase courses table
-            sb_res = supabase.table("courses").select("*").execute()
+            # Query course rows from Supabase courses table scoped to current instructor
+            sb_res = supabase.table("courses").select("*").eq("instructor_id", instructor.id).execute()
             # Iterate through each fetched course row
             for s_data in (sb_res.data or []):
                 # Convert ID to string
@@ -93,19 +93,20 @@ def get_courses(
             # Log debug notification regarding sync failure
             logger.debug(f"Cloud courses sync notice: {e}")
 
-    # 2. Query courses from local database
+    # 2. Query courses from local database strictly scoped to current authenticated instructor
     # Construct base query targeting Course database model
     query = db.query(Course)
     # Check if authenticated instructor has a valid ID
     if instructor and instructor.id:
-        # Filter courses owned by instructor or unassigned courses
-        inst_courses = query.filter((Course.instructor_id == instructor.id) | (Course.instructor_id == None)).all()
-        # Use instructor filtered courses if any exist, otherwise return all courses
-        courses = inst_courses if inst_courses else query.all()
+        # Filter courses strictly owned by instructor excluding soft-deleted courses
+        courses = query.filter(
+            Course.instructor_id == instructor.id,
+            Course.deleted_at.is_(None),
+        ).order_by(Course.created_at.desc()).all()
     # Handle unassigned or anonymous instructor contexts
     else:
-        # Return all courses from database
-        courses = query.all()
+        # Return empty list when no instructor context exists
+        courses = []
 
     # Check if a non-empty search query string was provided
     if search:
@@ -287,19 +288,46 @@ def create_course(
     instructor: Instructor = Depends(get_current_instructor),
 ):
     # Route docstring describing course creation
-    """Add a new course."""
-    # Generate unique UUID string for new course
-    course_id = str(uuid.uuid4())
+    """Add a new course with duplicate code validation."""
     # Extract instructor ID if instructor is present
     inst_id = instructor.id if instructor else None
+    # Validate that instructor identity exists
+    if not inst_id:
+        # Raise unauthorized exception
+        raise HTTPException(status_code=401, detail="Authentication required to create a course.")
+
+    # Clean and strip whitespace from course name and code
+    clean_name = payload.name.strip()
+    clean_code = payload.code.strip()
+    # Check that required fields are non-empty
+    if not clean_name or not clean_code:
+        # Raise bad request exception
+        raise HTTPException(status_code=400, detail="Course name and course catalog code are required.")
+
+    # Check for duplicate course code within instructor workspace
+    existing_duplicate = db.query(Course).filter(
+        Course.instructor_id == inst_id,
+        Course.code == clean_code,
+        Course.deleted_at.is_(None),
+    ).first()
+    # If duplicate course found, abort with clear diagnostic message
+    if existing_duplicate:
+        # Raise 400 Bad Request exception
+        raise HTTPException(
+            status_code=400,
+            detail=f"A course with code '{clean_code}' already exists in your workspace.",
+        )
+
+    # Generate unique UUID string for new course
+    course_id = str(uuid.uuid4())
     # Instantiate new Course database model
     new_course = Course(
         # Set course ID
         id=course_id,
         # Set course name from payload
-        name=payload.name,
+        name=clean_name,
         # Set course code from payload
-        code=payload.code,
+        code=clean_code,
         # Set section from payload
         section=payload.section,
         # Set UI color tone from payload

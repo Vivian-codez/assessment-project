@@ -70,6 +70,8 @@ interface AssignmentWizardModalProps {
   courseId: string;
   // Existing assignment ID if editing a draft
   initialAssignmentId?: string | null;
+  // Optional initial step to activate upon opening (default: 1)
+  initialStep?: number;
   // Callback invoked when modal is dismissed
   onClose: () => void;
   // Callback invoked when assignment is successfully created or published
@@ -124,12 +126,13 @@ const DEFAULT_CRITERIA: WizardCriterion[] = [
 export function AssignmentWizardModal({
   courseId,
   initialAssignmentId,
+  initialStep = 1,
   onClose,
   onCreated,
   showToast,
 }: AssignmentWizardModalProps) {
   // Step state tracker: 1 (Details), 2 (Reference Solution), 3 (Rubric), 4 (Submissions)
-  const [currentStep, setCurrentStep] = useState<number>(1);
+  const [currentStep, setCurrentStep] = useState<number>(initialStep || 1);
   // Assignment primary database ID
   const [assignmentId, setAssignmentId] = useState<string>(initialAssignmentId || "");
   // Assignment status workflow: Draft -> Open -> Grading -> Reviewed -> Published

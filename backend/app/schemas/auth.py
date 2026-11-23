@@ -98,6 +98,8 @@ class AuthResponse(BaseModel):
     access_token: str
     # The token type identifier, defaulting to bearer
     token_type: str = "bearer"
+    # Optional raw refresh token for client storage fallback
+    refresh_token: Optional[str] = None
     # Detailed profile data of the authenticated user
     user: UserResponse
 
@@ -113,6 +115,9 @@ class TokenRefreshResponse(BaseModel):
     # New JWT access token string
     access_token: str
     # Token type identifier
+    token_type: str = "bearer"
+    # Optional refreshed rotating token
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
 
 

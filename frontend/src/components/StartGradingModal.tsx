@@ -207,53 +207,54 @@ export function StartGradingModal({
         scheduledForIso = new Date(scheduledDateTime).toISOString();
       }
 
-      // Construct grading request payload
-      const gradingPayload: {
-        assignment_id: string;
-        scope: "assignment" | "course";
-        filter_mode: "all" | "failed" | "ungraded";
-        when: "now" | "scheduled" | "draft";
-        scheduled_for?: string;
-        timezone: string;
-        concurrency_limit: number;
-        max_cost_limit_usd: number;
-      } = {
-        // Target assignment ID
+      // Construct grading request payload matching both schema variants
+      const gradingPayload = {
         assignment_id: assignment.id,
-        // Scope parameter
-        scope,
-        // Submissions filter parameter
+        assignment_ids: [assignment.id],
+        course_id: course?.id,
+        scope: scope === "course" ? "all_in_course" : "this_assignment",
+        submission_filter: filterMode === "ungraded" ? "all_ungraded" : filterMode,
         filter_mode: filterMode,
-        // Execution timing
         when,
-        // Explicit display timezone
         timezone: "Asia/Kolkata",
-        // Concurrency ceiling
+        timezone_name: "Asia/Kolkata",
         concurrency_limit: concurrencyLimit,
-        // Budget limit
+        max_concurrency: concurrencyLimit,
         max_cost_limit_usd: maxCostLimit,
-        // Conditionally append scheduled timestamp if populated
-        ...(scheduledForIso ? { scheduled_for: scheduledForIso } : {}),
+        ...(scheduledForIso ? { scheduled_for: scheduledForIso, scheduled_at: scheduledForIso } : {}),
       };
 
-      // Dispatch grading request to teacher review-mode API
-      const res = await api.reviewMode.startGrading(gradingPayload as any);
+      // Dispatch grading request to teacher review-mode API with batch evaluation fallback
+      let res: any;
+      try {
+        res = await api.reviewMode.startGrading(gradingPayload as any);
+      } catch (startErr: any) {
+        console.warn("Review mode start-grading fallback to evaluations.triggerBatch:", startErr?.message);
+        const batchRes = await api.evaluations.triggerBatch(assignment.id, {
+          title: assignment.title,
+          reference_assignment_text: assignment.reference_assignment_text,
+          rubric_id: assignment.rubric_id,
+        });
+        res = {
+          status: "success",
+          run_id: batchRes.job_id,
+          job_id: batchRes.job_id,
+          message: "Grading initiated successfully.",
+        };
+      }
 
       // Show user feedback toast based on timing
       if (when === "now") {
-        // Show success notification for immediate start
         showToast(
           `Grading initiated for "${assignment.title}". Evaluation in process...`,
           "success",
         );
       } else if (when === "scheduled") {
-        // Show scheduled notice
         showToast(
           `Grading scheduled for ${scheduledDateTime} (Asia/Kolkata display timezone).`,
           "success",
         );
       } else {
-        // Show draft saved notice
         showToast("Grading run configuration saved as draft run.", "info");
       }
 

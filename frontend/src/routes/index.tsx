@@ -226,6 +226,15 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
   const [enrolledStudents, setEnrolledStudents] = useState<Student[]>([]);
   const [matrixRubrics, setMatrixRubrics] = useState<Rubric[]>([]);
 
+  // Initial step configuration for assignment wizard (Step 3 = Rubric Designer)
+  const [assignmentWizardInitialStep, setAssignmentWizardInitialStep] = useState<number>(1);
+
+  // Review Queue Selection Mode & Active Queued Submissions
+  const [reviewSelectionMode, setReviewSelectionMode] = useState<"all" | "selective">("selective");
+  const [selectedReviewIds, setSelectedReviewIds] = useState<string[]>([]);
+  const [activeReviewQueue, setActiveReviewQueue] = useState<string[]>([]);
+  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
+
   // Assignments & Submissions
   const [assignments, setAssignments] = useState<APIAssignment[]>([]);
   const [selectedAssignmentId, setSelectedAssignmentId] = useState<string>("");
@@ -287,16 +296,24 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
         return;
       }
 
-      const authed = await loadUser();
-      if (!authed) {
-        clearAuthToken();
-        setCurrentUser(null);
-        routerNavigate({ to: "/login" });
-        return;
-      }
+      try {
+        const authed = await loadUser();
+        if (!authed) {
+          clearAuthToken();
+          setCurrentUser(null);
+          routerNavigate({ to: "/login" });
+          return;
+        }
 
-      if (mounted) {
-        await Promise.all([loadCourses(), loadClassrooms(), loadRubrics()]);
+        if (mounted) {
+          await Promise.all([loadCourses(), loadClassrooms(), loadRubrics()]);
+        }
+      } catch (err: any) {
+        console.warn("Auth initialization notice:", err?.message);
+      } finally {
+        if (mounted) {
+          setIsAuthChecking(false);
+        }
       }
     };
 
@@ -311,9 +328,14 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
     try {
       const user = await api.auth.getMe();
       setCurrentUser(user);
+      setCachedUser(user);
       return true;
     } catch {
-      clearAuthToken();
+      const cached = getCachedUser();
+      if (cached) {
+        setCurrentUser(cached);
+        return true;
+      }
       return false;
     }
   };
@@ -722,6 +744,22 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
     setManualSubmissionOpen(true);
   };
 
+  if (isAuthChecking && !currentUser) {
+    return (
+      <div className="min-h-screen grid place-items-center bg-paper">
+        <div className="flex flex-col items-center gap-3">
+          <div className="size-10 rounded-xl bg-ink text-card grid place-items-center font-display font-bold text-lg shadow-sm">
+            V
+          </div>
+          <div className="flex items-center gap-2 text-xs font-medium text-muted-ink">
+            <Loader2 className="size-4 animate-spin text-ink" />
+            <span>Restoring verified instructor session...</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-paper font-sans text-ink antialiased">
       <div className="flex min-h-screen">
@@ -777,9 +815,15 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 assignments={assignments}
                 submissions={submissions}
                 pendingCount={pendingCount}
+                loadingCourses={loadingCourses}
+                onOpenAddAssignmentWithRubric={() => {
+                  setAssignmentWizardInitialStep(3);
+                  setAddAssignmentOpen(true);
+                }}
                 onNavigate={navigate}
                 onReview={(subId) => {
                   setSelectedSubmissionId(subId);
+                  setActiveReviewQueue([subId]);
                   navigate("review");
                 }}
                 onOpenAddCourse={() => setAddCourseOpen(true)}
@@ -807,42 +851,32 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 showToast={showToast}
               />
             )}
-            {view === "rubric_builder" && (
-              <MatrixRubricBuilder
-                classroom={currentClassroom}
-                classrooms={
-                  classrooms.length > 0
-                    ? classrooms
-                    : courses.map((c) => ({
-                        id: c.id,
-                        name: c.name,
-                        code: c.code,
-                        students_count: c.students_count || 0,
-                      }))
-                }
-                onSelectClassroom={handleSelectClassroom}
-                onSaved={() => {
-                  loadRubrics(currentClassroom?.id);
-                  navigate("rubrics");
-                }}
-                onCancel={() => navigate("rubrics")}
-                showToast={showToast}
-              />
-            )}
-            {view === "rubrics" && (
-              <RubricsListView
-                classroom={currentClassroom}
-                classrooms={
-                  classrooms.length > 0
-                    ? classrooms
-                    : courses.map((c) => ({
-                        id: c.id,
-                        name: c.name,
-                        code: c.code,
-                        students_count: c.students_count || 0,
-                      }))
-                }
-                onOpenCreateRubric={() => navigate("rubric_builder")}
+            {(view === "rubrics" || view === "rubric_builder") && (
+              <AssignmentsView
+                course={currentCourse}
+                courses={courses}
+                onSelectCourse={handleSelectCourse}
+                onOpenAddCourse={() => setAddCourseOpen(true)}
+                rubrics={matrixRubrics}
+                onReloadRubrics={() => loadRubrics(selectedCourseId || currentCourse?.id)}
+                assignments={assignments}
+                selectedAssignmentId={selectedAssignmentId}
+                processingAssignmentId={processingAssignmentId}
+                onSelectAssignment={handleSelectAssignment}
+                onTakeDefaultAssignment={handleTakeDefaultAssignment}
+                takingAssignment={takingAssignment}
+                onOpenAddAssignment={() => setAddAssignmentOpen(true)}
+                onOpenEditAssignment={() => setEditAssignmentOpen(true)}
+                onDeleteAssignment={handleDeleteAssignment}
+                onOpenManualSubmission={handleOpenManualSubmission}
+                onDeleteSubmission={handleDeleteSubmission}
+                onClearAllSubmissions={handleClearAllSubmissions}
+                submissions={submissions}
+                isProcessing={isProcessing}
+                progress={processingProgress}
+                onStartGrading={() => setStartGradingModalOpen(true)}
+                onReloadSubmissions={loadSubmissions}
+                onNavigate={navigate}
                 showToast={showToast}
               />
             )}
@@ -862,6 +896,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 course={currentCourse}
                 courses={courses}
                 onSelectCourse={handleSelectCourse}
+                onOpenAddCourse={() => setAddCourseOpen(true)}
                 rubrics={matrixRubrics}
                 onReloadRubrics={() => loadRubrics(selectedCourseId || currentCourse?.id)}
                 assignments={assignments}
@@ -910,6 +945,27 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 onStartGrading={() => setStartGradingModalOpen(true)}
                 onReview={(subId) => {
                   setSelectedSubmissionId(subId);
+                  setActiveReviewQueue([subId]);
+                  navigate("review");
+                }}
+                selectionMode={reviewSelectionMode}
+                onSetSelectionMode={setReviewSelectionMode}
+                selectedReviewIds={selectedReviewIds}
+                onToggleSelectReviewId={(subId) => {
+                  setSelectedReviewIds((prev) =>
+                    prev.includes(subId) ? prev.filter((id) => id !== subId) : [...prev, subId]
+                  );
+                }}
+                onSelectAllVisible={(ids) => {
+                  setSelectedReviewIds((prev) => Array.from(new Set([...prev, ...ids])));
+                }}
+                onDeselectAllVisible={(ids) => {
+                  setSelectedReviewIds((prev) => prev.filter((id) => !ids.includes(id)));
+                }}
+                onStartReviewQueue={(queueIds) => {
+                  if (queueIds.length === 0) return;
+                  setActiveReviewQueue(queueIds);
+                  setSelectedSubmissionId(queueIds[0]);
                   navigate("review");
                 }}
                 onNavigate={navigate}
@@ -922,6 +978,12 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
                 submissions={submissions}
                 selectedSubmissionId={selectedSubmissionId}
                 onSelectSubmission={setSelectedSubmissionId}
+                activeReviewQueue={activeReviewQueue}
+                onClearQueue={() => {
+                  setActiveReviewQueue([]);
+                  setSelectedReviewIds([]);
+                }}
+                enrolledStudents={enrolledStudents}
                 onGraded={() => loadSubmissions(selectedAssignmentId)}
                 onOpenAssistant={() => setReviewAssistantOpen(true)}
                 onNavigate={navigate}
@@ -1021,6 +1083,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
       {/* Add Course Modal */}
       {addCourseOpen && (
         <AddCourseModal
+          existingCourses={courses}
           onClose={() => setAddCourseOpen(false)}
           onCreated={(newCourse) => {
             setCourses([newCourse, ...courses]);
@@ -1036,11 +1099,16 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
       {addAssignmentOpen && (
         <AssignmentWizardModal
           courseId={selectedCourseId}
-          onClose={() => setAddAssignmentOpen(false)}
+          initialStep={assignmentWizardInitialStep}
+          onClose={() => {
+            setAddAssignmentOpen(false);
+            setAssignmentWizardInitialStep(1);
+          }}
           onCreated={(newAssign) => {
             setAssignments([newAssign, ...assignments]);
             setSelectedAssignmentId(newAssign.id);
             setAddAssignmentOpen(false);
+            setAssignmentWizardInitialStep(1);
             showToast(`Assignment "${newAssign.title}" created with rubric matrix & reference exemplar.`);
             loadSubmissions(newAssign.id);
           }}
@@ -1337,6 +1405,8 @@ interface GettingStartedChecklistProps {
   onNavigate: (view: ViewKey) => void;
   // Callback to trigger course creation modal
   onOpenAddCourse: () => void;
+  // Callback to trigger assignment creation modal at rubric step
+  onOpenAddAssignmentWithRubric?: () => void;
 }
 
 /**
@@ -1356,6 +1426,7 @@ function GettingStartedChecklist({
   gradedCount,
   onNavigate,
   onOpenAddCourse,
+  onOpenAddAssignmentWithRubric,
 }: GettingStartedChecklistProps) {
   // Local state to allow teacher to dismiss the onboarding guide
   const [dismissed, setDismissed] = useState(false);
@@ -1381,7 +1452,7 @@ function GettingStartedChecklist({
       title: "Set up assignment & rubric",
       done: assignmentsCount > 0 && rubricsCount > 0,
       actionLabel: "Setup Rubric",
-      action: () => onNavigate("rubrics"),
+      action: onOpenAddAssignmentWithRubric || (() => onNavigate("assignments")),
     },
     {
       id: "submissions",
@@ -1500,7 +1571,6 @@ const navSections: {
       { key: "courses", label: "Courses", icon: BookOpen },
       { key: "roster", label: "Students", icon: Users },
       { key: "assignments", label: "Assignments", icon: FolderOpen },
-      { key: "rubrics", label: "Rubrics", icon: ClipboardCheck },
     ],
   },
   {
@@ -1834,6 +1904,10 @@ interface DashboardProps {
   showToast: (msg: string) => void;
   /** Data refresh callback to trigger parent query invalidation */
   onRefreshData?: () => Promise<void> | void;
+  /** Whether courses are currently loading from backend */
+  loadingCourses?: boolean;
+  /** Opener for assignment wizard jumping directly to rubric designer */
+  onOpenAddAssignmentWithRubric?: () => void;
 }
 
 /**
@@ -1866,6 +1940,8 @@ function Dashboard({
   onSelectCourse,
   showToast,
   onRefreshData,
+  loadingCourses = false,
+  onOpenAddAssignmentWithRubric,
 }: DashboardProps) {
   // Local state holding the live aggregated analytics response from /api/v1/analytics
   const [analytics, setAnalytics] = useState<any>(null);
@@ -1923,8 +1999,19 @@ function Dashboard({
     };
   }, [course?.id, filterAssignmentId, dateRange]);
 
-  // Inspect empty state condition when no courses exist or analytics reports empty
-  const isWorkspaceEmpty = (!course && courses.length === 0 && classrooms.length === 0) || (analytics && analytics.is_empty);
+  // If initial courses are loading and no courses exist yet, show clean loader
+  if (loadingCourses && courses.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center p-20 text-center animate-fade-up">
+        <Loader2 className="size-8 animate-spin text-ink mb-3" />
+        <p className="text-sm font-semibold text-ink">Loading Educator Dashboard...</p>
+        <p className="text-xs text-muted-ink mt-1">Connecting to live database and fetching student metrics</p>
+      </div>
+    );
+  }
+
+  // Inspect empty state condition strictly when teacher has no courses or classrooms configured
+  const isWorkspaceEmpty = !loadingCourses && courses.length === 0 && classrooms.length === 0;
 
   // If workspace is completely empty, render educator onboarding setup view
   if (isWorkspaceEmpty && !loadingAnalytics) {
@@ -2069,7 +2156,13 @@ function Dashboard({
                 <span className="text-xs font-semibold text-muted-ink">Course:</span>
                 <select
                   value={course?.id || ""}
-                  onChange={(e) => onSelectCourse(e.target.value)}
+                  onChange={(e) => {
+                    if (e.target.value === "__new__") {
+                      onOpenAddCourse();
+                    } else {
+                      onSelectCourse(e.target.value);
+                    }
+                  }}
                   className="bg-transparent text-xs font-medium text-ink focus:outline-none cursor-pointer"
                 >
                   {courses.map((c) => (
@@ -2077,6 +2170,7 @@ function Dashboard({
                       {c.code} · {c.name}
                     </option>
                   ))}
+                  <option value="__new__">+ Create new course...</option>
                 </select>
               </div>
             )}
@@ -2142,6 +2236,7 @@ function Dashboard({
         gradedCount={submissions.filter((s) => s.status === "approved" || s.status === "graded").length}
         onNavigate={onNavigate}
         onOpenAddCourse={onOpenAddCourse}
+        onOpenAddAssignmentWithRubric={onOpenAddAssignmentWithRubric}
       />
 
       {/* 4 Primary KPI Cards with Metric Values, Subtitles, and Trends */}
@@ -2775,6 +2870,7 @@ function AssignmentsView({
   onReloadSubmissions,
   onNavigate,
   showToast,
+  onOpenAddCourse,
 }: {
   course: APICourse | null;
   courses: APICourse[];
@@ -2801,6 +2897,7 @@ function AssignmentsView({
   onNavigate: (view: ViewKey) => void;
   // Toast notification callback accepting optional tone and retry handler
   showToast: (msg: string, type?: "success" | "error" | "info" | "loading", retryAction?: () => void) => void;
+  onOpenAddCourse?: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<"submissions" | "rubrics">("submissions");
   const [rubricMode, setRubricMode] = useState<"list" | "upload" | "builder">("list");
@@ -2926,12 +3023,18 @@ function AssignmentsView({
     }
     setLinkingRubricId(rubricId);
     try {
-      await api.assignments.update(activeAssign.id, { rubric_id: rubricId });
+      await api.assignments.update(activeAssign.id, {
+        title: activeAssign.title || "Assignment",
+        rubric_id: rubricId,
+      });
       activeAssign.rubric_id = rubricId;
-      showToast(`Rubric attached to '${activeAssign.title}' successfully.`);
+      setAssignments((prev) =>
+        prev.map((a) => (a.id === activeAssign.id ? { ...a, rubric_id: rubricId } : a)),
+      );
+      showToast(`Rubric attached to '${activeAssign.title}' successfully.`, "success");
       await onReloadRubrics();
     } catch (err: any) {
-      showToast(`Error attaching rubric: ${err.message}`);
+      showToast(`Error attaching rubric: ${err.message}`, "error");
     } finally {
       setLinkingRubricId(null);
     }
@@ -2940,12 +3043,18 @@ function AssignmentsView({
   const handleDetachRubric = async () => {
     if (!activeAssign) return;
     try {
-      await api.assignments.update(activeAssign.id, { rubric_id: "" });
+      await api.assignments.update(activeAssign.id, {
+        title: activeAssign.title || "Assignment",
+        rubric_id: "",
+      });
       activeAssign.rubric_id = undefined;
-      showToast(`Rubric detached from '${activeAssign.title}'.`);
+      setAssignments((prev) =>
+        prev.map((a) => (a.id === activeAssign.id ? { ...a, rubric_id: undefined } : a)),
+      );
+      showToast(`Rubric detached from '${activeAssign.title}'.`, "info");
       await onReloadRubrics();
     } catch (err: any) {
-      showToast(`Error: ${err.message}`);
+      showToast(`Error: ${err.message}`, "error");
     }
   };
 
@@ -2977,7 +3086,13 @@ function AssignmentsView({
                 <span className="text-xs font-semibold text-muted-ink">Course:</span>
                 <select
                   value={course.id}
-                  onChange={(e) => onSelectCourse(e.target.value)}
+                  onChange={(e) => {
+                    if (e.target.value === "__new__") {
+                      onOpenAddCourse?.();
+                    } else {
+                      onSelectCourse(e.target.value);
+                    }
+                  }}
                   className="bg-transparent text-sm font-medium text-ink focus:outline-none cursor-pointer"
                 >
                   {courses.map((c) => (
@@ -2985,6 +3100,7 @@ function AssignmentsView({
                       {c.code} · {c.name}
                     </option>
                   ))}
+                  <option value="__new__">+ Create new course...</option>
                 </select>
               </div>
             )}
@@ -4255,6 +4371,13 @@ function AIGradingView({
   onReview,
   onNavigate,
   showToast,
+  selectionMode = "selective",
+  onSetSelectionMode,
+  selectedReviewIds = [],
+  onToggleSelectReviewId,
+  onSelectAllVisible,
+  onDeselectAllVisible,
+  onStartReviewQueue,
 }: {
   submissions: SubmissionItem[];
   assignment: APIAssignment | null;
@@ -4265,7 +4388,21 @@ function AIGradingView({
   onNavigate: (view: ViewKey) => void;
   // Toast notification callback accepting optional tone and retry handler
   showToast: (msg: string, type?: "success" | "error" | "info" | "loading", retryAction?: () => void) => void;
+  selectionMode?: "all" | "selective";
+  onSetSelectionMode?: (mode: "all" | "selective") => void;
+  selectedReviewIds?: string[];
+  onToggleSelectReviewId?: (id: string) => void;
+  onSelectAllVisible?: (ids: string[]) => void;
+  onDeselectAllVisible?: (ids: string[]) => void;
+  onStartReviewQueue?: (queueIds: string[]) => void;
 }) {
+  const pendingSubmissions = submissions.filter(
+    (s) => s.status === "graded" || s.status === "ready" || s.status === "flagged"
+  );
+  const effectiveCount = selectionMode === "all" ? pendingSubmissions.length : selectedReviewIds.length;
+  const allVisibleSelected =
+    submissions.length > 0 && submissions.every((s) => selectedReviewIds.includes(s.id));
+
   return (
     <>
       <SectionTitle
@@ -4324,11 +4461,82 @@ function AIGradingView({
         </div>
       )}
 
+      {/* Review Queue Selection Control Bar */}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-card p-3 shadow-2xs">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="inline-flex rounded-lg border border-line bg-paper p-0.5 text-xs">
+            <button
+              type="button"
+              onClick={() => onSetSelectionMode?.("all")}
+              className={cn(
+                "rounded-md px-3 py-1 font-medium transition-colors cursor-pointer",
+                selectionMode === "all" ? "bg-ink text-card shadow-2xs" : "text-muted-ink hover:text-ink"
+              )}
+            >
+              Select all ({pendingSubmissions.length} pending)
+            </button>
+            <button
+              type="button"
+              onClick={() => onSetSelectionMode?.("selective")}
+              className={cn(
+                "rounded-md px-3 py-1 font-medium transition-colors cursor-pointer",
+                selectionMode === "selective" ? "bg-ink text-card shadow-2xs" : "text-muted-ink hover:text-ink"
+              )}
+            >
+              Select selectively
+            </button>
+          </div>
+          <span className="text-xs text-muted-ink">
+            {selectionMode === "all" ? (
+              <span className="font-semibold text-ink">All {pendingSubmissions.length} pending submissions selected</span>
+            ) : (
+              <span>
+                <strong className="text-ink">{selectedReviewIds.length}</strong> of {submissions.length} selected
+              </span>
+            )}
+          </span>
+        </div>
+
+        <Button
+          size="sm"
+          disabled={effectiveCount === 0}
+          onClick={() => {
+            const queue = selectionMode === "all" ? pendingSubmissions.map((s) => s.id) : selectedReviewIds;
+            if (queue.length === 0) {
+              showToast("Please select at least one submission to review.", "info");
+              return;
+            }
+            onStartReviewQueue?.(queue);
+          }}
+          className="bg-ink text-card hover:bg-ink/90 text-xs h-8 gap-1.5 shadow-2xs cursor-pointer disabled:opacity-50"
+        >
+          <CheckCircle2 className="size-3.5" />
+          Start Review ({effectiveCount})
+        </Button>
+      </div>
+
       <div className="rounded-[14px] border border-line bg-card p-5">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[760px] text-left text-sm">
             <thead>
               <tr className="border-b border-line text-[10px] uppercase tracking-[0.14em] text-faint">
+                {selectionMode === "selective" && (
+                  <th className="px-3 py-3 w-10 text-center">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleSelected}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          onSelectAllVisible?.(submissions.map((s) => s.id));
+                        } else {
+                          onDeselectAllVisible?.(submissions.map((s) => s.id));
+                        }
+                      }}
+                      className="size-4 rounded border-line text-ink cursor-pointer focus:ring-0"
+                      title="Select all visible submissions"
+                    />
+                  </th>
+                )}
                 <th className="px-3 py-3">Student & Roll</th>
                 <th className="px-3 py-3">AI Suggested Score</th>
                 <th className="px-3 py-3">Peer Similarity</th>
@@ -4340,7 +4548,17 @@ function AIGradingView({
             </thead>
             <tbody>
               {submissions.map((sub) => (
-                <tr key={sub.id} className="border-b border-line last:border-0">
+                <tr key={sub.id} className="border-b border-line last:border-0 hover:bg-paper/40 transition-colors">
+                  {selectionMode === "selective" && (
+                    <td className="px-3 py-4 w-10 text-center">
+                      <input
+                        type="checkbox"
+                        checked={selectedReviewIds.includes(sub.id)}
+                        onChange={() => onToggleSelectReviewId?.(sub.id)}
+                        className="size-4 rounded border-line text-ink cursor-pointer focus:ring-0"
+                      />
+                    </td>
+                  )}
                   <td className="px-3 py-4">
                     <p className="font-medium text-ink">{sub.student}</p>
                     <p className="text-[11px] text-faint">{sub.roll}</p>
@@ -4433,6 +4651,9 @@ function ReviewWorkspace({
   onOpenAssistant,
   onNavigate,
   showToast,
+  activeReviewQueue = [],
+  onClearQueue,
+  enrolledStudents = [],
 }: {
   assignment: APIAssignment | null;
   submissions: SubmissionItem[];
@@ -4443,6 +4664,9 @@ function ReviewWorkspace({
   onNavigate: (view: ViewKey) => void;
   // Toast notification callback accepting optional tone and retry handler
   showToast: (msg: string, type?: "success" | "error" | "info" | "loading", retryAction?: () => void) => void;
+  activeReviewQueue?: string[];
+  onClearQueue?: () => void;
+  enrolledStudents?: Student[];
 }) {
   const [detail, setDetail] = useState<SubmissionDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -4485,12 +4709,24 @@ function ReviewWorkspace({
       showToast(`Grade stamped and approved: ${editedScore}/100 for ${detail.student}!`);
       onGraded();
       loadDetail(detail.id);
+
+      // Advance sequence in review queue if queue is active
+      if (activeReviewQueue && activeReviewQueue.length > 0) {
+        const qIdx = activeReviewQueue.indexOf(detail.id);
+        if (qIdx >= 0 && qIdx < activeReviewQueue.length - 1) {
+          onSelectSubmission(activeReviewQueue[qIdx + 1]);
+        } else if (qIdx === activeReviewQueue.length - 1) {
+          showToast("Review complete! All selected submissions have been stamped.", "success");
+          onClearQueue?.();
+        }
+      }
     } catch (e: any) {
       showToast(`Error stamping grade: ${e.message}`);
     }
   };
 
   const currentSub = detail || submissions.find((s) => s.id === selectedSubmissionId);
+  const activeQueueIndex = activeReviewQueue.indexOf(selectedSubmissionId);
 
   return (
     <>
@@ -4519,22 +4755,74 @@ function ReviewWorkspace({
         }
       />
 
+      {/* Active Review Queue Sequence Navigation Bar */}
+      {activeReviewQueue && activeReviewQueue.length > 0 && (
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber/40 bg-amber-soft/40 px-4 py-2.5 text-xs shadow-2xs animate-fade-up">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="size-4 text-amber-ink" />
+            <span className="font-semibold text-ink">
+              Reviewing {activeQueueIndex >= 0 ? activeQueueIndex + 1 : 1} of {activeReviewQueue.length} selected submissions
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={activeQueueIndex <= 0}
+              onClick={() => {
+                if (activeQueueIndex > 0) {
+                  onSelectSubmission(activeReviewQueue[activeQueueIndex - 1]);
+                }
+              }}
+              className="h-7 text-xs border-line bg-card hover:bg-paper cursor-pointer"
+            >
+              <ArrowLeft className="mr-1 size-3" /> Previous
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={activeQueueIndex >= activeReviewQueue.length - 1}
+              onClick={() => {
+                if (activeQueueIndex < activeReviewQueue.length - 1) {
+                  onSelectSubmission(activeReviewQueue[activeQueueIndex + 1]);
+                }
+              }}
+              className="h-7 text-xs border-line bg-card hover:bg-paper cursor-pointer"
+            >
+              Next <ArrowRight className="ml-1 size-3" />
+            </Button>
+            {onClearQueue && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onClearQueue}
+                className="h-7 text-xs text-muted-ink hover:text-ink cursor-pointer"
+              >
+                Exit Queue
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Student Selector Carousel */}
       <div className="mb-4 flex items-center gap-2 overflow-x-auto rounded-lg border border-line bg-card p-2">
         <span className="shrink-0 px-2 text-[10px] uppercase tracking-[0.14em] text-faint">
           Students:
         </span>
-        {submissions.map((sub) => (
-          <Button
-            key={sub.id}
-            size="sm"
-            variant={sub.id === selectedSubmissionId ? "default" : "ghost"}
-            className="shrink-0 text-xs"
-            onClick={() => onSelectSubmission(sub.id)}
-          >
-            {sub.student} ({sub.score !== null && sub.score !== undefined ? `${sub.score}/100` : "—"})
-          </Button>
-        ))}
+        {submissions
+          .filter((sub) => activeReviewQueue.length === 0 || activeReviewQueue.includes(sub.id))
+          .map((sub) => (
+            <Button
+              key={sub.id}
+              size="sm"
+              variant={sub.id === selectedSubmissionId ? "default" : "ghost"}
+              className="shrink-0 text-xs"
+              onClick={() => onSelectSubmission(sub.id)}
+            >
+              {sub.student} ({sub.score !== null && sub.score !== undefined ? `${sub.score}/100` : "—"})
+            </Button>
+          ))}
       </div>
 
       {currentSub ? (
@@ -4553,6 +4841,48 @@ function ReviewWorkspace({
                 {currentSub.similarity !== null && currentSub.similarity !== undefined ? `${currentSub.similarity}% Peer Match` : "—"}
               </Pill>
             </div>
+
+            {/* Manual Assignment Dropdown for Unmatched Submissions */}
+            {((currentSub.status === "unmatched" ||
+              currentSub.student === "Unmatched Submission" ||
+              currentSub.roll === "UNMATCHED" ||
+              currentSub.roll === "UNKNOWN" ||
+              !detail?.student_id) &&
+              enrolledStudents &&
+              enrolledStudents.length > 0) && (
+              <div className="mt-3 rounded-lg border border-amber/40 bg-amber-soft/50 p-3 text-xs">
+                <div className="flex items-center gap-1.5 font-semibold text-amber-ink mb-1">
+                  <Users className="size-4 shrink-0" />
+                  <span>Unmatched Submission — Assign Student</span>
+                </div>
+                <p className="text-[11px] text-muted-ink mb-2">
+                  Could not automatically match roll number from filename or document text. Select the student from your enrolled roster to link this submission:
+                </p>
+                <select
+                  defaultValue=""
+                  onChange={async (e) => {
+                    const studentId = e.target.value;
+                    if (!studentId) return;
+                    try {
+                      await api.submissions.assignStudent(currentSub.id, studentId);
+                      showToast("Student assigned to submission successfully!");
+                      onGraded();
+                      loadDetail(currentSub.id);
+                    } catch (err: any) {
+                      showToast(`Error assigning student: ${err.message}`, "error");
+                    }
+                  }}
+                  className="w-full rounded-md border border-line bg-card px-2.5 py-1.5 text-xs text-ink font-medium focus:outline-none"
+                >
+                  <option value="" disabled>Select enrolled student from roster...</option>
+                  {enrolledStudents.map((stud) => (
+                    <option key={stud.id} value={stud.id}>
+                      {stud.name} ({stud.roll_number})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
 
             {/* Academic Integrity Indicator Metrics */}
             <div className="mt-4 grid grid-cols-3 gap-2 border-y border-line py-3 text-center">
@@ -4592,13 +4922,48 @@ function ReviewWorkspace({
             </div>
 
             {/* Submission Content Text */}
-            <div className="mt-4 max-h-[300px] overflow-y-auto rounded-lg border border-line bg-paper p-3 text-xs leading-relaxed text-muted-ink">
-              <span className="mb-1 block font-semibold uppercase text-faint">
-                Student Submitted Text:
-              </span>
-              <p className="whitespace-pre-wrap">
-                {detail?.extracted_text || "Submission content registered."}
-              </p>
+            <div className="mt-4 max-h-[350px] overflow-y-auto rounded-lg border border-line bg-paper p-3 text-xs leading-relaxed text-muted-ink">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="font-semibold uppercase text-faint text-[10px] tracking-wider">
+                  Student Submitted Text:
+                </span>
+                {detail?.file_name && (
+                  <span className="text-[10px] font-mono text-muted-ink truncate max-w-[180px]">
+                    {detail.file_name}
+                  </span>
+                )}
+              </div>
+
+              {(!detail?.extracted_text ||
+                detail.extracted_text.trim() === "" ||
+                detail.extracted_text.startsWith("%PDF-") ||
+                detail.extracted_text.includes("[Could not read this file")) ? (
+                <div className="rounded-md border border-amber/30 bg-amber-soft/40 p-3 text-xs">
+                  <div className="flex items-center gap-1.5 font-semibold text-amber-ink mb-1">
+                    <AlertCircle className="size-4 shrink-0" />
+                    <span>Could not extract text from this document</span>
+                  </div>
+                  <p className="text-[11px] text-muted-ink">
+                    This file appears to be a scanned document or image-only PDF without embedded text layers. Please review the original submission file directly.
+                  </p>
+                  {detail?.file_url && (
+                    <a
+                      href={detail.file_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-2.5 inline-flex items-center gap-1.5 rounded bg-card px-2.5 py-1 text-xs font-medium text-ink border border-line hover:bg-paper"
+                    >
+                      <FileText className="size-3.5 text-amber-ink" />
+                      <span>Open Original Document</span>
+                      <ExternalLink className="size-3 text-faint" />
+                    </a>
+                  )}
+                </div>
+              ) : (
+                <p className="whitespace-pre-wrap font-sans text-xs text-ink leading-relaxed">
+                  {detail.extracted_text}
+                </p>
+              )}
             </div>
 
             {/* Public Web Citations If Found */}
@@ -5586,10 +5951,12 @@ function AddCourseModal({
   onClose,
   onCreated,
   showToast,
+  existingCourses = [],
 }: {
   onClose: () => void;
   onCreated: (course: APICourse) => void;
   showToast: (msg: string) => void;
+  existingCourses?: APICourse[];
 }) {
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
@@ -5597,20 +5964,30 @@ function AddCourseModal({
   const [tone, setTone] = useState("lav");
   const [students, setStudents] = useState(48);
   const [submitting, setSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErrorMessage("");
+
+    const trimmedCode = code.trim().toUpperCase();
+    if (existingCourses && existingCourses.some((c) => c.code.trim().toUpperCase() === trimmedCode)) {
+      setErrorMessage(`A course with code '${code.trim()}' already exists. Please choose a unique course code.`);
+      return;
+    }
+
     setSubmitting(true);
     try {
       const created = await api.courses.create({
-        name,
-        code,
-        section,
+        name: name.trim(),
+        code: trimmedCode,
+        section: section.trim() || "A",
         tone,
         students_count: students,
       });
       onCreated(created);
     } catch (err: any) {
+      setErrorMessage(err.message || "Failed to create course.");
       showToast(`Error creating course: ${err.message}`);
     } finally {
       setSubmitting(false);
@@ -5626,6 +6003,13 @@ function AddCourseModal({
             <X className="size-4" />
           </Button>
         </div>
+
+        {errorMessage && (
+          <div className="mt-3 rounded-md border border-clay/30 bg-clay-soft/40 px-3 py-2 text-xs font-medium text-clay flex items-center gap-1.5">
+            <AlertCircle className="size-3.5 shrink-0" />
+            <span>{errorMessage}</span>
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="mt-4 space-y-3">
           <div>
@@ -5929,16 +6313,102 @@ function EditAssignmentModal({
   const [maxScore, setMaxScore] = useState(assignment.max_score || 100);
   const [referenceText, setReferenceText] = useState(assignment.reference_assignment_text || "");
   const [submitting, setSubmitting] = useState(false);
+  const [isParsingRubricFile, setIsParsingRubricFile] = useState(false);
+  const rubricFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Criteria configuration state for assignment evaluation rubric
+  const [criteria, setCriteria] = useState<Array<{
+    id: string;
+    criterion_name: string;
+    weight: number;
+    description: string;
+  }>>([
+    { id: "c1", criterion_name: "Functional Correctness & Logic", weight: 40, description: "Program correctly implements specifications and edge-case handling." },
+    { id: "c2", criterion_name: "Architecture & Modularity", weight: 30, description: "Clean structure, encapsulation, and idiomatic naming." },
+    { id: "c3", criterion_name: "Testing & Documentation", weight: 30, description: "Test coverage, algorithmic complexity analysis, and comments." },
+  ]);
+
+  const handleRubricFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsParsingRubricFile(true);
+    try {
+      const parsed = await api.rubrics.parseRubricFile(file);
+      if (parsed.criteria && parsed.criteria.length > 0) {
+        setCriteria(
+          parsed.criteria.map((c, i) => ({
+            id: `crit_${i}_${Date.now()}`,
+            criterion_name: c.criterion_name || `Criterion ${i + 1}`,
+            weight: c.weight || Math.round(100 / parsed.criteria.length),
+            description: c.description || "",
+          }))
+        );
+        showToast(`AI parsed ${parsed.criteria.length} criteria from ${file.name}`);
+      } else {
+        showToast("No criteria detected in file. Keep manual criteria.", "info");
+      }
+    } catch (err: any) {
+      showToast(`Error parsing rubric file: ${err.message}`, "error");
+    } finally {
+      setIsParsingRubricFile(false);
+    }
+  };
+
+  const handleAddCriterion = () => {
+    setCriteria((prev) => [
+      ...prev,
+      {
+        id: `crit_${Date.now()}`,
+        criterion_name: `Criterion ${prev.length + 1}`,
+        weight: 20,
+        description: "Evaluation requirements and quality benchmarks.",
+      },
+    ]);
+  };
+
+  const handleRemoveCriterion = (id: string) => {
+    if (criteria.length <= 1) {
+      showToast("An assignment must have at least one evaluation criterion.", "info");
+      return;
+    }
+    setCriteria((prev) => prev.filter((c) => c.id !== id));
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
     try {
+      let linkedRubricId = assignment.rubric_id;
+      if (criteria.length > 0) {
+        try {
+          const rubRes = await api.rubrics.create({
+            title: `${title} Matrix Rubric`,
+            course_id: assignment.course_id,
+            total_marks: maxScore,
+            criteria: criteria.map((c) => ({
+              criterion_name: c.criterion_name,
+              weight: c.weight,
+              description: c.description,
+              levels: [
+                { level_name: "Exemplary", points: Number((c.weight * 1.0).toFixed(1)), description: "Completely satisfies requirements without defects." },
+                { level_name: "Proficient", points: Number((c.weight * 0.75).toFixed(1)), description: "Satisfies core requirements with minor gaps." },
+                { level_name: "Developing", points: Number((c.weight * 0.5).toFixed(1)), description: "Partially functional with substantial deviations." },
+                { level_name: "Unsatisfactory", points: 0.0, description: "Missing implementation or fails completely." },
+              ],
+            })),
+          });
+          linkedRubricId = rubRes.id;
+        } catch (rErr: any) {
+          console.warn("Rubric linking notice:", rErr?.message);
+        }
+      }
+
       const updated = await api.assignments.update(assignment.id, {
         title,
         description,
         max_score: maxScore,
         reference_assignment_text: referenceText,
+        rubric_id: linkedRubricId,
       });
       onUpdated(updated);
     } catch (err: any) {
@@ -5948,17 +6418,24 @@ function EditAssignmentModal({
     }
   };
 
+  const totalCriteriaWeight = criteria.reduce((sum, c) => sum + (Number(c.weight) || 0), 0);
+
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-ink/30 backdrop-blur-sm p-4">
-      <div className="w-full max-w-lg rounded-[16px] border border-line bg-card p-6 shadow-2xl animate-fade-up max-h-[90vh] overflow-y-auto">
+      <div className="w-full max-w-2xl rounded-[16px] border border-line bg-card p-6 shadow-2xl animate-fade-up max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between">
-          <h2 className="font-display text-xl">Edit Assignment & Benchmark Exemplar</h2>
+          <div>
+            <h2 className="font-display text-xl text-ink">Edit Assignment & Rubric Matrix</h2>
+            <p className="text-xs text-muted-ink mt-0.5">
+              Update instructions, benchmark reference exemplar, and grading criteria.
+            </p>
+          </div>
           <Button size="icon" variant="ghost" onClick={onClose}>
             <X className="size-4" />
           </Button>
         </div>
 
-        <form onSubmit={handleSubmit} className="mt-4 space-y-3">
+        <form onSubmit={handleSubmit} className="mt-4 space-y-4">
           <div>
             <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
               Assignment Title
@@ -5983,7 +6460,7 @@ function EditAssignmentModal({
           </div>
           <div>
             <label className="text-[11px] uppercase tracking-[0.12em] text-faint">
-              Maximum Score
+              Maximum Score (Marks)
             </label>
             <Input
               type="number"
@@ -5995,29 +6472,133 @@ function EditAssignmentModal({
           <div>
             <div className="flex items-center justify-between">
               <label className="text-[11px] uppercase tracking-[0.12em] text-faint font-semibold">
-                Reference Assignment (Ground Truth Solution)
+                Reference Assignment (Ground Truth Benchmark)
               </label>
               <span className="text-[10px] text-sage font-medium">Active benchmark</span>
             </div>
             <p className="mt-0.5 text-[11px] text-muted-ink">
-              Paste the exemplar solution or reference code. The AI grading engine will benchmark
-              student accuracy and technical depth against this text.
+              Paste the exemplar solution or model answer. The AI evaluates student code against this benchmark.
             </p>
             <Textarea
               value={referenceText}
               onChange={(e) => setReferenceText(e.target.value)}
               placeholder="Paste exemplar code, optimal algorithmic solution, or benchmark essay..."
               className="mt-1.5 font-mono text-xs"
-              rows={6}
+              rows={4}
             />
+          </div>
+
+          {/* Matrix Rubric Section */}
+          <div className="rounded-xl border border-line bg-paper/50 p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-line">
+              <div>
+                <h3 className="text-xs font-semibold text-ink uppercase tracking-wider">
+                  Rubric Criteria Matrix
+                </h3>
+                <p className="text-[11px] text-muted-ink">
+                  Total Weight: <strong className={cn(totalCriteriaWeight === 100 ? "text-sage" : "text-amber-ink")}>{totalCriteriaWeight}</strong> / 100 marks
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  ref={rubricFileInputRef}
+                  type="file"
+                  accept=".pdf,.docx,.txt,.csv"
+                  onChange={handleRubricFileUpload}
+                  className="hidden"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isParsingRubricFile}
+                  onClick={() => rubricFileInputRef.current?.click()}
+                  className="h-7 text-xs gap-1 border-line text-muted-ink hover:text-ink cursor-pointer"
+                >
+                  {isParsingRubricFile ? (
+                    <>
+                      <Loader2 className="size-3 animate-spin text-amber-ink" />
+                      Parsing...
+                    </>
+                  ) : (
+                    <>
+                      <UploadCloud className="size-3" />
+                      Upload Rubric File
+                    </>
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAddCriterion}
+                  className="h-7 text-xs gap-1 border-line text-ink hover:bg-card cursor-pointer"
+                >
+                  <Plus className="size-3" />
+                  Add Criterion
+                </Button>
+              </div>
+            </div>
+
+            <div className="space-y-2.5">
+              {criteria.map((c, idx) => (
+                <div key={c.id || idx} className="rounded-lg border border-line bg-card p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <Input
+                      value={c.criterion_name}
+                      onChange={(e) => {
+                        const next = [...criteria];
+                        next[idx].criterion_name = e.target.value;
+                        setCriteria(next);
+                      }}
+                      placeholder="Criterion Name (e.g. Correctness)"
+                      className="h-7 text-xs font-semibold flex-1"
+                    />
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="text-[11px] text-faint">Marks:</span>
+                      <Input
+                        type="number"
+                        value={c.weight}
+                        onChange={(e) => {
+                          const next = [...criteria];
+                          next[idx].weight = Number(e.target.value);
+                          setCriteria(next);
+                        }}
+                        className="h-7 w-16 text-center text-xs"
+                      />
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        onClick={() => handleRemoveCriterion(c.id)}
+                        className="size-7 text-muted-ink hover:text-clay cursor-pointer"
+                        title="Remove criterion"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                  <Input
+                    value={c.description}
+                    onChange={(e) => {
+                      const next = [...criteria];
+                      next[idx].description = e.target.value;
+                      setCriteria(next);
+                    }}
+                    placeholder="Description / benchmark expectation..."
+                    className="h-7 text-[11px] text-muted-ink"
+                  />
+                </div>
+              ))}
+            </div>
           </div>
 
           <Button
             type="submit"
             disabled={submitting}
-            className="mt-4 w-full bg-ink text-card hover:bg-ink/90"
+            className="mt-4 w-full bg-ink text-card hover:bg-ink/90 cursor-pointer"
           >
-            {submitting ? "Updating..." : "Save Changes & Benchmark"}
+            {submitting ? "Updating Assignment & Rubric..." : "Save Changes & Benchmark"}
           </Button>
         </form>
       </div>
