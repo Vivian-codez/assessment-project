@@ -60,7 +60,7 @@ function NotFoundComponent() {
  * @returns {JSX.Element} The rendered diagnostic error boundary.
  */
 function ErrorComponent({ error, reset }: ErrorComponentProps) {
-  // Access router instance to allow cache invalidation on retry
+  // Access router instance to inspect active location, failing route, and cache state
   const router = useRouter();
   // State tracking whether the technical diagnostic accordion is expanded
   const [showDetails, setShowDetails] = useState(false);
@@ -71,15 +71,40 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
   // Create formatted error reference code
   const errorRef = `ERR-${Date.now().toString(36).toUpperCase()}-${errorId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 4).toUpperCase()}`;
 
+  // Resolve failing route pathname from router state or window location
+  const failingRoute = router.state?.location?.pathname || (typeof window !== "undefined" ? window.location.pathname : "/");
+  // Resolve complete URL for debugging
+  const failingUrl = typeof window !== "undefined" ? window.location.href : (router.state?.location?.href || "unknown");
+  // Resolve failing matched component route identifier
+  const failingRouteId = router.state?.matches?.[router.state.matches.length - 1]?.routeId || "UnknownRoute";
+  // Extract error class name
+  const errorName = (error as Error)?.name || "RuntimeError";
+  // Extract error message
+  const errorMessage = (error as Error)?.message || String(error);
+  // Extract real stack trace or fallback
+  const errorStack = (error as Error)?.stack || "No stack trace available";
+
   // Helper function to copy diagnostic bundle to system clipboard
   const handleCopyDiagnostics = async () => {
     // Construct structured diagnostic payload
     const diagnostics = {
+      // Diagnostic reference identifier
       errorRef,
+      // ISO timestamp of failure
       timestamp: new Date().toISOString(),
-      message: (error as Error)?.message || String(error),
-      stack: (error as Error)?.stack || "No stack trace available",
-      url: typeof window !== "undefined" ? window.location.href : "unknown",
+      // Failing route pathname
+      failingRoute,
+      // Failing matched route identifier
+      failingRouteId,
+      // Target full URL
+      failingUrl,
+      // Error type name
+      errorName,
+      // Error message text
+      message: errorMessage,
+      // Raw execution stack trace
+      stack: errorStack,
+      // Client user agent string
       userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "unknown",
     };
     // Attempt write to clipboard
@@ -123,7 +148,7 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
 
         {/* Concise explanation of the failure */}
         <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
-          {(error as Error)?.message || "A runtime execution error prevented this view from loading completely. Your data is protected."}
+          {errorMessage || "A runtime execution error prevented this view from loading completely. Your data is protected."}
         </p>
 
         {/* Collapsible diagnostic details accordion */}
@@ -139,17 +164,47 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
           </button>
           {/* Expandable stack trace and diagnostic payload */}
           {showDetails && (
-            <div className="border-t border-line p-4">
+            <div className="border-t border-line p-4 space-y-3">
+              {/* Diagnostic metadata breakdown grid */}
+              <div className="grid grid-cols-2 gap-2 text-[11px] font-mono bg-muted/50 p-2.5 rounded-lg border border-line/60">
+                {/* Failing route */}
+                <div>
+                  <span className="text-muted-foreground">Route: </span>
+                  <span className="font-semibold text-foreground">{failingRoute}</span>
+                </div>
+                {/* Matched component / route ID */}
+                <div>
+                  <span className="text-muted-foreground">Component: </span>
+                  <span className="font-semibold text-foreground">{failingRouteId}</span>
+                </div>
+                {/* Error class */}
+                <div>
+                  <span className="text-muted-foreground">Type: </span>
+                  <span className="text-destructive font-semibold">{errorName}</span>
+                </div>
+                {/* Timestamp */}
+                <div>
+                  <span className="text-muted-foreground">Time: </span>
+                  <span className="text-muted-foreground">{new Date().toLocaleTimeString()}</span>
+                </div>
+              </div>
+
               {/* Stack trace preformatted text box */}
-              <pre className="max-h-48 overflow-auto rounded-lg bg-black/80 p-3 font-mono text-[11px] leading-relaxed text-green-400">
-                {(error as Error)?.stack || (error as Error)?.message || String(error)}
-              </pre>
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-1">
+                  Stack Trace & Source
+                </p>
+                <pre className="max-h-56 overflow-auto rounded-lg bg-black/90 p-3 font-mono text-[11px] leading-relaxed text-emerald-400 border border-emerald-950">
+                  {errorStack}
+                </pre>
+              </div>
+
               {/* Copy diagnostic details button */}
               <div className="mt-3 flex justify-end">
                 <button
                   type="button"
                   onClick={handleCopyDiagnostics}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-line bg-card px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted"
+                  className="inline-flex items-center gap-1.5 rounded-md border border-line bg-card px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-muted shadow-2xs"
                 >
                   {copied ? (
                     <>

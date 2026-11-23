@@ -82,7 +82,7 @@ def get_current_user(
     """
     raw_token = token
     # Check if raw token is missing but Authorization header has Bearer prefix
-    if not raw_token and authorization and authorization.startswith("Bearer "):
+    if not raw_token and authorization and isinstance(authorization, str) and authorization.startswith("Bearer "):
         raw_token = authorization.split(" ")[1].strip()
 
     # Reject request if no bearer token is present
@@ -545,7 +545,8 @@ def logout(
 ):
     """Log out user, revoke refresh token, clear cookies, and add access token to Redis deny-list."""
     raw_token = token
-    if not raw_token and authorization and authorization.startswith("Bearer "):
+    # Validate authorization header bearer prefix
+    if not raw_token and authorization and isinstance(authorization, str) and authorization.startswith("Bearer "):
         raw_token = authorization.split(" ")[1].strip()
 
     # Revoke access token in Redis deny-list

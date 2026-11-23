@@ -154,6 +154,8 @@ origins = [
     "http://localhost:3000",
     # Specific production Vercel deployment URL
     "https://assessment-project-o64i.vercel.app",  # Your specific Vercel URL
+    # Current active Vercel deployment URL
+    "https://assessment-project-jycg.vercel.app",
 ]
 
 # Retrieve additional configured CORS origins from application settings

@@ -3,27 +3,45 @@
  * Connects the TanStack Start frontend to the FastAPI + PostgreSQL + Supabase backend.
  */
 
+// Import validated client environment configuration
+import { clientEnv } from "./env";
+
+/**
+ * Resolves the base API URL for backend HTTP requests.
+ * Evaluates VITE_API_BASE_URL environment variable and validates production configurations.
+ *
+ * @returns {string} The fully qualified API base URL path.
+ */
 function resolveApiBaseUrl(): string {
-  // Declare envUrl variable
+  // Read VITE_API_BASE_URL from environment variables
   const envUrl = (import.meta.env as any)["VITE_API_BASE_URL"];
-  // Evaluate condition: if (envUrl && typeof envUrl === "string" && envUrl.trim().length > 0)
+  // Check if envUrl is populated and non-empty
   if (envUrl && typeof envUrl === "string" && envUrl.trim().length > 0) {
-    // Declare trimmed variable
+    // Strip trailing slashes from configured URL
     const trimmed = envUrl.trim().replace(/\/+$/, "");
-    // Evaluate condition: if (trimmed.endsWith("/api/v1"))
+    // Check if trimmed URL already concludes with /api/v1
     if (trimmed.endsWith("/api/v1")) {
-      // Return value: trimmed
+      // Return URL as configured
       return trimmed;
     }
-    // Evaluate condition: if (trimmed.endsWith("/api"))
+    // Check if trimmed URL concludes with /api
     if (trimmed.endsWith("/api")) {
-      // Return value: `${trimmed}/v1`
+      // Append v1 version segment
       return `${trimmed}/v1`;
     }
-    // Return value: `${trimmed}/api/v1`
+    // Append default /api/v1 prefix
     return `${trimmed}/api/v1`;
   }
-  // Return value: "http://localhost:8000/api/v1"
+  // If running in production mode without configured backend URL, warn explicitly
+  if (import.meta.env?.PROD) {
+    // Log prominent critical warning
+    console.warn(
+      "[Verism AI API] CRITICAL: VITE_API_BASE_URL environment variable is not defined in production settings. " +
+      "Falling back to http://localhost:8000/api/v1 which will fail in remote browser sessions. " +
+      "Configure VITE_API_BASE_URL in your Vercel project environment variables."
+    );
+  }
+  // Fallback to local FastAPI development backend URL
   return "http://localhost:8000/api/v1";
 }
 
@@ -512,14 +530,19 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   // Perform HTTP request using browser fetch
   let response = await fetch(url, fetchOptions);
 
+  // Validate endpoint boundary ensuring safe string type
+  const safeEndpoint = typeof endpoint === "string" ? endpoint : String(endpoint || "");
+  // Normalize leading forward slash
+  const cleanEndpoint = safeEndpoint.startsWith("/") ? safeEndpoint : `/${safeEndpoint}`;
+  // Determine if target is an unauthenticated credential route
+  const isAuthRoute =
+    cleanEndpoint.startsWith("/auth/login") ||
+    cleanEndpoint.startsWith("/auth/signup") ||
+    cleanEndpoint.startsWith("/auth/register") ||
+    cleanEndpoint.startsWith("/auth/refresh");
+
   // Check if response is 401 Unauthorized and not on an authentication endpoint
-  if (
-    response.status === 401 &&
-    !endpoint.startsWith("/auth/login") &&
-    !endpoint.startsWith("/auth/signup") &&
-    !endpoint.startsWith("/auth/register") &&
-    !endpoint.startsWith("/auth/refresh")
-  ) {
+  if (response.status === 401 && !isAuthRoute) {
     // Attempt automatic refresh token rotation
     try {
       // Call backend refresh endpoint with credentials included

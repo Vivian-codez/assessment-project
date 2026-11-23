@@ -265,7 +265,12 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
       (message.toLowerCase().includes("error") || message.toLowerCase().includes("failed")
         ? "error"
         : "success");
-    setToast({ message, type: inferredType, retryAction });
+    // Update active toast state with optional retry callback
+    setToast({
+      message,
+      type: inferredType,
+      ...(retryAction ? { retryAction } : {}),
+    });
     if (inferredType !== "loading") {
       window.setTimeout(() => setToast(null), 4000);
     }
@@ -1086,7 +1091,7 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
               setProcessingAssignmentId(currentAssignment.id);
               setIsProcessing(true);
               setProcessingProgress(5);
-              pollGradingJob(runData.run_id || runData.job_id, currentAssignment.id);
+              pollBatchJob(runData.run_id || runData.job_id, currentAssignment.id);
             }
           }}
           showToast={showToast}
@@ -1888,12 +1893,13 @@ function Dashboard({
     setLoadingAnalytics(true);
 
     // Call API client analytics getter with active query parameters
+    const analyticsParams: { course_id?: string; assignment_id?: string; date_range?: string } = {
+      date_range: dateRange,
+      ...(course?.id ? { course_id: course.id } : {}),
+      ...(filterAssignmentId ? { assignment_id: filterAssignmentId } : {}),
+    };
     api.analytics
-      .get({
-        course_id: course?.id,
-        assignment_id: filterAssignmentId || undefined,
-        date_range: dateRange,
-      })
+      .get(analyticsParams)
       .then((data) => {
         // Update analytics state if component is still mounted
         if (active && data) {
@@ -2198,28 +2204,60 @@ function Dashboard({
 
           <div className="mt-4 h-[240px] w-full">
             {analytics?.grade_distribution && analytics.grade_distribution.length > 0 ? (
+              // Responsive chart container preserving dynamic aspect ratio
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={analytics.grade_distribution} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                {/* BarChart displaying score bracket frequency distribution */}
+                <BarChart
+                  // Normalize data items guaranteeing both label and bucket keys exist as strings
+                  data={analytics.grade_distribution.map((d: any) => {
+                    // Extract safe bucket or label string
+                    const rawLabel = typeof d?.label === "string" ? d.label : typeof d?.bucket === "string" ? d.bucket : "";
+                    // Return normalized bar entry data object
+                    return {
+                      // Preserve existing properties
+                      ...d,
+                      // Ensure bucket key is a safe string
+                      bucket: rawLabel,
+                      // Ensure label key is a safe string
+                      label: rawLabel,
+                    };
+                  })}
+                  // Set standard chart layout margins
+                  margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+                >
+                  {/* Subtle horizontal grid lines */}
                   <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.25} />
-                  <XAxis dataKey="bucket" tick={{ fontSize: 11 }} />
+                  {/* Horizontal axis referencing label with fallback */}
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                  {/* Vertical numeric student count axis */}
                   <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                  {/* Recharts interactive hover tooltip */}
                   <RechartsTooltip
+                    // Format student count in tooltip
                     formatter={(val: any) => [`${val} students`, "Count"]}
+                    // Custom tooltip card styling
                     contentStyle={{ borderRadius: "8px", fontSize: "12px", border: "1px solid #e2e8f0" }}
                   />
+                  {/* Bar series representing student frequencies */}
                   <Bar dataKey="count" radius={[5, 5, 0, 0]} name="Students">
-                    {analytics.grade_distribution.map((entry: any, index: number) => (
-                      <Cell
-                        key={`bar-${index}`}
-                        fill={
-                          entry.bucket.startsWith("90")
-                            ? "#10b981"
-                            : entry.bucket.startsWith("0")
-                            ? "#ef4444"
-                            : "#6366f1"
-                        }
-                      />
-                    ))}
+                    {/* Map distribution items to individually colored bars with safe startsWith checks */}
+                    {analytics.grade_distribution.map((entry: any, index: number) => {
+                      // Extract safe bucket string from label or bucket
+                      const bucketStr = typeof entry?.label === "string" ? entry.label : typeof entry?.bucket === "string" ? entry.bucket : "";
+                      // Check for high score tier (90-100% or sage tone)
+                      const isHigh = bucketStr.startsWith("90") || entry?.tone === "sage";
+                      // Check for low score tier (<60%, 0-59%, or clay tone)
+                      const isLow = bucketStr.startsWith("0") || bucketStr.startsWith("<") || entry?.tone === "clay";
+                      // Compute final bar fill hex color
+                      const fillHex = isHigh ? "#10b981" : isLow ? "#ef4444" : "#6366f1";
+                      // Return individual styled Bar Cell
+                      return (
+                        <Cell
+                          key={`bar-${index}`}
+                          fill={fillHex}
+                        />
+                      );
+                    })}
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
@@ -2550,20 +2588,29 @@ function Dashboard({
                   </Pill>
                 </div>
                 <div className="mt-2 space-y-1 text-xs text-muted-ink">
-                  <p>Roll: <span className="font-medium text-ink">{item.roll}</span></p>
+                  {/* Student roll number with fallback */}
+                  <p>Roll: <span className="font-medium text-ink">{item.roll || "—"}</span></p>
+                  {/* AI suggested score with fallback */}
                   <p>
-                    AI Suggested: <span className="font-semibold text-ink">{item.score}/100</span>
+                    AI Suggested:{" "}
+                    <span className="font-semibold text-ink">
+                      {item.score !== null && item.score !== undefined ? `${item.score}/100` : "—"}
+                    </span>
                   </p>
+                  {/* Integrity indicators with real values or em-dash */}
                   <div className="flex items-center gap-2 pt-1 text-[10px]">
-                    <span className={item.similarity >= 85 ? "text-clay font-medium" : "text-faint"}>
-                      Peer: {item.similarity}%
+                    {/* Peer similarity metric */}
+                    <span className={item.similarity !== null && item.similarity !== undefined && item.similarity >= 85 ? "text-clay font-medium" : "text-faint"}>
+                      Peer: {item.similarity !== null && item.similarity !== undefined ? `${item.similarity}%` : "—"}
                     </span>
                     <span>·</span>
-                    <span className={item.aiContent >= 60 ? "text-amber-ink font-medium" : "text-faint"}>
-                      AI: {item.aiContent}%
+                    {/* AI content likelihood metric */}
+                    <span className={item.aiContent !== null && item.aiContent !== undefined && item.aiContent >= 60 ? "text-amber-ink font-medium" : "text-faint"}>
+                      AI: {item.aiContent !== null && item.aiContent !== undefined ? `${item.aiContent}%` : "—"}
                     </span>
                     <span>·</span>
-                    <span className={(item.webPlagiarism || 0) >= 20 ? "text-blue font-medium" : "text-faint"}>
+                    {/* Web citation overlap metric */}
+                    <span className={item.webPlagiarism !== null && item.webPlagiarism !== undefined && item.webPlagiarism >= 20 ? "text-blue font-medium" : "text-faint"}>
                       Web: {item.webPlagiarism !== null && item.webPlagiarism !== undefined ? `${item.webPlagiarism}%` : "—"}
                     </span>
                   </div>
@@ -2752,7 +2799,8 @@ function AssignmentsView({
   onStartGrading: (assignId?: string) => void;
   onReloadSubmissions: (assignId?: string) => void;
   onNavigate: (view: ViewKey) => void;
-  showToast: (msg: string) => void;
+  // Toast notification callback accepting optional tone and retry handler
+  showToast: (msg: string, type?: "success" | "error" | "info" | "loading", retryAction?: () => void) => void;
 }) {
   const [activeTab, setActiveTab] = useState<"submissions" | "rubrics">("submissions");
   const [rubricMode, setRubricMode] = useState<"list" | "upload" | "builder">("list");
@@ -3898,7 +3946,8 @@ function AssessmentsView({
   course: APICourse | null;
   assignment: APIAssignment | null;
   onNavigate: (view: ViewKey) => void;
-  showToast: (msg: string) => void;
+  // Toast notification callback accepting optional tone and retry handler
+  showToast: (msg: string, type?: "success" | "error" | "info" | "loading", retryAction?: () => void) => void;
 }) {
   const [rubrics, setRubrics] = useState<Rubric[]>([]);
   const [criteria, setCriteria] = useState([
@@ -4093,7 +4142,8 @@ function SimilarityView({
   matches: SimilarityMatch[];
   submissions: SubmissionItem[];
   onNavigate: (view: ViewKey) => void;
-  showToast: (msg: string) => void;
+  // Toast notification callback accepting optional tone and retry handler
+  showToast: (msg: string, type?: "success" | "error" | "info" | "loading", retryAction?: () => void) => void;
 }) {
   const highSim = submissions.filter((s) => s.similarity >= 85);
   const highAi = submissions.filter((s) => s.aiContent >= 60);
@@ -4213,7 +4263,8 @@ function AIGradingView({
   onStartGrading: (assignId?: string) => void;
   onReview: (id: string) => void;
   onNavigate: (view: ViewKey) => void;
-  showToast: (msg: string) => void;
+  // Toast notification callback accepting optional tone and retry handler
+  showToast: (msg: string, type?: "success" | "error" | "info" | "loading", retryAction?: () => void) => void;
 }) {
   return (
     <>
@@ -4390,7 +4441,8 @@ function ReviewWorkspace({
   onGraded: () => void;
   onOpenAssistant?: () => void;
   onNavigate: (view: ViewKey) => void;
-  showToast: (msg: string) => void;
+  // Toast notification callback accepting optional tone and retry handler
+  showToast: (msg: string, type?: "success" | "error" | "info" | "loading", retryAction?: () => void) => void;
 }) {
   const [detail, setDetail] = useState<SubmissionDetail | null>(null);
   const [loading, setLoading] = useState(false);
@@ -4675,12 +4727,14 @@ function GradebookView({
   course,
   assignment,
   submissions,
+  students,
   showToast,
 }: {
   course: APICourse | null;
   assignment: APIAssignment | null;
   submissions: SubmissionItem[];
-  showToast: (msg: string) => void;
+  students?: Student[];
+  showToast: (msg: string, type?: "success" | "error" | "info" | "loading", retryAction?: () => void) => void;
 }) {
   // Dropdown open state for export options menu
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
@@ -4883,29 +4937,54 @@ function GradebookView({
               ) : (
                 submissions.map((s) => (
                   <tr key={s.id} className="border-b border-line last:border-0 hover:bg-paper/40 transition-colors">
+                    {/* Student full name */}
                     <td className="px-3 py-3.5 font-medium">{s.student}</td>
-                    <td className="px-3 py-3.5 text-xs text-faint">{s.roll}</td>
+                    {/* Student roll number */}
+                    <td className="px-3 py-3.5 text-xs text-faint">{s.roll || "—"}</td>
+                    {/* Score display showing real numeric score or em-dash */}
                     <td className="px-3 py-3.5 font-display text-lg">
-                      {s.score}
-                      <span className="text-xs text-muted-ink">/100</span>
+                      {s.score !== null && s.score !== undefined ? (
+                        <>
+                          {s.score}
+                          <span className="text-xs text-muted-ink">/100</span>
+                        </>
+                      ) : (
+                        <span className="text-sm font-normal text-muted-ink">—</span>
+                      )}
                     </td>
+                    {/* Peer similarity score or em-dash */}
                     <td className="px-3 py-3.5">
-                      <span
-                        className={
-                          s.similarity >= 85 ? "font-semibold text-clay" : "text-muted-ink"
-                        }
-                      >
-                        {s.similarity}%
-                      </span>
+                      {s.similarity !== null && s.similarity !== undefined ? (
+                        <span
+                          className={
+                            s.similarity >= 85 ? "font-semibold text-clay" : "text-muted-ink"
+                          }
+                        >
+                          {s.similarity}%
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-ink">—</span>
+                      )}
                     </td>
+                    {/* AI content likelihood percentage badge or em-dash */}
                     <td className="px-3 py-3.5">
-                      <Pill tone={s.aiContent >= 60 ? "amber" : "sage"}>{s.aiContent}%</Pill>
+                      {s.aiContent !== null && s.aiContent !== undefined ? (
+                        <Pill tone={s.aiContent >= 60 ? "amber" : "sage"}>{s.aiContent}%</Pill>
+                      ) : (
+                        <span className="text-xs text-muted-ink">—</span>
+                      )}
                     </td>
+                    {/* Web citation overlap badge or em-dash */}
                     <td className="px-3 py-3.5">
-                      <Pill tone={(s.webPlagiarism || 0) >= 20 ? "clay" : "sage"}>
-                        {s.webPlagiarism || 0}%
-                      </Pill>
+                      {s.webPlagiarism !== null && s.webPlagiarism !== undefined ? (
+                        <Pill tone={s.webPlagiarism >= 20 ? "clay" : "sage"}>
+                          {s.webPlagiarism}%
+                        </Pill>
+                      ) : (
+                        <span className="text-xs text-muted-ink">—</span>
+                      )}
                     </td>
+                    {/* Submission review status pill */}
                     <td className="px-3 py-3.5">
                       <Pill
                         tone={

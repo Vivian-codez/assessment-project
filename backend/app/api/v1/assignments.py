@@ -682,7 +682,8 @@ async def upload_batch_submissions(
                         if item.is_dir():
                             continue
                         norm_name = os.path.normpath(item.filename)
-                        if norm_name.startswith("..") or os.path.isabs(norm_name):
+                        # Check directory traversal or absolute path with safe type check
+                        if isinstance(norm_name, str) and (norm_name.startswith("..") or os.path.isabs(norm_name)):
                             continue
                         lower_name = norm_name.lower()
                         if any(ignored in lower_name for ignored in ["node_modules", ".git", ".venv", "__pycache__", "build", "dist"]):

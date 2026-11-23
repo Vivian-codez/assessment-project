@@ -207,8 +207,17 @@ export function StartGradingModal({
         scheduledForIso = new Date(scheduledDateTime).toISOString();
       }
 
-      // Dispatch grading request to teacher review-mode API
-      const res = await api.reviewMode.startGrading({
+      // Construct grading request payload
+      const gradingPayload: {
+        assignment_id: string;
+        scope: "assignment" | "course";
+        filter_mode: "all" | "failed" | "ungraded";
+        when: "now" | "scheduled" | "draft";
+        scheduled_for?: string;
+        timezone: string;
+        concurrency_limit: number;
+        max_cost_limit_usd: number;
+      } = {
         // Target assignment ID
         assignment_id: assignment.id,
         // Scope parameter
@@ -217,15 +226,18 @@ export function StartGradingModal({
         filter_mode: filterMode,
         // Execution timing
         when,
-        // Optional scheduled timestamp
-        scheduled_for: scheduledForIso,
         // Explicit display timezone
         timezone: "Asia/Kolkata",
         // Concurrency ceiling
         concurrency_limit: concurrencyLimit,
         // Budget limit
         max_cost_limit_usd: maxCostLimit,
-      });
+        // Conditionally append scheduled timestamp if populated
+        ...(scheduledForIso ? { scheduled_for: scheduledForIso } : {}),
+      };
+
+      // Dispatch grading request to teacher review-mode API
+      const res = await api.reviewMode.startGrading(gradingPayload as any);
 
       // Show user feedback toast based on timing
       if (when === "now") {

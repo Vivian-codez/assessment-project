@@ -94,6 +94,8 @@ class Settings(BaseSettings):
         "http://localhost:8080",
         # Production Vercel deployment URL
         "https://assessment-project-o64i.vercel.app",
+        # Current active Vercel deployment URL
+        "https://assessment-project-jycg.vercel.app",
     ]
 
     # Validator parsing JSON arrays or comma-separated strings into a Python list

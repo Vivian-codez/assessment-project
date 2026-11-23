@@ -196,13 +196,20 @@ export function ReviewAssistantModal({
     setSubmittingFeedback(true);
     // Begin try block
     try {
-      // Call feedback API endpoint
-      await api.reviewMode.submitFeedback(assignment.id, {
-        submission_id: submission?.id,
+      // Construct feedback payload with exact optional properties
+      const feedbackPayload: {
+        submission_id?: string;
+        error_category: string;
+        explanation: string;
+        expected_behavior?: string;
+      } = {
         error_category: errorCategory,
         explanation: explanation.trim(),
-        expected_behavior: expectedBehavior.trim() || undefined,
-      });
+        ...(submission?.id ? { submission_id: submission.id } : {}),
+        ...(expectedBehavior.trim() ? { expected_behavior: expectedBehavior.trim() } : {}),
+      };
+      // Call feedback API endpoint
+      await api.reviewMode.submitFeedback(assignment.id, feedbackPayload);
       // Show confirmation toast
       showToast("Grading mistake feedback registered. Ready to trigger AI prompt fix!", "success");
       // Clear explanation fields

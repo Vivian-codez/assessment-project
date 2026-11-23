@@ -16,6 +16,8 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 # Import logger and log_audit_event from logging core
 from app.core.logging import logger, log_audit_event
+# Import application configuration settings
+from app.core.config import settings
 # Import Submission database model
 from app.models.submission import Submission
 # Import DraftGrade database model

@@ -680,7 +680,7 @@ class SupabaseService:
         # 1. Try local disk first (relative /uploads/... or absolute path)
         local_candidate = file_url_or_path
         # Check if candidate path begins with relative /uploads/ URL prefix
-        if local_candidate.startswith("/uploads/"):
+        if isinstance(local_candidate, str) and local_candidate.startswith("/uploads/"):
             # Resolve to absolute local uploads path
             local_candidate = os.path.join(
                 _UPLOADS_DIR, local_candidate[len("/uploads/"):]
@@ -699,7 +699,7 @@ class SupabaseService:
                 logger.warning(f"Local file read error: {exc}")
 
         # 2. Try HTTP download (works for both Supabase public URLs and local dev server)
-        if file_url_or_path.startswith("http"):
+        if isinstance(file_url_or_path, str) and file_url_or_path.startswith("http"):
             # Attempt HTTP GET request
             try:
                 # Import HTTP client library

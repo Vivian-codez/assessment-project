@@ -619,8 +619,8 @@ async def batch_upload_classroom_assignment(
                             continue
                         # Set base_fname to os.path.basename(member.filename)
                         base_fname = os.path.basename(member.filename)
-                        # Filter system artifacts
-                        if not base_fname or base_fname.startswith(".") or member.filename.startswith("__MACOSX"):
+                        # Filter system artifacts with safe string guards
+                        if not base_fname or (isinstance(base_fname, str) and base_fname.startswith(".")) or (isinstance(member.filename, str) and member.filename.startswith("__MACOSX")):
                             # Skip remaining block and continue to next iteration
                             continue
                         # Set inner_bytes to zf.read(member.filename)
@@ -987,8 +987,8 @@ async def batch_upload_submissions(
                 with zipfile.ZipFile(BytesIO(content)) as zf:
                     # Iterate through: zip_info in zf.infolist()
                     for zip_info in zf.infolist():
-                        # Verify condition: not zip_info.is_dir() and not zip_info.filename.startswith("__MACOSX")
-                        if not zip_info.is_dir() and not zip_info.filename.startswith("__MACOSX"):
+                        # Verify condition: not zip_info.is_dir() and safe filename check
+                        if not zip_info.is_dir() and not (isinstance(zip_info.filename, str) and zip_info.filename.startswith("__MACOSX")):
                             # Set extracted_bytes to zf.read(zip_info.filename)
                             extracted_bytes = zf.read(zip_info.filename)
                             # Set inner_name to os.path.basename(zip_info.filename)

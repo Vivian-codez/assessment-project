@@ -321,10 +321,14 @@ export function AssignmentWizardModal({
         return { valid: false, error: "All criteria must have a title." };
       }
       for (let i = 0; i < c.levels.length - 1; i++) {
-        if (c.levels[i].points < c.levels[i + 1].points) {
+        // Safe access current and subsequent tier levels
+        const currLvl = c.levels[i];
+        const nextLvl = c.levels[i + 1];
+        // Compare points ensuring strictly descending point thresholds
+        if (currLvl && nextLvl && currLvl.points < nextLvl.points) {
           return {
             valid: false,
-            error: `In criterion "${c.criterion_name}", tier points must descend: "${c.levels[i].level_name}" (${c.levels[i].points} pts) is less than "${c.levels[i + 1].level_name}" (${c.levels[i + 1].points} pts).`,
+            error: `In criterion "${c.criterion_name}", tier points must descend: "${currLvl.level_name}" (${currLvl.points} pts) is less than "${nextLvl.level_name}" (${nextLvl.points} pts).`,
           };
         }
       }
@@ -764,8 +768,11 @@ export function AssignmentWizardModal({
                               value={crit.criterion_name}
                               onChange={(e) => {
                                 const next = [...criteria];
-                                next[cIdx].criterion_name = e.target.value;
-                                setCriteria(next);
+                                const item = next[cIdx];
+                                if (item) {
+                                  item.criterion_name = e.target.value;
+                                  setCriteria(next);
+                                }
                               }}
                               className="mt-1 h-8 text-xs font-semibold"
                             />
@@ -779,8 +786,11 @@ export function AssignmentWizardModal({
                               value={crit.weight}
                               onChange={(e) => {
                                 const next = [...criteria];
-                                next[cIdx].weight = Number(e.target.value) || 0;
-                                setCriteria(next);
+                                const item = next[cIdx];
+                                if (item) {
+                                  item.weight = Number(e.target.value) || 0;
+                                  setCriteria(next);
+                                }
                               }}
                               className="mt-1 h-8 text-xs font-mono font-medium"
                             />
@@ -826,8 +836,11 @@ export function AssignmentWizardModal({
                         value={crit.description}
                         onChange={(e) => {
                           const next = [...criteria];
-                          next[cIdx].description = e.target.value;
-                          setCriteria(next);
+                          const item = next[cIdx];
+                          if (item) {
+                            item.description = e.target.value;
+                            setCriteria(next);
+                          }
                         }}
                         placeholder="Criterion evaluation guidance..."
                         className="h-8 text-xs text-faint"
@@ -836,8 +849,9 @@ export function AssignmentWizardModal({
                       {/* Descending Tiers Grid */}
                       <div className="grid grid-cols-1 md:grid-cols-4 gap-2 pt-2 border-t border-line/60">
                         {crit.levels.map((lvl, lIdx) => {
+                          const prevLvl = lIdx > 0 ? crit.levels[lIdx - 1] : undefined;
                           const isDescendingInvalid =
-                            lIdx > 0 && lvl.points > crit.levels[lIdx - 1].points;
+                            Boolean(prevLvl && lvl.points > prevLvl.points);
                           return (
                             <div
                               key={lvl.id}
@@ -852,8 +866,12 @@ export function AssignmentWizardModal({
                                   value={lvl.level_name}
                                   onChange={(e) => {
                                     const next = [...criteria];
-                                    next[cIdx].levels[lIdx].level_name = e.target.value;
-                                    setCriteria(next);
+                                    const item = next[cIdx];
+                                    const levelItem = item?.levels[lIdx];
+                                    if (levelItem) {
+                                      levelItem.level_name = e.target.value;
+                                      setCriteria(next);
+                                    }
                                   }}
                                   className="w-20 font-bold bg-transparent focus:outline-none text-ink text-xs"
                                 />
@@ -864,8 +882,12 @@ export function AssignmentWizardModal({
                                     value={lvl.points}
                                     onChange={(e) => {
                                       const next = [...criteria];
-                                      next[cIdx].levels[lIdx].points = Number(e.target.value) || 0;
-                                      setCriteria(next);
+                                      const item = next[cIdx];
+                                      const levelItem = item?.levels[lIdx];
+                                      if (levelItem) {
+                                        levelItem.points = Number(e.target.value) || 0;
+                                        setCriteria(next);
+                                      }
                                     }}
                                     className="w-12 text-right bg-card px-1 py-0.5 rounded border border-line text-xs font-bold"
                                   />
@@ -876,8 +898,12 @@ export function AssignmentWizardModal({
                                 value={lvl.description}
                                 onChange={(e) => {
                                   const next = [...criteria];
-                                  next[cIdx].levels[lIdx].description = e.target.value;
-                                  setCriteria(next);
+                                  const item = next[cIdx];
+                                  const levelItem = item?.levels[lIdx];
+                                  if (levelItem) {
+                                    levelItem.description = e.target.value;
+                                    setCriteria(next);
+                                  }
                                 }}
                                 rows={2}
                                 placeholder="Tier expectations..."
@@ -885,7 +911,7 @@ export function AssignmentWizardModal({
                               />
                               {isDescendingInvalid && (
                                 <p className="text-[10px] text-amber-ink flex items-center gap-1">
-                                  <AlertCircle className="size-3 shrink-0" /> Must descend (&le; {crit.levels[lIdx - 1].points})
+                                  <AlertCircle className="size-3 shrink-0" /> Must descend (&le; {prevLvl?.points})
                                 </p>
                               )}
                             </div>

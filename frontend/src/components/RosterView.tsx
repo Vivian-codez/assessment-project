@@ -188,7 +188,7 @@ export function RosterView({
       // Record any detected header columns returned by parser or inferred from records
       if ((result as any).detected_columns) {
         setDetectedHeaders((result as any).detected_columns);
-      } else if (result.students && result.students.length > 0) {
+      } else if (result.students && result.students.length > 0 && result.students[0]) {
         setDetectedHeaders(Object.keys(result.students[0]));
       }
       const seenInFile = new Set<string>();
