@@ -75,16 +75,17 @@ export type ClientEnv = z.infer<typeof clientEnvSchema>;
  * ```
  */
 export function validateClientEnv(): ClientEnv {
-  // Extract Vite environment variables object
+  // Extract Vite environment variables object typed safely without any
+  const envMap = import.meta.env as unknown as Record<string, string | undefined>;
   const rawEnv = {
     // Read API base URL
-    VITE_API_BASE_URL: (import.meta.env as any)?.VITE_API_BASE_URL,
+    VITE_API_BASE_URL: envMap["VITE_API_BASE_URL"],
     // Read Supabase usage toggle
-    VITE_USE_SUPABASE: (import.meta.env as any)?.VITE_USE_SUPABASE,
+    VITE_USE_SUPABASE: envMap["VITE_USE_SUPABASE"],
     // Read Supabase project URL
-    VITE_SUPABASE_URL: (import.meta.env as any)?.VITE_SUPABASE_URL,
+    VITE_SUPABASE_URL: envMap["VITE_SUPABASE_URL"],
     // Read Supabase anon key
-    VITE_SUPABASE_ANON_KEY: (import.meta.env as any)?.VITE_SUPABASE_ANON_KEY,
+    VITE_SUPABASE_ANON_KEY: envMap["VITE_SUPABASE_ANON_KEY"],
   };
 
   // Execute safe Zod schema parse
@@ -111,8 +112,8 @@ export function validateClientEnv(): ClientEnv {
     // Log prominent warning alerting developer to configure Vercel settings
     console.warn(
       "[Verism AI] WARNING: VITE_API_BASE_URL is not configured in Vercel project settings. " +
-      "Browser API requests will attempt to resolve to http://localhost:8000/api/v1 which will fail. " +
-      "Set VITE_API_BASE_URL in Vercel to your deployed backend URL."
+        "Browser API requests will attempt to resolve to http://localhost:8000/api/v1 which will fail. " +
+        "Set VITE_API_BASE_URL in Vercel to your deployed backend URL.",
     );
   }
 

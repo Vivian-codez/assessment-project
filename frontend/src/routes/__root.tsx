@@ -10,8 +10,8 @@ import {
   Scripts,
   type ErrorComponentProps,
 } from "@tanstack/react-router";
-// Import React hooks and types
-import { useState, useId, type ReactNode } from "react";
+// Import React hooks, component class, and types
+import React, { useState, useId, type ReactNode, type ErrorInfo } from "react";
 // Import Lucide icons for diagnostic display and interaction
 import { AlertCircle, ChevronDown, ChevronUp, Copy, Check, RefreshCw, Home } from "lucide-react";
 // Import global application styles
@@ -53,13 +53,25 @@ function NotFoundComponent() {
 }
 
 /**
- * ErrorComponent provides an authoritative diagnostic error boundary for uncaught route exceptions.
- * Includes unique error reference identifier, collapsible technical details, clipboard copying, and safe recovery actions.
- *
- * @param {ErrorComponentProps} props - The TanStack error component properties containing error object and reset callback.
- * @returns {JSX.Element} The rendered diagnostic error boundary.
+ * Properties for DiagnosticErrorView component.
  */
-function ErrorComponent({ error, reset }: ErrorComponentProps) {
+interface DiagnosticErrorViewProps {
+  // Captured error object or primitive
+  error: unknown;
+  // Callback resetting the error state
+  reset: () => void;
+  // React component stack captured via componentDidCatch
+  componentStack?: string | null;
+}
+
+/**
+ * DiagnosticErrorView provides an authoritative diagnostic UI for uncaught route and render exceptions.
+ * Includes unique error reference identifier, component stack trace, execution stack trace, clipboard copying, and safe recovery actions.
+ *
+ * @param {DiagnosticErrorViewProps} props - Properties containing error, reset callback, and optional componentStack.
+ * @returns {JSX.Element} The rendered diagnostic error interface.
+ */
+function DiagnosticErrorView({ error, reset, componentStack }: DiagnosticErrorViewProps) {
   // Access router instance to inspect active location, failing route, and cache state
   const router = useRouter();
   // State tracking whether the technical diagnostic accordion is expanded
@@ -69,20 +81,35 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
   // Generate a stable unique error reference ID for support tracking
   const errorId = useId();
   // Create formatted error reference code
-  const errorRef = `ERR-${Date.now().toString(36).toUpperCase()}-${errorId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 4).toUpperCase()}`;
+  const errorRef = `ERR-${Date.now().toString(36).toUpperCase()}-${errorId
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .slice(0, 4)
+    .toUpperCase()}`;
 
   // Resolve failing route pathname from router state or window location
-  const failingRoute = router.state?.location?.pathname || (typeof window !== "undefined" ? window.location.pathname : "/");
+  const failingRoute =
+    router.state?.location?.pathname ||
+    (typeof window !== "undefined" ? window.location.pathname : "/");
   // Resolve complete URL for debugging
-  const failingUrl = typeof window !== "undefined" ? window.location.href : (router.state?.location?.href || "unknown");
+  const failingUrl =
+    typeof window !== "undefined"
+      ? window.location.href
+      : router.state?.location?.href || "unknown";
   // Resolve failing matched component route identifier
-  const failingRouteId = router.state?.matches?.[router.state.matches.length - 1]?.routeId || "UnknownRoute";
+  const failingRouteId =
+    router.state?.matches?.[router.state.matches.length - 1]?.routeId || "UnknownRoute";
   // Extract error class name
   const errorName = (error as Error)?.name || "RuntimeError";
   // Extract error message
   const errorMessage = (error as Error)?.message || String(error);
-  // Extract real stack trace or fallback
+  // Extract real execution stack trace or fallback
   const errorStack = (error as Error)?.stack || "No stack trace available";
+  // Extract effective component stack from props or attached error metadata
+  const effectiveComponentStack =
+    componentStack ||
+    (typeof error === "object" && error !== null && "componentStack" in error
+      ? String((error as { componentStack?: unknown }).componentStack || "")
+      : null);
 
   // Helper function to copy diagnostic bundle to system clipboard
   const handleCopyDiagnostics = async () => {
@@ -104,6 +131,8 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
       message: errorMessage,
       // Raw execution stack trace
       stack: errorStack,
+      // React component stack trace captured via componentDidCatch
+      componentStack: effectiveComponentStack || "No component stack available",
       // Client user agent string
       userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "unknown",
     };
@@ -126,7 +155,7 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
     // Outer flex wrapper taking full viewport height with subtle background
     <div className="flex min-h-screen items-center justify-center bg-background px-4 py-8">
       {/* Diagnostic container card with border and elevation */}
-      <div className="w-full max-w-xl rounded-2xl border border-destructive/20 bg-card p-6 shadow-xl sm:p-8">
+      <div className="w-full max-w-2xl rounded-2xl border border-destructive/20 bg-card p-6 shadow-xl sm:p-8">
         {/* Header section with error icon and reference code */}
         <div className="flex items-start gap-4">
           {/* Rounded alert icon container */}
@@ -148,7 +177,8 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
 
         {/* Concise explanation of the failure */}
         <p className="mt-4 text-sm leading-relaxed text-muted-foreground">
-          {errorMessage || "A runtime execution error prevented this view from loading completely. Your data is protected."}
+          {errorMessage ||
+            "A runtime execution error prevented this view from loading completely. Your data is protected."}
         </p>
 
         {/* Collapsible diagnostic details accordion */}
@@ -160,7 +190,11 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
             className="flex w-full items-center justify-between px-4 py-2.5 text-xs font-medium text-foreground transition-colors hover:bg-muted/50"
           >
             <span>Technical Diagnostic Details</span>
-            {showDetails ? <ChevronUp className="size-4 text-muted-foreground" /> : <ChevronDown className="size-4 text-muted-foreground" />}
+            {showDetails ? (
+              <ChevronUp className="size-4 text-muted-foreground" />
+            ) : (
+              <ChevronDown className="size-4 text-muted-foreground" />
+            )}
           </button>
           {/* Expandable stack trace and diagnostic payload */}
           {showDetails && (
@@ -189,15 +223,27 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
                 </div>
               </div>
 
-              {/* Stack trace preformatted text box */}
+              {/* Execution stack trace preformatted text box */}
               <div>
                 <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-1">
                   Stack Trace & Source
                 </p>
-                <pre className="max-h-56 overflow-auto rounded-lg bg-black/90 p-3 font-mono text-[11px] leading-relaxed text-emerald-400 border border-emerald-950">
+                <pre className="max-h-48 overflow-auto rounded-lg bg-black/90 p-3 font-mono text-[11px] leading-relaxed text-emerald-400 border border-emerald-950">
                   {errorStack}
                 </pre>
               </div>
+
+              {/* React component stack preformatted text box */}
+              {effectiveComponentStack && (
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-1">
+                    React Component Stack
+                  </p>
+                  <pre className="max-h-48 overflow-auto rounded-lg bg-black/90 p-3 font-mono text-[11px] leading-relaxed text-amber-300 border border-amber-950">
+                    {effectiveComponentStack}
+                  </pre>
+                </div>
+              )}
 
               {/* Copy diagnostic details button */}
               <div className="mt-3 flex justify-end">
@@ -251,6 +297,100 @@ function ErrorComponent({ error, reset }: ErrorComponentProps) {
       </div>
     </div>
   );
+}
+
+/**
+ * ErrorComponent adapter for TanStack Router route-level error boundaries.
+ */
+function ErrorComponent({ error, reset, ...rest }: ErrorComponentProps) {
+  // Resolve component stack if provided in rest props or attached to error
+  const restInfo = rest as { info?: { componentStack?: string } };
+  const compStack =
+    (typeof error === "object" && error !== null && "componentStack" in error
+      ? String((error as { componentStack?: unknown }).componentStack || "")
+      : null) ||
+    restInfo?.info?.componentStack ||
+    null;
+  // Render authoritative diagnostic view
+  return <DiagnosticErrorView error={error} reset={reset} componentStack={compStack} />;
+}
+
+/**
+ * Props interface for GlobalErrorBoundary class component.
+ */
+interface GlobalErrorBoundaryProps {
+  // Child node tree wrapped by the error boundary
+  children: ReactNode;
+}
+
+/**
+ * State interface for GlobalErrorBoundary class component.
+ */
+interface GlobalErrorBoundaryState {
+  // Whether an unhandled rendering error was caught
+  hasError: boolean;
+  // The caught error object
+  error: Error | null;
+  // The React component stack trace from componentDidCatch
+  componentStack: string | null;
+}
+
+/**
+ * GlobalErrorBoundary provides a standard React class boundary that intercepts render exceptions
+ * and captures componentDidCatch's errorInfo.componentStack for deep component tree diagnostics.
+ */
+class GlobalErrorBoundary extends React.Component<
+  GlobalErrorBoundaryProps,
+  GlobalErrorBoundaryState
+> {
+  // Initialize component with clean state
+  constructor(props: GlobalErrorBoundaryProps) {
+    // Invoke parent React.Component constructor
+    super(props);
+    // Initialize default error state
+    this.state = { hasError: false, error: null, componentStack: null };
+  }
+
+  // Derive error state from thrown exception
+  static getDerivedStateFromError(error: Error): Partial<GlobalErrorBoundaryState> {
+    // Update state to trigger fallback UI
+    return { hasError: true, error };
+  }
+
+  // Lifecycle hook capturing React error info and component stack
+  override componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    // Record component stack in local component state
+    this.setState({ componentStack: errorInfo.componentStack || null });
+    // Attach component stack to error object for router catch boundaries
+    if (typeof error === "object" && error !== null) {
+      Object.assign(error, { componentStack: errorInfo.componentStack });
+    }
+    // Log exception and component hierarchy to browser console
+    console.error("[GlobalErrorBoundary] Caught rendering exception:", error, errorInfo);
+  }
+
+  // Reset handler to clear caught exception
+  handleReset = () => {
+    // Reset state to initial clear state
+    this.setState({ hasError: false, error: null, componentStack: null });
+  };
+
+  // Render method returning either diagnostic view or normal children
+  override render() {
+    // If an error was caught during rendering, display diagnostic view
+    if (this.state.hasError && this.state.error) {
+      // Return DiagnosticErrorView with captured component stack
+      return (
+        <DiagnosticErrorView
+          error={this.state.error}
+          reset={this.handleReset}
+          componentStack={this.state.componentStack}
+        />
+      );
+    }
+    // Otherwise render children normally
+    return this.props.children;
+  }
 }
 
 // Define the root route with context for QueryClient
@@ -347,11 +487,14 @@ function RootComponent() {
   // Retrieve QueryClient instance from TanStack Route context
   const { queryClient } = Route.useRouteContext();
 
-  // Render QueryClientProvider wrapping child route Outlet
+  // Render QueryClientProvider wrapping child route Outlet within GlobalErrorBoundary
   return (
     <QueryClientProvider client={queryClient}>
-      {/* Nested routes render here via TanStack Router Outlet */}
-      <Outlet />
+      {/* GlobalErrorBoundary intercepts render exceptions and captures errorInfo.componentStack */}
+      <GlobalErrorBoundary>
+        {/* Nested routes render here via TanStack Router Outlet */}
+        <Outlet />
+      </GlobalErrorBoundary>
     </QueryClientProvider>
   );
 }

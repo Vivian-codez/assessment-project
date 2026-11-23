@@ -1631,12 +1631,6 @@ export const api = {
       const queryStr = q.toString() ? `?${q.toString()}` : "";
       return request<any>(`/analytics${queryStr}`);
     },
-    // Load complete demo sandbox dataset into CS101-SANDBOX
-    loadDemo: async (): Promise<any> => {
-      return request<any>("/analytics/demo-data", {
-        method: "POST",
-      });
-    },
     // Purge sandbox demo dataset and invalidate Redis cache
     clearDemo: async (): Promise<any> => {
       return request<any>("/analytics/demo-data", {
@@ -1837,6 +1831,33 @@ export const api = {
     getGradeHistory: async (submissionId: string): Promise<any> => {
       // Execute GET request to fetch grade audit history
       return request<any>(`/review-mode/grade-history/${submissionId}`);
+    },
+  },
+
+  // ==========================================
+  // System Health & Diagnostics
+  // ==========================================
+  health: {
+    /**
+     * Check comprehensive backend system health (Database, Gemini, Storage).
+     *
+     * @returns {Promise<any>} Structured health report for all backend services.
+     */
+    // Asynchronous method to inspect full backend health
+    check: async (): Promise<any> => {
+      // Execute GET request to health check endpoint
+      return request<any>("/health");
+    },
+
+    /**
+     * Check primary PostgreSQL database connectivity and query latency.
+     *
+     * @returns {Promise<{ status: string; latency_ms?: number }>} Database health status.
+     */
+    // Asynchronous method to check database ping
+    db: async (): Promise<{ status: string; latency_ms?: number }> => {
+      // Execute GET request to database health endpoint
+      return request<{ status: string; latency_ms?: number }>("/health/db");
     },
   },
 };
