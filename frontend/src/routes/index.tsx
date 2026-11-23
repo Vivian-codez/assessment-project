@@ -1843,8 +1843,7 @@ interface DashboardProps {
  * - 4-stage Submission Pipeline Funnel (Submitted -> Parsed -> Evaluated -> Approved)
  * - Top Performers & Bottom Performers / Struggling Student rosters
  * - Actionable "Needs Attention" alert cards with one-click jump buttons
- * - Quick Action Buttons: Sandbox Demo Data Loader & Purger
- * - Comprehensive Empty States guiding initial setup
+ * - Comprehensive Empty States guiding initial setup with zero demo data
  */
 function Dashboard({
   course,
@@ -1871,8 +1870,6 @@ function Dashboard({
   const [dateRange, setDateRange] = useState<"all" | "7d" | "30d" | "90d">("all");
   // Optional assignment filter identifier within the active course
   const [filterAssignmentId, setFilterAssignmentId] = useState<string>(assignment?.id || "");
-  // Loading indicator for demo data load/clear operations
-  const [demoActionLoading, setDemoActionLoading] = useState(false);
 
   // Synchronize local filterAssignmentId when parent assignment changes
   useEffect(() => {
@@ -1920,65 +1917,10 @@ function Dashboard({
     };
   }, [course?.id, filterAssignmentId, dateRange]);
 
-  // Handler function loading Sandbox Demo Data into the database
-  const handleLoadDemoData = async () => {
-    // Set loading flag
-    setDemoActionLoading(true);
-    try {
-      // Invoke backend POST /api/v1/analytics/demo-data endpoint
-      await api.analytics.loadDemo();
-      // Show user notification toast
-      showToast("Demo sandbox dataset loaded successfully (10 students, rubrics, 2 assignments).");
-      // Trigger parent data refresh to pull newly seeded course and students
-      if (onRefreshData) {
-        await onRefreshData();
-      }
-      // Re-fetch analytics immediately
-      const freshAnalytics = await api.analytics.get({
-        course_id: "CS101-SANDBOX",
-        date_range: dateRange,
-      });
-      // Set fresh analytics state
-      setAnalytics(freshAnalytics);
-      // Select the demo sandbox course
-      onSelectCourse("CS101-SANDBOX");
-    } catch (err: any) {
-      // Show error toast message
-      showToast(`Demo load error: ${err?.message || "Failed to seed demo data"}`);
-    } finally {
-      // Clear demo action loading flag
-      setDemoActionLoading(false);
-    }
-  };
-
-  // Handler function purging Sandbox Demo Data from the database
-  const handleClearDemoData = async () => {
-    // Set loading flag
-    setDemoActionLoading(true);
-    try {
-      // Invoke backend DELETE /api/v1/analytics/demo-data endpoint
-      await api.analytics.clearDemo();
-      // Show confirmation toast
-      showToast("Sandbox demo dataset cleared successfully.");
-      // Trigger parent refresh
-      if (onRefreshData) {
-        await onRefreshData();
-      }
-      // Clear local analytics state
-      setAnalytics(null);
-    } catch (err: any) {
-      // Show error toast message
-      showToast(`Demo clear error: ${err?.message || "Failed to purge demo data"}`);
-    } finally {
-      // Clear loading indicator
-      setDemoActionLoading(false);
-    }
-  };
-
   // Inspect empty state condition when no courses exist or analytics reports empty
   const isWorkspaceEmpty = (!course && courses.length === 0 && classrooms.length === 0) || (analytics && analytics.is_empty);
 
-  // If workspace is completely empty, render sellable onboarding and demo loader view
+  // If workspace is completely empty, render educator onboarding setup view
   if (isWorkspaceEmpty && !loadingAnalytics) {
     return (
       <div className="mx-auto max-w-4xl py-12 text-center animate-fade-up">
@@ -1994,30 +1936,16 @@ function Dashboard({
         <h1 className="font-display text-4xl text-ink">Welcome to Your Educator Workspace</h1>
         {/* Philosophy subtitle */}
         <p className="mx-auto mt-3 max-w-xl text-sm leading-relaxed text-muted-ink">
-          "AI suggests. You stamp. Every grade waits for your approval." Experience fast, rubric-based
+          &ldquo;AI suggests. You stamp. Every grade waits for your approval.&rdquo; Experience fast, rubric-based
           evaluation, reference benchmarking, and academic similarity review with zero mock data.
         </p>
         {/* Primary CTA Buttons */}
         <div className="mt-8 flex flex-wrap justify-center gap-3">
-          {/* Quick Sandbox Demo Data Loader */}
-          <Button
-            onClick={handleLoadDemoData}
-            disabled={demoActionLoading}
-            size="lg"
-            className="bg-amber-ink text-white hover:bg-amber-ink/90 rounded-xl px-5 shadow-sm"
-          >
-            {demoActionLoading ? (
-              <Loader2 className="mr-2 size-4 animate-spin" />
-            ) : (
-              <Sparkles className="mr-2 size-4" />
-            )}
-            Load Sandbox Demo Dataset (1-Click)
-          </Button>
           {/* Add Course Button */}
           <Button
             onClick={onOpenAddCourse}
             size="lg"
-            className="bg-ink text-card hover:bg-ink/90 rounded-xl px-5"
+            className="bg-ink text-card hover:bg-ink/90 rounded-xl px-5 cursor-pointer shadow-sm"
           >
             <Plus className="mr-2 size-4" />
             Create Your First Course
@@ -2027,7 +1955,7 @@ function Dashboard({
             onClick={() => onNavigate("roster")}
             size="lg"
             variant="outline"
-            className="rounded-xl px-5 border-line"
+            className="rounded-xl px-5 border-line cursor-pointer"
           >
             <Users className="mr-2 size-4 text-amber-ink" />
             Enroll Students
@@ -2186,37 +2114,10 @@ function Dashboard({
               ))}
             </div>
 
-            {/* Demo Data Quick Buttons */}
-            {course?.id === "CS101-SANDBOX" ? (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleClearDemoData}
-                disabled={demoActionLoading}
-                className="text-xs border-line text-clay hover:bg-clay-soft"
-                title="Purge Sandbox demo data"
-              >
-                {demoActionLoading ? <Loader2 className="size-3 animate-spin" /> : <Trash2 className="size-3" />}
-                Clear Demo Data
-              </Button>
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleLoadDemoData}
-                disabled={demoActionLoading}
-                className="text-xs border-line text-amber-ink hover:bg-amber-soft"
-                title="Load 10 demo submissions, rubrics, and similarity matches into sandbox"
-              >
-                {demoActionLoading ? <Loader2 className="size-3 animate-spin" /> : <Sparkles className="size-3" />}
-                Load Demo Data
-              </Button>
-            )}
-
             {/* Manage Submissions Navigation */}
             <Button
               onClick={() => onNavigate("assignments")}
-              className="rounded-lg bg-ink text-card hover:bg-ink/90 text-xs"
+              className="rounded-lg bg-ink text-card hover:bg-ink/90 text-xs cursor-pointer shadow-2xs"
             >
               <UploadCloud className="mr-1.5 size-3.5" />
               Manage Submissions

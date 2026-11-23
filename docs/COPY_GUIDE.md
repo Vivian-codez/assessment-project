@@ -38,8 +38,6 @@ Avoid vague one-word actions. Prefer descriptive, outcome-oriented button labels
 | Batch grading trigger | `Start Grading (Pre-flight)` | `Run`, `Go`, `Submit` |
 | Grade approval | `Approve & Stamp Grade` | `OK`, `Save`, `Approve` |
 | Grade adjustment | `Override Score` | `Edit`, `Change` |
-| Demo data seed | `Load Sandbox Demo Dataset (1-Click)` | `Seed`, `Demo` |
-| Demo data purge | `Clear Demo Data` | `Delete`, `Remove` |
 
 ---
 

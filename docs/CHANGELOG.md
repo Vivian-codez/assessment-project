@@ -38,6 +38,7 @@
   - Added Help & Shortcuts slide-over drawer with hotkeys (`?`, `Esc`, `J/K`, `A`).
   - Added Getting Started 5-step onboarding checklist tracking real database progress.
 - **Trust & Honesty Audit:** Removed unverified marketing claims; replaced with accurate technical disclaimers. Replaced fake placeholder percentages with real calculations or honest `"—"`. Added pluralization engine and detected CSV header reporting with sample template download.
+- **Demo Data & Sandbox Tab Removal:** Removed the "Load Sandbox Demo Dataset" tab/button from the empty dashboard view, removed "Load Demo Data / Clear Demo Data" controls from the dashboard toolbar, and purged orphaned demo upload directories.
 
 ### Version 2.4.0 — Phase 12: Comprehensive Documentation Suite
 - Published the authoritative 17-document technical and operational suite in `/docs/`:
