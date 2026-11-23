@@ -1,12 +1,16 @@
 # Module docstring explaining that this file defines submission data models and response schemas
 """Submission schemas."""
 
+# Import standard mimetypes module for MIME type resolution
+import mimetypes
 # Import datetime utility for timestamp handling
 from datetime import datetime
 # Import typing utilities for lists and optional values
 from typing import List, Optional
-# Import Pydantic base model, field constructor, and configuration dictionary
-from pydantic import BaseModel, Field, ConfigDict
+# Import Pydantic base model, field constructor, configuration dictionary, and validator
+from pydantic import BaseModel, Field, ConfigDict, model_validator
+# Import VerismBaseModel base class supporting dual camelCase and snake_case keys
+from app.schemas.base import VerismBaseModel
 
 
 # Schema for validating incoming requests to create a single student submission
@@ -24,10 +28,7 @@ class SubmissionCreate(BaseModel):
 
 
 # Schema for returning submission summary data in API list responses
-class SubmissionResponse(BaseModel):
-    # Enable reading attributes from ORM database models and supporting field aliases
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
-
+class SubmissionResponse(VerismBaseModel):
     # Unique string identifier for the submission
     id: str
     # Identifier of the assignment this submission belongs to
@@ -40,8 +41,14 @@ class SubmissionResponse(BaseModel):
     student_id: Optional[str] = None
     # Original filename of the uploaded submission document
     file_name: str
+    # Normalized alias for filename
+    filename: Optional[str] = None
+    # Inferred or persisted document file format type
+    file_type: str = "pdf"
+    # Internet media MIME type of the document
+    mime_type: str = "application/pdf"
     # Current workflow status (e.g., ready, queued, graded, approved)
-    status: str
+    status: str = "unprocessed"
     # Score awarded for the submission, None when ungraded
     score: Optional[float] = None
     # Maximum possible score for the assignment
@@ -63,7 +70,27 @@ class SubmissionResponse(BaseModel):
     # Optional full integrity audit and plagiarism report dictionary
     plagiarism_report: Optional[dict] = None
     # Timestamp when the submission was recorded in the database
-    created_at: datetime
+    created_at: Optional[datetime] = None
+
+    # Model validator populating filename and mime_type automatically
+    @model_validator(mode="after")
+    def populate_file_metadata(self) -> "SubmissionResponse":
+        # Check if filename is missing but file_name is present
+        if not self.filename and self.file_name:
+            # Set filename to file_name
+            self.filename = self.file_name
+        # Guess MIME type based on file name if default
+        if self.file_name:
+            # Resolve MIME type tuple from standard registry
+            guessed, _ = mimetypes.guess_type(self.file_name)
+            # If MIME type successfully identified
+            if guessed:
+                # Update mime_type attribute
+                self.mime_type = guessed
+                # Update file_type to subtype segment
+                self.file_type = guessed.split("/")[-1]
+        # Return self instance after validation
+        return self
 
 
 # Schema providing full detailed submission content, text excerpts, and sources
@@ -87,7 +114,7 @@ class SubmissionDetailResponse(SubmissionResponse):
 
 
 # Schema returning batch upload results for standard bulk ZIP submissions
-class BatchUploadResponse(BaseModel):
+class BatchUploadResponse(VerismBaseModel):
     # Unique string identifier for the batch upload operation
     batch_id: str
     # Total count of files found and processed within the archive
@@ -99,11 +126,17 @@ class BatchUploadResponse(BaseModel):
 
 
 # Schema representing an individual item parsed from a classroom bulk upload
-class ClassroomBatchUploadItem(BaseModel):
+class ClassroomBatchUploadItem(VerismBaseModel):
     # Unique identifier of the uploaded submission item
     id: str
     # Filename of the uploaded document
     file_name: str
+    # Normalized alias for filename
+    filename: Optional[str] = None
+    # Detected file extension type
+    file_type: str = "pdf"
+    # Document MIME type
+    mime_type: str = "application/pdf"
     # Optional matched student database identifier
     student_id: Optional[str] = None
     # Optional student roll number extracted from filename or roster match
@@ -115,9 +148,29 @@ class ClassroomBatchUploadItem(BaseModel):
     # Storage URL or file path for the submission
     file_url: Optional[str] = None
 
+    # Model validator populating filename and mime_type automatically
+    @model_validator(mode="after")
+    def populate_batch_item_metadata(self) -> "ClassroomBatchUploadItem":
+        # Check if filename is missing but file_name is present
+        if not self.filename and self.file_name:
+            # Set filename to file_name
+            self.filename = self.file_name
+        # Guess MIME type based on file name if default
+        if self.file_name:
+            # Resolve MIME type tuple from standard registry
+            guessed, _ = mimetypes.guess_type(self.file_name)
+            # If MIME type successfully identified
+            if guessed:
+                # Update mime_type attribute
+                self.mime_type = guessed
+                # Update file_type to subtype segment
+                self.file_type = guessed.split("/")[-1]
+        # Return self instance after validation
+        return self
+
 
 # Schema returning categorized queued versus unmatched items from classroom bulk upload
-class ClassroomBatchUploadResponse(BaseModel):
+class ClassroomBatchUploadResponse(VerismBaseModel):
     # Unique identifier of the background batch processing job
     batch_job_id: str
     # Total count of submission files uploaded in the batch

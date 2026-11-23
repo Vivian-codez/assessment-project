@@ -3,28 +3,24 @@
 
 # Import typing utilities for lists, optional values, any types, and dictionaries
 from typing import List, Optional, Any, Dict
-# Import Pydantic base model, field helper, and configuration dictionary
-from pydantic import BaseModel, Field, ConfigDict
+# Import Pydantic base model, field helper, configuration dictionary, and model validator
+from pydantic import BaseModel, Field, ConfigDict, model_validator
+# Import VerismBaseModel base class supporting dual camelCase and snake_case keys
+from app.schemas.base import VerismBaseModel
 
 
 # Schema representing an individual performance level tier within a rubric criterion
-class RubricLevel(BaseModel):
-    # Configure model to support reading from ORM attributes and mapping by alias
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
-
+class RubricLevel(VerismBaseModel):
     # Name or tier label of this level (e.g., Exemplary, Proficient, Needs Work)
     level_name: str
     # Point value associated with achieving this level
-    points: float
+    points: float = 0.0
     # Detailed descriptive expectations for this achievement level
-    description: str
+    description: str = ""
 
 
 # Schema representing a single rubric criterion with weights and performance levels
-class RubricCriterionSchema(BaseModel):
-    # Configure model to support reading from ORM attributes and mapping by alias
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
-
+class RubricCriterionSchema(VerismBaseModel):
     # Optional unique identifier for this criterion record
     id: Optional[str] = None
     # Criterion title or skill evaluated (e.g., Code Structure)
@@ -36,9 +32,9 @@ class RubricCriterionSchema(BaseModel):
     # Percentage or point weight of this criterion, defaulting to 25.0
     weight: Optional[float] = 25.0
     # Maximum points achievable for this criterion
-    max_points: Optional[float] = None
+    max_points: Optional[float] = 25.0
     # Maximum score alias supporting the 'max' field name
-    max_score: Optional[float] = Field(default=None, alias="max")
+    max_score: Optional[float] = Field(default=25.0, alias="max")
     # Ordinal index for sequencing criteria in the UI, defaulting to 0
     order_index: int = 0
     # Ordered list of distinct performance levels for this criterion
@@ -64,14 +60,11 @@ class RubricCreate(BaseModel):
 
 
 # Schema for returning complete rubric data in API responses
-class RubricResponse(BaseModel):
-    # Configure model to support reading from ORM attributes and mapping by alias
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
-
+class RubricResponse(VerismBaseModel):
     # Unique string identifier of the rubric
     id: str
     # Primary title of the rubric
-    title: str
+    title: str = "Standard Matrix Rubric"
     # Title alias for frontend compatibility
     name: Optional[str] = None
     # Optional classroom identifier
@@ -79,20 +72,27 @@ class RubricResponse(BaseModel):
     # Optional course identifier
     course_id: Optional[str] = None
     # Total points possible across all criteria in the rubric
-    total_marks: float
+    total_marks: float = 100.0
     # Total maximum score alias
-    total_max_score: Optional[float] = None
+    total_max_score: Optional[float] = 100.0
     # ISO-formatted creation timestamp string
     created_at: Optional[str] = None
     # Complete list of criteria and levels in this rubric
     criteria: List[RubricCriterionSchema] = []
 
+    # Model validator synchronizing title and name
+    @model_validator(mode="after")
+    def sync_title_and_name(self) -> "RubricResponse":
+        """Synchronize title and name so both are populated."""
+        if not self.title and self.name:
+            self.title = self.name
+        elif not self.name and self.title:
+            self.name = self.title
+        return self
+
 
 # Schema for returning parsed rubric file output for teacher review in Step 3 wizard
-class Phase3ParsedRubricResponse(BaseModel):
-    # Configure model to support reading from ORM attributes and mapping by alias
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
-
+class Phase3ParsedRubricResponse(VerismBaseModel):
     # Title extracted from document
     title: str = Field(default="Parsed Matrix Rubric", description="Extracted rubric title")
     # Total marks computed from criteria

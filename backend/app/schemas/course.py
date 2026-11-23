@@ -5,6 +5,8 @@
 from typing import Optional
 # Import Pydantic base model, field helper, and configuration dictionary
 from pydantic import BaseModel, Field, ConfigDict
+# Import VerismBaseModel base class supporting dual camelCase and snake_case keys
+from app.schemas.base import VerismBaseModel
 
 
 # Schema for validating incoming requests to create a new course
@@ -36,10 +38,7 @@ class CourseUpdate(BaseModel):
 
 
 # Schema for returning summary information about a course
-class CourseResponse(BaseModel):
-    # Enable reading attributes from ORM models and populating fields by aliases
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
-
+class CourseResponse(VerismBaseModel):
     # Unique string identifier for the course
     id: str
     # Full name of the course
@@ -47,9 +46,9 @@ class CourseResponse(BaseModel):
     # Official course code
     code: str
     # Section identifier for this class offering
-    section: str
+    section: str = "A"
     # Color tone string assigned for UI card themes
-    tone: str
+    tone: str = "lav"
     # Student count alias for UI compatibility, defaulting to 0
     students: int = 0
     # Canonical student count attribute, defaulting to 0
@@ -66,6 +65,8 @@ class CourseResponse(BaseModel):
     flags: int = 0
     # Canonical flagged submission count attribute, defaulting to 0
     flags_count: int = 0
+    # Average score across course submissions, defaulting to 0.0
+    average_score: float = 0.0
 
 
 # Schema providing expanded metrics and detailed telemetry for a specific course
@@ -73,6 +74,6 @@ class CourseDetailResponse(CourseResponse):
     # High-level operational health assessment text for the course
     health: str = "On track"
     # Human-readable label indicating the upcoming assignment deadline
-    next_deadline: str = "18 October 2024"
+    next_deadline: Optional[str] = None
     # Mean grade percentage across all graded assignments in this course
-    average_score: float = 78.0
+    average_score: float = 0.0

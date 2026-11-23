@@ -9,10 +9,11 @@ import io
 import re
 import json
 import zipfile
+import mimetypes
 # Import typing annotations for list, optional, dictionary, and any values
 from typing import List, Optional, Dict, Any
 # Import FastAPI routing constructs, dependency injection, HTTP exceptions, and upload constructs
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Body
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Body, Query
 # Import SQLAlchemy Session type for database operations
 from sqlalchemy.orm import Session
 
@@ -95,6 +96,18 @@ def get_course_assignments(
             logger.warning(f"Supabase assignments sync notice: {e}")
     # Return list of assignment records
     return assignments
+
+
+# Route handler to retrieve all assignments or filter by course_id query parameter
+@router.get("/assignments", response_model=List[AssignmentResponse])
+def list_all_assignments(
+    course_id: Optional[str] = Query(None, description="Optional course ID filter"),
+    db: Session = Depends(get_db),
+):
+    """Retrieve all assignments, optionally filtered by course_id query parameter."""
+    if course_id:
+        return get_course_assignments(course_id=course_id, db=db)
+    return db.query(Assignment).all()
 
 
 # Helper function to ensure parent course exists in Supabase before child assignment creation
@@ -635,12 +648,30 @@ async def upload_reference_solution(
     db.commit()
     db.refresh(assignment)
 
+    # Determine MIME type safely
+    resolved_mime = getattr(file, "content_type", None) or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+    # Return response dictionary with all required fields in both snake_case and camelCase
     return {
+        # Assignment identifier
         "assignment_id": assignment.id,
+        "assignmentId": assignment.id,
+        # Uploaded file name in various formats
         "filename": filename,
+        "file_name": filename,
+        "fileName": filename,
+        # File size in bytes
         "file_size": file_size,
+        "fileSize": file_size,
+        # Resolved MIME type
+        "mime_type": resolved_mime,
+        "mimeType": resolved_mime,
+        # Reference solution text
         "reference_solution_text": extracted,
+        "referenceSolutionText": extracted,
+        # Extracted preview
         "extracted_preview": (extracted[:350] + "...") if len(extracted) > 350 else extracted,
+        "extractedPreview": (extracted[:350] + "...") if len(extracted) > 350 else extracted,
     }
 
 
@@ -728,23 +759,50 @@ async def upload_batch_submissions(
                     best_conf = 0.95
                     break
 
+        # Resolve MIME type and file extension for the extracted file item
+        item_mime = mimetypes.guess_type(item_name)[0] or "application/octet-stream"
+        # Determine lowercase extension without leading dot
+        item_ext = os.path.splitext(item_name)[1].lower().lstrip(".") or "txt"
+
         if best_student:
             if best_student.id in matched_student_ids:
                 duplicate_list.append({
                     "filename": item_name,
+                    "file_name": item_name,
+                    "fileName": item_name,
                     "file_size": item_size,
+                    "fileSize": item_size,
+                    "mime_type": item_mime,
+                    "mimeType": item_mime,
+                    "file_type": item_ext,
+                    "fileType": item_ext,
                     "student_id": best_student.id,
+                    "studentId": best_student.id,
                     "student_name": best_student.name,
+                    "studentName": best_student.name,
                     "student_roll": best_student.roll_number,
+                    "studentRoll": best_student.roll_number,
+                    "roll": best_student.roll_number,
                 })
             else:
                 matched_student_ids.add(best_student.id)
                 matched_list.append({
                     "filename": item_name,
+                    "file_name": item_name,
+                    "fileName": item_name,
                     "file_size": item_size,
+                    "fileSize": item_size,
+                    "mime_type": item_mime,
+                    "mimeType": item_mime,
+                    "file_type": item_ext,
+                    "fileType": item_ext,
                     "student_id": best_student.id,
+                    "studentId": best_student.id,
                     "student_name": best_student.name,
+                    "studentName": best_student.name,
                     "student_roll": best_student.roll_number,
+                    "studentRoll": best_student.roll_number,
+                    "roll": best_student.roll_number,
                     "confidence": best_conf,
                 })
                 # Persist or update submission in database
@@ -770,19 +828,36 @@ async def upload_batch_submissions(
         else:
             unmatched_list.append({
                 "filename": item_name,
+                "file_name": item_name,
+                "fileName": item_name,
                 "file_size": item_size,
+                "fileSize": item_size,
+                "mime_type": item_mime,
+                "mimeType": item_mime,
+                "file_type": item_ext,
+                "fileType": item_ext,
             })
 
     db.commit()
 
     return {
         "assignment_id": assignment.id,
+        "assignmentId": assignment.id,
         "total_files": len(extracted_files),
+        "totalFiles": len(extracted_files),
         "matched": matched_list,
         "unmatched": unmatched_list,
         "duplicates": duplicate_list,
         "roster": [
-            {"id": s.id, "name": s.name, "roll": s.roll_number}
+            {
+                "id": s.id,
+                "name": s.name,
+                "roll": s.roll_number,
+                "student_name": s.name,
+                "studentName": s.name,
+                "roll_number": s.roll_number,
+                "rollNumber": s.roll_number,
+            }
             for s in students
         ],
     }

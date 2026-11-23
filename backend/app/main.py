@@ -8,6 +8,8 @@ Configures:
 """
 
 from contextlib import asynccontextmanager
+import os
+import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -16,7 +18,7 @@ from app.core.config import settings
 from app.core.database import engine, Base, check_db_health, TRANSIENT_DB_EXCEPTIONS
 from app.core.logging import logger
 from app.api.v1.api_router import api_v1_router
-from app.api.health import router as health_router, db_health_check
+from app.api.health import router as health_router, db_health_check, health_check as comprehensive_health_check
 import app.models  # noqa
 
 
@@ -90,9 +92,37 @@ class SecurityHeadersMiddleware:
 @asynccontextmanager
 # Function definition accepting FastAPI instance and yielding runtime context
 async def lifespan(app: FastAPI):
-    """Application lifespan context for startup and shutdown procedures."""
+    """Application lifespan context for startup and shutdown procedures.
+
+    Validates required environment variables (DATABASE_URL, SECRET_KEY, GEMINI_API_KEY)
+    and asserts database connectivity upon application initialization.
+    """
     # Log startup announcement for the backend service
     logger.info("Initializing Verism AI Backend Service...")
+
+    # Validate required environment variables at startup
+    missing_vars = []
+    # Verify DATABASE_URL is non-empty
+    if not settings.DATABASE_URL or not str(settings.DATABASE_URL).strip():
+        missing_vars.append("DATABASE_URL")
+    # Verify auth secret (SECRET_KEY or JWT_SECRET) is non-empty
+    auth_secret = settings.JWT_SECRET or settings.SECRET_KEY
+    if not auth_secret or not str(auth_secret).strip():
+        missing_vars.append("SECRET_KEY (or JWT_SECRET)")
+    # Verify GEMINI_API_KEY is non-empty (allow bypass only in dedicated testing mode)
+    is_testing = os.getenv("TESTING") == "1" or "pytest" in sys.modules
+    if not is_testing and (not settings.GEMINI_API_KEY or not str(settings.GEMINI_API_KEY).strip()):
+        missing_vars.append("GEMINI_API_KEY")
+
+    # If any required environment variable is missing, fail fast with a descriptive RuntimeError
+    if missing_vars:
+        error_msg = (
+            f"Startup validation failed: Missing required environment variable(s): {', '.join(missing_vars)}. "
+            "Please configure them in your .env file or server environment before starting the service."
+        )
+        logger.critical(f"[STARTUP] {error_msg}")
+        raise RuntimeError(error_msg)
+
     # Wrap startup verification in try block to log database connectivity diagnostics
     try:
         # Import database health check utility function
@@ -116,7 +146,6 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         # Log critical error notice
         logger.critical(f"[STARTUP] Database startup verification failed: {e}")
-    # Yield control to let the FastAPI application serve incoming HTTP requests
     # Yield control to let the FastAPI application serve incoming HTTP requests
     yield
     # Log graceful shutdown event when the application stops
@@ -152,6 +181,12 @@ origins = [
     "http://localhost:8080",
     # Standard React/Next.js port
     "http://localhost:3000",
+    # Loopback IP address on port 3000
+    "http://127.0.0.1:3000",
+    # Loopback IP address on port 5173
+    "http://127.0.0.1:5173",
+    # Loopback IP address on port 8080
+    "http://127.0.0.1:8080",
     # Specific production Vercel deployment URL
     "https://assessment-project-o64i.vercel.app",  # Your specific Vercel URL
     # Current active Vercel deployment URL
@@ -239,29 +274,14 @@ def health_db():
     return db_health_check()
 
 
-# Health diagnostic endpoint returning system status and component checks
+# Health diagnostic endpoint returning comprehensive system status and component checks
 @app.get("/health", tags=["Health"])
 # Handler function for health check probe
 def health_check():
-    """System health check and diagnostic probe."""
-    # Return JSON dictionary detailing operational readiness across all subsystem dependencies
-    return {
-        # General health status
-        "status": "healthy",
-        # Current environment name (development, production)
-        "environment": settings.APP_ENV,
-        # Flag indicating whether database connection URL is configured
-        "database_configured": bool(settings.DATABASE_URL),
-        # Flag indicating whether Supabase URL is configured
-        "supabase_configured": bool(settings.SUPABASE_URL),
-        # Flag indicating whether Redis broker URL is configured
-        "redis_configured": bool(settings.REDIS_URL),
-        # Flag confirming Qdrant vector database is configured
-        "qdrant_configured": True,
-        # Operational mode of Qdrant (in-memory or remote server)
-        "qdrant_mode": "embedded/in-memory" if settings.QDRANT_URL == ":memory:" else settings.QDRANT_URL,
-        # Active Google Gemini model name
-        "gemini_model": settings.GEMINI_MODEL,
-        # Status of FERPA encryption handler
-        "ferpa_encryption": "active",
-    }
+    """Lightweight comprehensive health check verifying database, Gemini API, and storage.
+
+    Returns:
+        JSONResponse: Detailed diagnostic status payload for all core services.
+    """
+    # Delegate to comprehensive diagnostic handler checking database, Gemini, and storage
+    return comprehensive_health_check()

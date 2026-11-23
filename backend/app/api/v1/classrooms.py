@@ -7,6 +7,8 @@ import csv
 import io
 # Import uuid module for generating unique IDs for classrooms and students
 import uuid
+# Import mimetypes for resolving MIME content types
+import mimetypes
 # Import typing annotations for lists, dictionaries, any, optionals, and unions
 from typing import List, Dict, Any, Optional, Union
 # Import FastAPI routing constructs, parameters, exceptions, uploads, and HTTP status codes
@@ -509,10 +511,16 @@ async def parse_classroom_roster(
     from app.services.roster_parser_service import roster_parser_service
     contents = await file.read()
     students = roster_parser_service.parse_roster_file(file.filename, contents)
+    mime = getattr(file, "content_type", None) or mimetypes.guess_type(file.filename or "")[0] or "text/csv"
     return {
         "status": "success",
         "filename": file.filename,
+        "file_name": file.filename,
+        "fileName": file.filename,
+        "mime_type": mime,
+        "mimeType": mime,
         "total_detected": len(students),
+        "totalDetected": len(students),
         "students": students,
     }
 
@@ -571,12 +579,17 @@ async def upload_students_csv(
         if crs:
             crs.students_count = active_count
             db.commit()
+        parsed_mime = getattr(file, "content_type", None) or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
         return StudentUploadCSVResponse(
             status="success",
             total_inserted=len(inserted_records),
             total_skipped=len(skipped),
             students=[StudentResponse(id=r["id"], classroom_id=r["classroom_id"], roll_number=r["roll_number"], full_name=r["full_name"], email=r["email"]) for r in inserted_records],
             skipped=skipped,
+            filename=file.filename,
+            file_name=file.filename,
+            mime_type=parsed_mime,
+            mimeType=parsed_mime,
         )
     # Try decoding file contents as UTF-8 with BOM support
     try:
@@ -742,12 +755,19 @@ async def upload_students_csv(
             # Log warning notice for failed CSV roster cloud sync
             logger.warning(f"Cloud CSV roster sync notice: {e}")
 
+    # Resolve MIME type for CSV upload
+    csv_mime = getattr(file, "content_type", None) or mimetypes.guess_type(file.filename or "")[0] or "text/csv"
+
     # Return CSV upload response schema with insertion and skip details
     return StudentUploadCSVResponse(
         total_inserted=len(inserted_records),
         total_skipped=len(skipped),
         skipped=skipped,
         inserted=inserted_records,
+        filename=file.filename,
+        file_name=file.filename,
+        mime_type=csv_mime,
+        mimeType=csv_mime,
     )
 
 

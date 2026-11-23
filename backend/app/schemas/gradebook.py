@@ -5,10 +5,12 @@
 from typing import List, Optional
 # Import Pydantic base model class
 from pydantic import BaseModel
+# Import VerismBaseModel base class supporting dual camelCase and snake_case keys
+from app.schemas.base import VerismBaseModel
 
 
 # Schema representing an individual student's row entry in the course gradebook
-class GradebookEntryResponse(BaseModel):
+class GradebookEntryResponse(VerismBaseModel):
     # Unique string identifier for the student or gradebook row
     id: str
     # Plaintext decrypted student name for display on the instructor console
@@ -30,12 +32,12 @@ class GradebookEntryResponse(BaseModel):
 
 
 # Schema representing the full gradebook matrix response for an entire course
-class GradebookResponse(BaseModel):
+class GradebookResponse(VerismBaseModel):
     # Unique identifier of the course
     course_id: str
     # Title or name of the course
     course_name: str
     # Specific section cohort identifier
-    section: str
+    section: str = "A"
     # List of individual student score entries for this gradebook
-    students: List[GradebookEntryResponse]
+    students: List[GradebookEntryResponse] = []

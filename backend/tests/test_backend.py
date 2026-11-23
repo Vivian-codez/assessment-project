@@ -2022,3 +2022,165 @@ def test_phase9_soft_delete_trash_bin_and_user_export_zip():
     assert health_res.headers.get("x-xss-protection") == "1; mode=block"
     assert "strict-transport-security" in health_res.headers
     assert health_res.headers.get("referrer-policy") == "strict-origin-when-cross-origin"
+
+
+# Test function verifying that all response models emit dual casing (snake_case + camelCase) and defaults
+def test_schema_dual_casing_and_defaults():
+    """Verify that all response models emit both snake_case and camelCase keys with non-null defaults."""
+    # Import response schemas to validate
+    from app.schemas.course import CourseResponse
+    from app.schemas.assignment import AssignmentResponse
+    from app.schemas.submission import SubmissionResponse
+    from app.schemas.classroom import StudentResponse
+    from app.schemas.rubric import RubricResponse
+    from app.schemas.report import ScoreDistributionBar, FunnelStageItem, PerformerItem, NeedsAttentionItem, AnalyticsResponse
+    from app.schemas.similarity import SimilarityPairResponse
+
+    # 1. CourseResponse verification
+    course = CourseResponse(id="c_123", name="Intro to CS", code="CS101", section="A")
+    # Dump course model to dictionary with serializable output
+    c_data = course.model_dump()
+    # Assert both snake_case and camelCase keys are present
+    assert "students_count" in c_data and "studentsCount" in c_data
+    assert "assignments_count" in c_data and "assignmentsCount" in c_data
+    assert "average_score" in c_data and "averageScore" in c_data
+    assert c_data["students_count"] == 0
+    assert c_data["average_score"] == 0.0
+
+    # 2. AssignmentResponse verification
+    assign = AssignmentResponse(id="a_123", course_id="c_123", title="Sorting Algorithms")
+    a_data = assign.model_dump()
+    assert "max_score" in a_data and "maxScore" in a_data
+    assert "submission_count" in a_data and "submissionCount" in a_data
+    assert "evaluated_count" in a_data and "evaluatedCount" in a_data
+    assert "graded_count" in a_data and "gradedCount" in a_data
+
+    # 3. SubmissionResponse verification
+    sub = SubmissionResponse(id="s_123", assignment_id="a_123", student="Rahul", roll="101", file_name="hw1.py")
+    s_data = sub.model_dump()
+    assert "file_name" in s_data and "fileName" in s_data
+    assert "file_type" in s_data and "fileType" in s_data
+    assert "mime_type" in s_data and "mimeType" in s_data
+    assert s_data["mime_type"] == "text/x-python" or "python" in s_data["mime_type"]
+
+    # 4. StudentResponse verification
+    student = StudentResponse(id="st_123", classroom_id="cl_123", roll_number="2024-001", full_name="Aarav Patel")
+    st_data = student.model_dump()
+    assert "full_name" in st_data and "fullName" in st_data
+    assert "name" in st_data and st_data["name"] == "Aarav Patel"
+    assert "roll_number" in st_data and "rollNumber" in st_data
+    assert "roll" in st_data and st_data["roll"] == "2024-001"
+
+    # 5. RubricResponse verification
+    rubric = RubricResponse(id="r_123", name="Code Quality Rubric", total_marks=100.0)
+    r_data = rubric.model_dump()
+    assert "total_marks" in r_data and "totalMarks" in r_data
+    assert "criteria" in r_data
+
+    # 6. Report & Analytics schemas verification
+    bar = ScoreDistributionBar(label="90-100%", count=5)
+    b_data = bar.model_dump()
+    assert "label" in b_data
+    assert "bucket" in b_data and b_data["bucket"] == "90-100%"
+
+    funnel = FunnelStageItem(stage="Uploaded", count=10, percentage=100.0)
+    f_data = funnel.model_dump()
+    assert "percentage" in f_data
+    assert "conversion_percentage" in f_data and "conversionPercentage" in f_data
+    assert f_data["conversion_percentage"] == 100.0
+
+    perf = PerformerItem(student_id="st_1", student_name="Aarav", student_roll="001", average_percentage=95.0)
+    p_data = perf.model_dump()
+    assert "average_percentage" in p_data and "averagePercentage" in p_data
+    assert "average_score" in p_data and "averageScore" in p_data
+    assert p_data["average_score"] == 95.0
+
+    alert = NeedsAttentionItem(id="n_1", type="warning", title="Low Confidence", description="Check grade")
+    alt_data = alert.model_dump()
+    assert "action_label" in alt_data and "actionLabel" in alt_data
+    assert "action_target" in alt_data and "actionTarget" in alt_data
+
+    analytics = AnalyticsResponse()
+    an_data = analytics.model_dump()
+    assert "funnel" in an_data
+    assert "submission_funnel" in an_data and "submissionFunnel" in an_data
+
+    # 7. SimilarityPairResponse verification
+    pair = SimilarityPairResponse(pair_id="pair_abc_123", a="Alice", b="Bob", similarity=85.0)
+    pr_data = pair.model_dump()
+    assert "pair_id" in pr_data and "pairId" in pr_data
+    assert "id" in pr_data and pr_data["id"] == "pair_abc_123"
+    assert "score" in pr_data
+    assert "matching_phrases" in pr_data and "matchingPhrases" in pr_data
+
+
+# Test function verifying list endpoints on an empty query return [] with HTTP 200
+def test_empty_list_endpoints_return_empty_arrays_with_200():
+    """Verify that all list endpoints return plain empty lists [] with HTTP 200 on an empty database state."""
+    # Import TestClient from fastapi.testclient
+    from fastapi.testclient import TestClient
+    # Import FastAPI application
+    from app.main import app
+
+    # Initialize test client
+    client = TestClient(app)
+    # Generate valid test instructor token
+    token = create_access_token("inst_priya_rao")
+    # Prepare authorization headers
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # 1. Non-existent course query for assignments must return plain [] with 200
+    res_assign = client.get("/api/v1/assignments?course_id=c_nonexistent_empty_course", headers=headers)
+    assert res_assign.status_code == 200
+    assert isinstance(res_assign.json(), list)
+    assert res_assign.json() == []
+
+    # 2. Non-existent classroom query for students must return plain [] with 200
+    res_students = client.get("/api/v1/classrooms/cohort_nonexistent_empty/students", headers=headers)
+    assert res_students.status_code == 200
+    assert isinstance(res_students.json(), list)
+    assert res_students.json() == []
+
+    # 3. Non-existent course query for rubrics must return plain [] with 200
+    res_rubrics = client.get("/api/v1/rubrics?course_id=c_nonexistent_empty_course", headers=headers)
+    assert res_rubrics.status_code == 200
+    assert isinstance(res_rubrics.json(), list)
+    assert res_rubrics.json() == []
+
+    # 4. Non-existent assignment query for submissions must return plain [] with 200
+    res_subs = client.get("/api/v1/submissions?assignment_id=assign_nonexistent_empty", headers=headers)
+    assert res_subs.status_code == 200
+    assert isinstance(res_subs.json(), list)
+    assert res_subs.json() == []
+
+
+# Test function verifying comprehensive health endpoint probes database, Gemini, and storage
+def test_comprehensive_health_checks_services():
+    """Verify that GET /health and GET /api/health report diagnostics for database, Gemini, and storage."""
+    # Import TestClient from fastapi.testclient
+    from fastapi.testclient import TestClient
+    # Import FastAPI application
+    from app.main import app
+
+    # Initialize test client
+    client = TestClient(app)
+
+    # Probe GET /health
+    res_health = client.get("/health")
+    assert res_health.status_code == 200
+    data = res_health.json()
+    assert "status" in data
+    assert "services" in data
+    assert "database" in data["services"]
+    assert "gemini" in data["services"]
+    assert "storage" in data["services"]
+    assert data["services"]["storage"]["writable"] is True
+
+    # Probe GET /api/health
+    res_api_health = client.get("/api/health")
+    assert res_api_health.status_code == 200
+    api_data = res_api_health.json()
+    assert "services" in api_data
+    assert "database" in api_data["services"]
+    assert "gemini" in api_data["services"]
+    assert "storage" in api_data["services"]

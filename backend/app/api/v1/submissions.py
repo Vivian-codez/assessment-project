@@ -20,8 +20,8 @@ from io import BytesIO
 from datetime import datetime, timezone
 # Import List, Optional, Union from typing
 from typing import List, Optional, Union
-# Import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, Response, status, BackgroundTasks from fastapi
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, Response, status, BackgroundTasks
+# Import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, Response, status, BackgroundTasks, Query from fastapi
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request, Response, status, BackgroundTasks, Query
 # Import Session from sqlalchemy.orm
 from sqlalchemy.orm import Session
 
@@ -1739,6 +1739,33 @@ def get_assignment_submissions(
         # Execute statement: )
         )
     # Return result: res_list
+    return res_list
+
+
+# Route handler to retrieve all submissions optionally filtered by assignment_id
+@router.get("/submissions", response_model=List[SubmissionResponse])
+def list_all_submissions(
+    assignment_id: Optional[str] = Query(None, description="Optional assignment ID filter"),
+    db: Session = Depends(get_db),
+):
+    """Retrieve all submissions, optionally filtered by assignment_id query parameter."""
+    if assignment_id:
+        return get_assignment_submissions(assignment_id=assignment_id, db=db)
+    all_subs = db.query(Submission).all()
+    if not all_subs:
+        return []
+    res_list = []
+    for s in all_subs:
+        res_list.append(SubmissionResponse(
+            id=s.id,
+            assignment_id=s.assignment_id,
+            student=s.student_name,
+            roll=s.student_roll,
+            file_name=s.file_name,
+            file_type=s.file_type or "txt",
+            status=s.status,
+            created_at=s.created_at,
+        ))
     return res_list
 
 

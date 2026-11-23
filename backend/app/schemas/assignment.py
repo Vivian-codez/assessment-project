@@ -5,8 +5,10 @@
 from datetime import datetime
 # Import Optional type hint for fields that can be None
 from typing import Optional
-# Import Pydantic base model and configuration dictionary for schema definition
-from pydantic import BaseModel, ConfigDict
+# Import Pydantic base model, field helper, and model validator
+from pydantic import BaseModel, ConfigDict, model_validator
+# Import VerismBaseModel base class supporting dual camelCase and snake_case keys
+from app.schemas.base import VerismBaseModel
 
 
 # Schema for validating input payload when creating a new assignment
@@ -62,10 +64,7 @@ class AssignmentUpdate(BaseModel):
 
 
 # Schema for returning assignment data in API responses
-class AssignmentResponse(BaseModel):
-    # Configure model to support reading attributes directly from ORM objects
-    model_config = ConfigDict(from_attributes=True)
-
+class AssignmentResponse(VerismBaseModel):
     # Unique string identifier for the assignment
     id: str
     # String identifier of the course this assignment belongs to
@@ -77,7 +76,7 @@ class AssignmentResponse(BaseModel):
     # Optional deadline timestamp for student submissions
     due_date: Optional[datetime] = None
     # Maximum achievable score for the assignment
-    max_score: float
+    max_score: float = 100.0
     # Optional rubric identifier linked to this assignment
     rubric_id: Optional[str] = None
     # Optional exemplar or reference text for grading context
@@ -90,5 +89,22 @@ class AssignmentResponse(BaseModel):
     similarity_threshold: float = 70.0
     # Starter code
     starter_code: Optional[str] = None
+    # Submissions count attribute and alias for UI card stats
+    submissions_count: int = 0
+    submission_count: int = 0
+    # Count of evaluated submissions
+    evaluated_count: int = 0
+    # Count of graded / approved submissions
+    graded_count: int = 0
     # Timestamp indicating when the assignment was created
-    created_at: datetime
+    created_at: Optional[datetime] = None
+
+    # Model validator synchronizing submission_count and submissions_count
+    @model_validator(mode="after")
+    def sync_submission_counts(self) -> "AssignmentResponse":
+        """Synchronize submission_count and submissions_count so both are always present."""
+        if self.submission_count == 0 and self.submissions_count > 0:
+            self.submission_count = self.submissions_count
+        elif self.submissions_count == 0 and self.submission_count > 0:
+            self.submissions_count = self.submission_count
+        return self
