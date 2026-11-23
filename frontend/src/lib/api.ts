@@ -13,8 +13,8 @@ import { clientEnv } from "./env";
  * @returns {string} The fully qualified API base URL path.
  */
 function resolveApiBaseUrl(): string {
-  // Read VITE_API_BASE_URL from environment variables
-  const envUrl = (import.meta.env as any)["VITE_API_BASE_URL"];
+  // Read VITE_API_BASE_URL or VITE_API_URL from environment variables
+  const envUrl = (import.meta.env as any)["VITE_API_BASE_URL"] || (import.meta.env as any)["VITE_API_URL"];
   // Check if envUrl is populated and non-empty
   if (envUrl && typeof envUrl === "string" && envUrl.trim().length > 0) {
     // Strip trailing slashes from configured URL

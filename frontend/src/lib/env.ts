@@ -78,8 +78,8 @@ export function validateClientEnv(): ClientEnv {
   // Extract Vite environment variables object typed safely without any
   const envMap = import.meta.env as unknown as Record<string, string | undefined>;
   const rawEnv = {
-    // Read API base URL
-    VITE_API_BASE_URL: envMap["VITE_API_BASE_URL"],
+    // Read API base URL (supporting both VITE_API_BASE_URL and VITE_API_URL aliases)
+    VITE_API_BASE_URL: envMap["VITE_API_BASE_URL"] || envMap["VITE_API_URL"],
     // Read Supabase usage toggle
     VITE_USE_SUPABASE: envMap["VITE_USE_SUPABASE"],
     // Read Supabase project URL

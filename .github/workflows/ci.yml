@@ -63,6 +63,8 @@ jobs:
       - name: Run Pytest Test Suite
         # Set dummy environment variables to allow test client execution without live external secrets
         env:
+          # Execution environment mode set to isolated test runner
+          APP_ENV: "test"
           # Cryptographic session secret key for JWT verification tests
           SECRET_KEY: "ci-test-secret-key-for-automated-verification-32ch"
           # Database connection string using local in-memory SQLite for test speed
