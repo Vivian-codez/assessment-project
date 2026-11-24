@@ -600,6 +600,18 @@ def run_evaluation_batch_logic(
                 {"name": "Analytical Documentation", "description": "Comprehensive explanation of complexity and methodology", "weight": 30.0, "max_score": 30.0},
             ]
 
+        # Ensure every criterion has complete performance tiers (levels) with real points
+        for c_idx, crit in enumerate(rubric_criteria_list):
+            if not crit.get("levels") and not crit.get("tiers"):
+                max_pts = float(crit.get("max_score") or crit.get("max_points") or 4.0)
+                cid = crit.get("id") or f"crit_{c_idx+1}"
+                crit["levels"] = [
+                    {"id": f"{cid}_tier_1", "level_name": "Exemplary", "name": "Exemplary", "points": max_pts, "description": "Exceeds expectations with robust implementation."},
+                    {"id": f"{cid}_tier_2", "level_name": "Proficient", "name": "Proficient", "points": round(max_pts * 0.85, 2), "description": "Meets standard requirements accurately."},
+                    {"id": f"{cid}_tier_3", "level_name": "Developing", "name": "Developing", "points": round(max_pts * 0.70, 2), "description": "Basic implementation with minor errors."},
+                    {"id": f"{cid}_tier_4", "level_name": "Beginning", "name": "Beginning", "points": round(max_pts * 0.50, 2), "description": "Incomplete or requires revision."},
+                ]
+
         # 3. Ensure Qdrant collection submissions_{assignment_id}
         # Derive collection name for this assignment
         collection_name = vector_service.get_collection_name(assignment_id)
@@ -1180,16 +1192,19 @@ def run_evaluation_batch_logic(
     except Exception as e:
         # Log error message with full exception stack trace
         logger.error(f"Error in batch evaluation worker task {job_id}: {e}", exc_info=True)
+        try:
+            db.rollback()
+        except Exception:
+            pass
         # Query for batch job to record failure status
-        job = db.query(BatchJob).filter(BatchJob.id == job_id).first()
-        # Check if batch job was found
-        if job:
-            # Mark job status as failed
-            job.status = "failed"
-            # Record error message string on batch job
-            job.error_message = str(e)
-            # Commit failure status to database
-            db.commit()
+        try:
+            job = db.query(BatchJob).filter(BatchJob.id == job_id).first()
+            if job:
+                job.status = "failed"
+                job.error_message = str(e)
+                db.commit()
+        except Exception as commit_err:
+            logger.warning(f"Could not update BatchJob to failed state: {commit_err}")
 
         # If Celery task instance is present, emit FAILURE state
         if task_instance:

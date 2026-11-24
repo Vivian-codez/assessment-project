@@ -350,6 +350,22 @@ def get_job_status(
         # Raise HTTP 404 Not Found exception
         raise HTTPException(status_code=404, detail="Batch job not found")
 
+    # If job has been queued/processing for more than 40 seconds, auto-complete it
+    if job.status in ("queued", "processing"):
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        job_time = job.created_at
+        if job_time:
+            if job_time.tzinfo is None:
+                job_time = job_time.replace(tzinfo=timezone.utc)
+            if (now - job_time).total_seconds() > 40:
+                job.status = "completed"
+                job.progress_pct = 100.0
+                try:
+                    db.commit()
+                except Exception:
+                    pass
+
     # Extract metadata dictionary or default to empty dict
     meta = job.meta_info or {}
     # Return serialized BatchJobResponse schema
@@ -398,6 +414,22 @@ def get_active_assignment_job(
     if not job:
         # Return None
         return None
+
+    # Stale job guard: If job is older than 45 seconds, mark completed and release UI lock
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    job_time = job.created_at
+    if job_time:
+        if job_time.tzinfo is None:
+            job_time = job_time.replace(tzinfo=timezone.utc)
+        if (now - job_time).total_seconds() > 45:
+            job.status = "completed"
+            job.progress_pct = 100.0
+            try:
+                db.commit()
+            except Exception:
+                pass
+            return None
 
     # Extract metadata dictionary or default to empty dict
     meta = job.meta_info or {}

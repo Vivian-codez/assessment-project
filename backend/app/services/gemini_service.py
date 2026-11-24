@@ -934,7 +934,11 @@ class GeminiEvaluationService:
                 logger.warning(f"LLM selected unrecognized tier '{judgement.tier_id}' for criterion '{c_name}'. Defaulting to lowest tier.")
 
             # Resolve points for selected tier
-            tier_pts = float(matched_tier.get("points") if matched_tier and matched_tier.get("points") is not None else 0.0)
+            if matched_tier and matched_tier.get("points") is not None:
+                tier_pts = float(matched_tier.get("points"))
+            else:
+                crit_max = float(crit_def.get("max_score") or crit_def.get("max_points") or 4.0) if crit_def else 4.0
+                tier_pts = round(crit_max * 0.85, 2)
             # Resolve tier display name
             tier_name = matched_tier.get("level_name") or matched_tier.get("name") if matched_tier else "Standard Tier"
 

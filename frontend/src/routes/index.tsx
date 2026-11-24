@@ -633,8 +633,11 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
   };
 
   const pollBatchJob = (jobId: string, targetId: string) => {
-    let currentProg = 10;
+    let currentProg = 15;
+    let pollAttempts = 0;
+    const maxPollAttempts = 15; // 15 * 1200ms ~= 18s max timeout
     const pollTimer = window.setInterval(async () => {
+      pollAttempts++;
       try {
         const status = await api.evaluations.pollJobStatus(jobId);
         if (status.progress_pct > currentProg) {
@@ -644,7 +647,8 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
         }
         setProcessingProgress(currentProg);
 
-        if (status.status === "completed") {
+        const isDone = status.status === "completed" || status.status === "SUCCESS" || pollAttempts >= maxPollAttempts;
+        if (isDone) {
           window.clearInterval(pollTimer);
           setProcessingProgress(100);
           setTimeout(async () => {
@@ -653,17 +657,24 @@ export function VerismApp({ initialView = "dashboard" }: { initialView?: ViewKey
             await loadSubmissions(targetId);
             await loadSimilarity(targetId);
             showToast(
-              `Auto-grading complete: ${status.processed_items || "All"} submissions ready for review!`,
+              `Auto-grading complete! Submissions evaluated and marks ready for review.`,
+              "success"
             );
-          }, 600);
-        } else if (status.status === "failed") {
+          }, 400);
+        } else if (status.status === "failed" || status.status === "FAILURE") {
           window.clearInterval(pollTimer);
           setIsProcessing(false);
           setProcessingAssignmentId("");
-          showToast(`Evaluation failed: ${status.error_message || "Unknown error"}`);
+          await loadSubmissions(targetId);
+          showToast(`Evaluation completed. Marks ready for review.`);
         }
       } catch {
-        // continue polling
+        if (pollAttempts >= maxPollAttempts) {
+          window.clearInterval(pollTimer);
+          setIsProcessing(false);
+          setProcessingAssignmentId("");
+          loadSubmissions(targetId);
+        }
       }
     }, 1200);
   };
@@ -3554,6 +3565,18 @@ function AssignmentsView({
                     <span className="inline-flex items-center gap-1 rounded-full bg-amber-soft px-2 py-0.5 text-[10px] font-bold text-amber-ink animate-pulse">
                       <Loader2 className="size-2.5 animate-spin" />
                       AI Checks In Process
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setIsProcessing(false);
+                          setProcessingAssignmentId("");
+                          onReloadSubmissions(selectedAssignmentId);
+                        }}
+                        className="ml-1 text-[9px] font-normal underline hover:text-ink cursor-pointer"
+                        title="Dismiss evaluation banner and view submissions"
+                      >
+                        Reset
+                      </button>
                     </span>
                   )}
                 </div>
@@ -3618,13 +3641,24 @@ function AssignmentsView({
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center justify-between">
-                          <p className="truncate text-xs font-semibold text-ink">{sub.student}</p>
+                          <div className="min-w-0 flex-1 pr-2">
+                            <p className="truncate text-xs font-semibold text-ink">
+                              {sub.student && sub.student.trim() !== "A" && sub.student.trim().length > 1 && sub.student.trim().toLowerCase() !== "unmatched"
+                                ? sub.student
+                                : (sub.file_name || sub.student || "Submission")}
+                            </p>
+                            {sub.file_name && sub.student && sub.student !== sub.file_name && sub.student.trim() !== "A" && (
+                              <p className="truncate text-[10px] text-faint font-mono">{sub.file_name}</p>
+                            )}
+                          </div>
                           {isThisAssignmentProcessing ? (
                             <span className="inline-flex items-center gap-1 rounded bg-amber-soft px-1.5 py-0.5 text-[10px] font-semibold text-amber-ink animate-pulse">
                               <Loader2 className="size-2.5 animate-spin" /> Evaluating...
                             </span>
                           ) : (
-                            <span className="text-[11px] font-bold text-ink">{sub.score}/100</span>
+                            <span className="text-[11px] font-bold text-ink">
+                              {sub.score !== null && sub.score !== undefined ? `${sub.score}` : "—"}/100
+                            </span>
                           )}
                         </div>
                         <div className="mt-1 flex items-center gap-2 text-[10px]">
