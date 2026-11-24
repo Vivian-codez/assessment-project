@@ -798,6 +798,7 @@ class GeminiEvaluationService:
         raw_output: Optional[Phase5AutogradingOutput] = None
 
         # Check if live Gemini GenAI client and API key are available
+        last_error = None
         if self.client and settings.GEMINI_API_KEY:
             # Attempt generation with retry on invalid output
             for attempt in range(2):
@@ -813,8 +814,8 @@ class GeminiEvaluationService:
                         response_schema=Phase5AutogradingOutput,
                         # Enforce temperature 0.0 for deterministic evaluation
                         temperature=0.0,
-                        # Set HTTP timeout to 5000ms to avoid blocking
-                        http_options=types.HttpOptions(timeout=5000),
+                        # Set HTTP timeout to 30000ms to allow thorough multimodal and rubric evaluation
+                        http_options=types.HttpOptions(timeout=30000),
                     )
                     # Call Gemini API to generate evaluation
                     response = self.client.models.generate_content(
@@ -833,6 +834,7 @@ class GeminiEvaluationService:
                     break
                 # Catch generation or validation exceptions
                 except Exception as e:
+                    last_error = e
                     # Log attempt failure
                     logger.warning(f"Phase 5 Gemini autograding attempt {attempt+1} failed: {e}")
                     # If first attempt failed, retry once
@@ -840,39 +842,19 @@ class GeminiEvaluationService:
                         # Continue to retry
                         continue
 
-        # If live generation failed or offline, execute deterministic fallback
+        # If live generation failed or offline, DO NOT substitute a default score
         if not raw_output:
-            # Generate deterministic fallback evaluation matching schema
-            fallback_criteria = []
-            # Iterate through rubric criteria
-            for idx, crit in enumerate(rubric_criteria):
-                # Resolve criterion ID
-                c_id = str(crit.get("id") or f"crit_{idx+1}")
-                # Resolve levels list
-                levels = crit.get("levels") or crit.get("tiers") or []
-                # Select first tier if available
-                t_id = str(levels[0].get("id") or f"{c_id}_tier_1") if levels else "tier_1"
-                # Append fallback judgement
-                fallback_criteria.append(
-                    # Instantiate Phase5CriterionTierJudgement
-                    Phase5CriterionTierJudgement(
-                        criterion_id=c_id,
-                        tier_id=t_id,
-                        justification="Demonstrates core requirements and standard methodology.",
-                        evidence=["Implemented required algorithm with standard logic structure."],
-                        confidence=0.85,
-                    )
-                )
-            # Instantiate fallback Phase5AutogradingOutput
-            raw_output = Phase5AutogradingOutput(
-                readable=True,
-                prompt_injection_detected=False,
-                criteria=fallback_criteria,
-                overall_feedback="Solid implementation adhering to core assignment specifications and reference patterns.",
-                strengths=["Standard algorithmic structure", "Clean logical execution"],
-                improvements=["Expand inline comments and edge-case validation"],
-                flags=[],
-            )
+            logger.error(f"Phase 5 Gemini autograding failed after retry: {last_error}")
+            return {
+                "success": False,
+                "score": None,
+                "max_score": float(max_score),
+                "error": str(last_error or "Gemini API unavailable or invalid JSON response"),
+                "overall_feedback": f"Gemini autograding failed: {last_error or 'Invalid model response'}",
+                "criteria_evaluations": [],
+                "requires_manual_review": True,
+                "routing_reasons": [f"Gemini evaluation failed: {last_error}"],
+            }
 
         # 4. Strict Pure-Python Arithmetic Post-Processing
         # Initialize total weighted score
@@ -934,11 +916,11 @@ class GeminiEvaluationService:
                 logger.warning(f"LLM selected unrecognized tier '{judgement.tier_id}' for criterion '{c_name}'. Defaulting to lowest tier.")
 
             # Resolve points for selected tier
+            crit_max = float(crit_def.get("max_points") or crit_def.get("max_score") or 4.0) if crit_def else 4.0
             if matched_tier and matched_tier.get("points") is not None:
                 tier_pts = float(matched_tier.get("points"))
             else:
-                crit_max = float(crit_def.get("max_score") or crit_def.get("max_points") or 4.0) if crit_def else 4.0
-                tier_pts = round(crit_max * 0.85, 2)
+                tier_pts = round(crit_max * 0.75, 2)
             # Resolve tier display name
             tier_name = matched_tier.get("level_name") or matched_tier.get("name") if matched_tier else "Standard Tier"
 
@@ -947,11 +929,12 @@ class GeminiEvaluationService:
                 # Add confidence routing reason
                 routing_reasons.append(f"Low confidence ({judgement.confidence:.2f}) on criterion '{c_name}'.")
 
-            # Calculate weighted points contribution strictly in Python
-            # Tier points multiplied by criterion weight percentage
-            weighted_contribution = tier_pts * (c_weight / 100.0)
-            # Accumulate weighted score
-            total_weighted_score += weighted_contribution
+            # Calculate actual earned marks for this criterion scaled to assignment max_score
+            # Criterion allocated marks out of assignment max_score:
+            crit_allocated_marks = (c_weight / 100.0) * float(max_score)
+            # Scaled score: (tier_pts / crit_max) * crit_allocated_marks
+            criterion_score = round((tier_pts / crit_max) * crit_allocated_marks, 2) if crit_max > 0 else tier_pts
+            total_weighted_score += criterion_score
 
             # Append structured criterion evaluation detail
             detailed_evaluations.append({
@@ -960,20 +943,16 @@ class GeminiEvaluationService:
                 "tier_id": judgement.tier_id,
                 "tier_name": tier_name,
                 "tier_points": tier_pts,
+                "max": round(crit_allocated_marks, 2),
+                "score": criterion_score,
                 "weight": c_weight,
-                "weighted_contribution": round(weighted_contribution, 2),
                 "justification": judgement.justification,
                 "evidence": judgement.evidence,
                 "confidence": judgement.confidence,
             })
 
-        # If weights do not sum to 100, normalize weighted score
-        if total_weight_sum > 0 and abs(total_weight_sum - 100.0) > 0.01:
-            # Rescale score proportionally
-            final_calculated_score = (total_weighted_score / total_weight_sum) * max_score
-        else:
-            # Scale to max score
-            final_calculated_score = total_weighted_score
+        # Calculate final score as sum of per-criterion scores
+        final_calculated_score = total_weighted_score
 
         # Round strictly using configured 2 decimal places rule (no hidden rounding)
         rounded_score = round(final_calculated_score, 2)

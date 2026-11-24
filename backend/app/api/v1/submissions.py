@@ -285,6 +285,30 @@ def _create_single_submission(
 
     and persist with FERPA encryption.
     """
+    # Duplicate check for files
+    import hashlib
+    content_hash = hashlib.sha256(content).hexdigest() if content else ""
+    existing_subs = db.query(Submission).filter(Submission.assignment_id == assignment_id).all()
+    for es in existing_subs:
+        if es.file_name == filename and content:
+            if es.file_path and os.path.exists(es.file_path):
+                try:
+                    with open(es.file_path, "rb") as ef:
+                        if hashlib.sha256(ef.read()).hexdigest() == content_hash:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"Duplicate upload: File '{filename}' has already been uploaded for this assignment."
+                            )
+                except HTTPException:
+                    raise
+                except Exception:
+                    pass
+            elif es.file_name == filename:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Duplicate upload: File '{filename}' has already been uploaded for this assignment."
+                )
+
     # Set file_path to os.path.join(upload_dir, f"{uuid.uuid4().hex[:8]}_{filename}")
     file_path = os.path.join(upload_dir, f"{uuid.uuid4().hex[:8]}_{filename}")
     # Begin try block to execute operations safely
@@ -1403,6 +1427,17 @@ async def create_single_submission(
             )
         # Handle alternative fallback path
         else:
+            # Check duplicate submission text
+            text_to_check = (raw_text or "").strip()
+            if text_to_check and len(text_to_check) > 30:
+                existing_dups = db.query(Submission).filter(Submission.assignment_id == assignment_id).all()
+                for es in existing_dups:
+                    if (es.extracted_text and es.extracted_text.strip() == text_to_check) or (es.content and es.content.strip() == text_to_check):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Duplicate upload: An identical submission text already exists for this assignment."
+                        )
+
             # Set sub_id to f"sub_{uuid.uuid4().hex[:8]}"
             sub_id = f"sub_{uuid.uuid4().hex[:8]}"
             # Set sub to Submission(
@@ -1451,6 +1486,17 @@ async def create_single_submission(
             logger.error(f"Failed to parse submission JSON: {parse_err}")
             # Raise error condition: HTTPException(status_code=422, detail="Invalid submission payload format")
             raise HTTPException(status_code=422, detail="Invalid submission payload format")
+
+        # Check duplicate submission text
+        text_to_check = (payload.extracted_text or "").strip()
+        if text_to_check and len(text_to_check) > 30:
+            existing_dups = db.query(Submission).filter(Submission.assignment_id == assignment_id).all()
+            for es in existing_dups:
+                if (es.extracted_text and es.extracted_text.strip() == text_to_check) or (es.content and es.content.strip() == text_to_check):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Duplicate upload: An identical submission text already exists for this assignment."
+                    )
 
         # Set sub_id to f"sub_{uuid.uuid4().hex[:8]}"
         sub_id = f"sub_{uuid.uuid4().hex[:8]}"
@@ -1679,105 +1725,95 @@ def get_assignment_submissions(
     for s in submissions:
         # Score defaults to None when submission has not yet been evaluated by educator command
         score = None
-        # Max score defaults to None when submission is ungraded
         max_s = None
-        # Criteria breakdown defaults to None
         crit = None
-        # Qualitative feedback defaults to None
         fb = None
-        # Plagiarism report defaults to None
         plag = None
-        # Verify condition: s.draft_grade
         if s.draft_grade:
-            # Set score to (
             score = (
-                # Execute statement: s.draft_grade.final_score
                 s.draft_grade.final_score
-                # Execute statement: if s.draft_grade.final_score is not None
                 if s.draft_grade.final_score is not None
-                # Execute statement: else (
                 else (
-                    # Execute statement: s.draft_grade.total_score
                     s.draft_grade.total_score
-                    # Execute statement: if s.draft_grade.total_score is not None
                     if s.draft_grade.total_score is not None
-                    # Execute statement: else (s.draft_grade.suggested_score or 0.0)
-                    else (s.draft_grade.suggested_score if s.draft_grade.suggested_score is not None else 85.0)
-                # Execute statement: )
+                    else s.draft_grade.suggested_score
                 )
-            # Execute statement: )
             )
-            # Set max_s to s.draft_grade.max_score or 100.0
             max_s = s.draft_grade.max_score or 100.0
-            # Set crit to s.draft_grade.criteria_breakdown or s.draft_grade.criteria_scores
             crit = s.draft_grade.criteria_breakdown or s.draft_grade.criteria_scores
-            # Set fb to s.draft_grade.feedback or s.draft_grade.ai_feedback
             fb = s.draft_grade.feedback or s.draft_grade.ai_feedback
-            # Set plag to s.draft_grade.plagiarism_report
             plag = s.draft_grade.plagiarism_report
         elif s.status in ("completed", "graded", "evaluated"):
-            # If draft_grade was lazily unattached in this session, query draft_grade directly
             draft = db.query(DraftGrade).filter(DraftGrade.submission_id == s.id).first()
             if draft:
-                score = draft.final_score if draft.final_score is not None else (draft.total_score if draft.total_score is not None else (draft.suggested_score if draft.suggested_score is not None else 85.0))
+                score = (
+                    draft.final_score
+                    if draft.final_score is not None
+                    else (
+                        draft.total_score
+                        if draft.total_score is not None
+                        else draft.suggested_score
+                    )
+                )
                 max_s = draft.max_score or 100.0
                 crit = draft.criteria_breakdown or draft.criteria_scores
                 fb = draft.feedback or draft.ai_feedback
                 plag = draft.plagiarism_report
-            else:
-                score = 85.0
-                max_s = 100.0
+
+        # If status indicates review required or failure or not yet evaluated, score is strictly None
+        if s.status in ("needs_review", "grading_failed", "unmatched", "ready", "queued"):
+            score = None
 
         # Preserve student full name and ensure it never renders as single letter "A"
         display_student = s.student_name
         if not display_student or len(display_student.strip()) <= 1 or display_student.strip().upper() in ("A", "UNMATCHED"):
             display_student = s.file_name or "Submission"
 
-        # Execute statement: res_list.append(
         res_list.append(
-            # Execute statement: SubmissionResponse(
             SubmissionResponse(
-                # Execute statement: id=s.id
                 id=s.id,
-                # Execute statement: assignment_id=s.assignment_id
                 assignment_id=s.assignment_id,
-                # Execute statement: student=display_student
                 student=display_student,
-                # Execute statement: roll=s.student_roll
                 roll=s.student_roll,
-                # Execute statement: student_id=s.student_id
                 student_id=s.student_id,
-                # Execute statement: file_name=s.file_name
                 file_name=s.file_name,
-                # Execute statement: status=s.status
                 status=s.status,
-                # Execute statement: score=score
                 score=score,
-                # Execute statement: max_score=max_s
                 max_score=max_s,
-                # Execute statement: similarity=s.similarity_score or 0.0
-                similarity=s.similarity_score or 0.0,
-                # AI content probability, None until evaluation has run
-                ai_content=s.ai_content_probability if s.draft_grade else None,
-                # Web search plagiarism score, None until checked
-                web_plagiarism=s.web_plagiarism_score if s.draft_grade else None,
-                # Execute statement: file_url=s.file_url
+                similarity=s.similarity_score,
+                ai_content=s.ai_content_probability,
+                web_plagiarism=s.web_plagiarism_score,
                 file_url=s.file_url,
-                # Execute statement: criteria_scores=crit
                 criteria_scores=crit,
                 is_unmatched=bool(not s.student_id or s.student_roll == "UNMATCHED"),
-                # Execute statement: feedback=fb
                 feedback=fb,
-                # Execute statement: plagiarism_report=plag
                 plagiarism_report=plag,
-                # Execute statement: created_at=s.created_at
                 created_at=s.created_at,
-            # Execute statement: )
             )
-        # Execute statement: )
         )
     # Return result: res_list
     return res_list
+
+
+# Route handler to re-grade a single submission
+@router.post("/submissions/{submission_id}/re-grade")
+@router.post("/submissions/{submission_id}/regrade")
+def regrade_submission_direct(
+    submission_id: str,
+    db: Session = Depends(get_db),
+):
+    """Re-runs grading for a single submission using Phase 5 autograding prompt and strict arithmetic."""
+    sub = db.query(Submission).filter(Submission.id == submission_id).first()
+    if not sub:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    from app.workers.evaluation_tasks import run_evaluation_batch_logic
+    result = run_evaluation_batch_logic(
+        job_id=f"regrade_{submission_id[:8]}",
+        assignment_id=sub.assignment_id,
+        submission_ids=[submission_id],
+    )
+    return {"status": "completed", "submission_id": submission_id, "result": result}
 
 
 # Route handler to retrieve all submissions optionally filtered by assignment_id

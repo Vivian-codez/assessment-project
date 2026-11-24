@@ -3670,28 +3670,28 @@ function AssignmentsView({
                             <>
                               <span
                                 className={
-                                  sub.similarity >= 85 ? "text-clay font-medium" : "text-faint"
+                                  sub.similarity !== null && sub.similarity !== undefined && sub.similarity >= 85 ? "text-clay font-medium" : "text-faint"
                                 }
                               >
-                                Peer: {sub.similarity}%
+                                Peer: {sub.similarity !== null && sub.similarity !== undefined ? `${sub.similarity}%` : "N/A"}
                               </span>
                               <span>·</span>
                               <span
                                 className={
-                                  sub.aiContent >= 60 ? "text-amber-ink font-medium" : "text-faint"
+                                  sub.aiContent !== null && sub.aiContent !== undefined && sub.aiContent >= 60 ? "text-amber-ink font-medium" : "text-faint"
                                 }
                               >
-                                AI: {sub.aiContent}%
+                                AI: {sub.aiContent !== null && sub.aiContent !== undefined ? `${sub.aiContent}%` : "N/A"}
                               </span>
                               <span>·</span>
                               <span
                                 className={
-                                  (sub.webPlagiarism || 0) >= 20
+                                  sub.webPlagiarism !== null && sub.webPlagiarism !== undefined && sub.webPlagiarism >= 20
                                     ? "text-blue font-medium"
                                     : "text-faint"
                                 }
                               >
-                                Web: {sub.webPlagiarism !== null && sub.webPlagiarism !== undefined ? `${sub.webPlagiarism}%` : "—"}
+                                Web: {sub.webPlagiarism !== null && sub.webPlagiarism !== undefined ? `${sub.webPlagiarism}%` : "N/A"}
                               </span>
                             </>
                           )}

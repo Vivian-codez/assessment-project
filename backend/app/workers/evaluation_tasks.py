@@ -579,28 +579,22 @@ def run_evaluation_batch_logic(
             local_rubric = db.query(Rubric).filter(Rubric.id == target_rubric_id).first()
             # If local rubric exists with criteria, extract them
             if local_rubric and local_rubric.criteria:
-                # Build formatted criteria dictionary list from local model
+                # Build formatted criteria dictionary list from local model preserving teacher levels
                 rubric_criteria_list = [
                     {
+                        "id": c.id,
                         "name": c.criterion_name or c.name or "Criterion",
+                        "criterion_name": c.criterion_name or c.name or "Criterion",
                         "description": c.description or "",
                         "weight": c.weight or 25.0,
                         "max_score": c.max_points or c.max_score or 4.0,
+                        "max_points": c.max_points or c.max_score or 4.0,
+                        "levels": c.levels or [],
                     }
                     for c in local_rubric.criteria
                 ]
 
-        # If still no criteria found, provide standard academic fallback rubric
-        if not rubric_criteria_list:
-            # Standard matrix academic rubric default
-            # Define standard default criteria list
-            rubric_criteria_list = [
-                {"name": "Algorithmic Correctness", "description": "Accurate functional implementation and edge case handling", "weight": 40.0, "max_score": 40.0},
-                {"name": "Code Structure & Modularity", "description": "Clean functional separation, naming, and architectural elegance", "weight": 30.0, "max_score": 30.0},
-                {"name": "Analytical Documentation", "description": "Comprehensive explanation of complexity and methodology", "weight": 30.0, "max_score": 30.0},
-            ]
-
-        # Ensure every criterion has complete performance tiers (levels) with real points
+        # Ensure performance tiers (levels) with real points exist if not provided
         for c_idx, crit in enumerate(rubric_criteria_list):
             if not crit.get("levels") and not crit.get("tiers"):
                 max_pts = float(crit.get("max_score") or crit.get("max_points") or 4.0)
@@ -717,16 +711,46 @@ def run_evaluation_batch_logic(
         # Initialize counter for detected similarity flags
         similarity_flags_count = 0
 
-        # 5. Process each submission sequentially so vectors can be checked against prior batch items
-        # Iterate over submissions with index
+        # 5. Pre-compute winnowing peer similarity across the entire assignment batch
+        from app.services.winnowing_service import winnowing_service
+        import hashlib
+
+        # Resolve reference exemplar solution text and check rubric/reference existence
+        reference_solution = (
+            assignment.reference_assignment_text
+            if assignment and assignment.reference_assignment_text
+            else kwargs.get("reference_assignment_text")
+        )
+        assignment_title = assignment.title if assignment else f"Assignment {assignment_id}"
+        assign_max_score = assignment.max_score if assignment and assignment.max_score else 100.0
+        has_rubric = bool(rubric_criteria_list and len(rubric_criteria_list) > 0)
+        has_reference = bool(reference_solution and len(reference_solution.strip()) > 0)
+
+        # Build submission texts list for winnowing
+        batch_sub_dicts = []
+        for s in submissions:
+            stext = s.extracted_text or s.content or ""
+            if stext.startswith("[Could not read this file"):
+                stext = ""
+            batch_sub_dicts.append({
+                "id": s.id,
+                "text": stext,
+                "file_hash": hashlib.sha256(stext.encode("utf-8")).hexdigest() if stext else "",
+                "file_name": s.file_name,
+                "student_name": s.student_name,
+            })
+
+        peer_analysis = winnowing_service.analyze_batch(
+            submissions=batch_sub_dicts,
+            reference_text=reference_solution or "",
+            assignment_prompt=assignment.description or "" if assignment else "",
+        )
+
+        # 6. Process each submission sequentially with strict JSON grading and pure arithmetic
         for idx, sub in enumerate(submissions):
-            # Log progress for current submission evaluation
             logger.info(f"Evaluating submission [{idx + 1}/{total}]: {sub.id} ({sub.file_name})")
 
-            # Update Celery state: current submission being evaluated
-            # Check if task instance is available for status update
             if task_instance:
-                # Emit Celery task state with current file and percentage
                 task_instance.update_state(
                     state="PROCESSING",
                     meta={
@@ -738,208 +762,222 @@ def run_evaluation_batch_logic(
                     },
                 )
 
-            # Mark status in Supabase & local DB as evaluating
-            # Set local submission status to evaluating
-            sub.status = "evaluating"
-            # Commit status change to local database
-            db.commit()
-            # Try updating status in Supabase
-            try:
-                # Update submission status to evaluating in Supabase
-                supabase.table("submissions").update({
-                    "status": "evaluating",
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }).eq("id", sub.id).execute()
-            # Catch exceptions from Supabase status update silently
-            except Exception:
-                # Continue if Supabase status update fails
-                pass
-
-            # a. Extract text or code content from file
-            # Get cached extracted text or content from submission model
+            # a. Resolve text content
             extracted_text = sub.extracted_text or sub.content or ""
-            # If no cached text exists, extract from available sources
-            if not extracted_text:
-                # Check if raw file_content is stored on the model
-                if sub.file_content:
-                    # Use stored file content as extracted text
-                    extracted_text = sub.file_content
-                # Check if a remote file URL is available
-                elif sub.file_url:
-                    # Download directly from Supabase Storage
-                    # Download binary file content from Supabase storage
-                    raw_bytes = supabase_service.download_file_from_storage(sub.file_url)
-                    # Check if file bytes were successfully downloaded
-                    if raw_bytes:
-                        # Extract text from downloaded bytes using PDF service
-                        extracted_text = pdf_service.extract_text_from_bytes(raw_bytes, sub.file_name)
-                # Check if local file path exists on disk
-                elif sub.file_path and os.path.exists(sub.file_path):
-                    # Extract text directly from local file path
-                    extracted_text = pdf_service.extract_text_from_file_path(sub.file_path)
+            if extracted_text.startswith("[Could not read this file"):
+                extracted_text = ""
+                sub.extracted_text = ""
+                sub.content = ""
+                db.commit()
 
-            # If text could still not be extracted, set a placeholder description
-            if not extracted_text:
-                # Provide fallback text describing the submission
-                extracted_text = f"Student submission content for {sub.file_name} implementing assigned algorithmic patterns."
+            text_len = len(extracted_text.strip())
+            p_data = peer_analysis.get(sub.id, {})
+            is_dup = p_data.get("is_duplicate", False)
+            sim_score = p_data.get("similarity_score")
+            draft_id = f"draft_{sub.id}"
 
-            # Update extracted text field on submission model
-            sub.extracted_text = extracted_text
-            # Update content field on submission model
-            sub.content = extracted_text
-            # Commit updated text to local database
-            db.commit()
-
-            # b. Generate text embeddings (text-embedding-004) and query Qdrant collection submissions_{assignment_id}
-            #    to detect peer-to-peer similarity (> 0.75)
-            # Generate 768-dimensional text embedding vector
-            embedding_vector = vector_service.generate_embedding(extracted_text)
-            # Query Qdrant for peer submissions exceeding 0.75 similarity threshold
-            peer_matches = vector_service.search_peer_similarity(
-                submission_id=sub.id,
-                assignment_id=assignment_id,
-                vector=embedding_vector,
-                threshold=0.75,
+            # Step 1 structured audit log
+            logger.info(
+                f"[GRADING-STEP1-AUDIT] sub_id={sub.id} file={sub.file_name} "
+                f"extracted_text_length={text_len} first_200={repr(extracted_text[:200])} "
+                f"rubric_loaded={has_rubric} criteria_count={len(rubric_criteria_list)} "
+                f"has_reference={has_reference} is_duplicate={is_dup} "
+                f"winnowing_fps={p_data.get('fingerprints_count', 0)} "
+                f"matched_fps={p_data.get('matched_fingerprints_count', 0)} "
+                f"peer_sim={sim_score}"
             )
 
-            # Initialize list for human-readable peer context strings
-            peer_context_parts = []
-            # Initialize variable for highest detected peer similarity
-            highest_peer_sim = 0.0
-            # Initialize list for matched peer submission IDs
-            matched_peer_ids = []
+            # STEP 2 Rule 1: Text empty or under ~50 characters, or unreadable scan placeholder
+            is_placeholder = bool(extracted_text and extracted_text.strip().startswith("[Could not read this file"))
+            if text_len < 50 or is_placeholder:
+                logger.info(f"[EVAL] Submission {sub.id} text under 50 chars or unreadable placeholder ({text_len}). Setting needs_review.")
+                sub.status = "needs_review"
+                sub.similarity_score = None
+                sub.ai_content_probability = None
+                sub.web_plagiarism_score = None
+                db.commit()
 
-            # Iterate over all peer similarity matches found
-            for match in peer_matches:
-                # Extract similarity percentage score
-                sim_pct = match["similarity_score"]
-                # Update highest peer similarity score if greater
-                if sim_pct > highest_peer_sim:
-                    # Set new highest peer similarity
-                    highest_peer_sim = sim_pct
-                # Append matched peer ID to list
-                matched_peer_ids.append(match["submission_id"])
-                # Append formatted peer match detail to context list
-                peer_context_parts.append(
-                    f"- Peer Submission '{match['submission_id']}' (File: {match['file_name']}): "
-                    f"Cosine similarity {sim_pct}% (> 0.75 threshold)."
-                )
-
-                # Persist similarity match row
-                # Try persisting similarity match record
+                reason_msg = "No text to grade"
+                draft_payload = {
+                    "id": draft_id,
+                    "submission_id": sub.id,
+                    "final_score": None,
+                    "total_score": None,
+                    "max_score": assign_max_score,
+                    "suggested_score": None,
+                    "criteria_scores": [],
+                    "criteria_breakdown": [],
+                    "plagiarism_report": {
+                        "peer_to_peer_score": None,
+                        "public_source_score": None,
+                        "ai_probability": None,
+                        "flagged_matches": ["Duplicate upload"] if is_dup else [],
+                        "routing_reasons": [reason_msg],
+                    },
+                    "feedback": reason_msg,
+                    "ai_feedback": reason_msg,
+                    "status": "needs_review",
+                    "ai_model": settings.GEMINI_MODEL,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
                 try:
-                    # Generate a unique similarity match identifier
-                    sim_id = f"sim_{uuid.uuid4().hex[:12]}"
-                    # Instantiate local SimilarityMatch model
-                    sim_record = SimilarityMatch(
-                        id=sim_id,
-                        assignment_id=assignment_id,
-                        submission_a_id=sub.id,
-                        submission_b_id=match["submission_id"],
-                        similarity_score=sim_pct,
-                        matching_phrases=[f"High vector alignment ({sim_pct}%) in submissions_{assignment_id}"],
-                        status="High similarity",
-                    )
-                    # Add similarity record to local database session
-                    db.add(sim_record)
-                    # Upsert similarity record in Supabase table
-                    supabase.table("similarity_matches").upsert({
-                        "id": sim_id,
-                        "assignment_id": assignment_id,
-                        "submission_a_id": sub.id,
-                        "submission_b_id": match["submission_id"],
-                        "similarity_score": sim_pct,
-                        "matching_phrases": [f"Cosine similarity {sim_pct}% in Qdrant"],
-                        "status": "High similarity",
-                    }).execute()
-                    # Increment similarity flags counter
-                    similarity_flags_count += 1
-                # Catch errors during similarity persistence silently
+                    supabase.table("draft_grades").upsert(draft_payload).execute()
                 except Exception:
-                    # Ignore similarity record persistence errors
                     pass
 
-            # Format peer matching context string or default notice
-            peer_matching_context = "\n".join(peer_context_parts) if peer_context_parts else "No previous submissions in Qdrant exceeded the 0.75 cosine similarity threshold."
-
-            # Check if teacher requested cancellation of active grading job
-            if is_grading_cancelled(assignment_id):
-                # Log cancellation notice
-                logger.info(f"Grading cancellation requested by teacher for assignment {assignment_id}.")
-                # Set job status to cancelled
-                job.status = "cancelled"
-                # Commit cancellation to database
+                existing_draft = db.query(DraftGrade).filter(DraftGrade.submission_id == sub.id).first()
+                if existing_draft:
+                    existing_draft.final_score = None
+                    existing_draft.total_score = None
+                    existing_draft.suggested_score = None
+                    existing_draft.status = "needs_review"
+                    existing_draft.feedback = reason_msg
+                    existing_draft.criteria_scores = []
+                else:
+                    db.add(DraftGrade(**draft_payload))
                 db.commit()
-                # Update cancellation status in Redis
-                update_assignment_progress(
-                    assignment_id,
-                    {
-                        "status": "cancelled",
-                        "total": total,
-                        "processed": evaluated_count,
-                        "current_stage": "cancelled",
-                        "progress_pct": round((evaluated_count / total) * 100.0, 1) if total > 0 else 0.0,
-                        "eta_seconds": 0,
-                        "failed_count": 0,
-                        "errors": ["Grading cancelled by user."],
+
+                try:
+                    supabase.table("submissions").update({
+                        "status": "needs_review",
+                        "similarity_score": None,
+                        "ai_content_probability": None,
+                        "web_plagiarism_score": None,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }).eq("id", sub.id).execute()
+                except Exception:
+                    pass
+
+                evaluated_count += 1
+                continue
+
+            # STEP 2 Rule 2: If no rubric or reference exists:
+            if not has_rubric or not has_reference:
+                block_msg = "Grading blocked: Assignment requires both an attached evaluation rubric and reference solution."
+                logger.warning(f"[EVAL] Submission {sub.id} blocked: {block_msg}")
+                sub.status = "needs_review"
+                sub.similarity_score = sim_score
+                sub.ai_content_probability = None
+                sub.web_plagiarism_score = None
+                db.commit()
+
+                draft_payload = {
+                    "id": draft_id,
+                    "submission_id": sub.id,
+                    "total_score": None,
+                    "max_score": assign_max_score,
+                    "suggested_score": None,
+                    "criteria_scores": [],
+                    "criteria_breakdown": [],
+                    "plagiarism_report": {
+                        "peer_to_peer_score": sim_score,
+                        "public_source_score": None,
+                        "ai_probability": None,
+                        "flagged_matches": ["Duplicate upload"] if is_dup else [],
+                        "routing_reasons": [block_msg],
                     },
-                )
-                # Break evaluation loop
-                break
+                    "feedback": block_msg,
+                    "ai_feedback": block_msg,
+                    "status": "needs_review",
+                    "ai_model": settings.GEMINI_MODEL,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                try:
+                    supabase.table("draft_grades").upsert(draft_payload).execute()
+                except Exception:
+                    pass
 
-            # Resolve reference exemplar solution text
-            reference_solution = (
-                assignment.reference_assignment_text
-                if assignment and assignment.reference_assignment_text
-                else kwargs.get("reference_assignment_text")
+                existing_draft = db.query(DraftGrade).filter(DraftGrade.submission_id == sub.id).first()
+                if existing_draft:
+                    existing_draft.final_score = None
+                    existing_draft.total_score = None
+                    existing_draft.suggested_score = None
+                    existing_draft.status = "needs_review"
+                    existing_draft.feedback = block_msg
+                    existing_draft.criteria_scores = []
+                else:
+                    db.add(DraftGrade(**draft_payload))
+                db.commit()
+                evaluated_count += 1
+                continue
+
+            # STEP 2 Rule 3: Gemini autograding with pure arithmetic
+            eval_dict = gemini_service.evaluate_with_phase5_prompt(
+                submission_text=extracted_text,
+                rubric_criteria=rubric_criteria_list,
+                assignment_instructions=assignment.description or "" if assignment else "",
+                reference_solution=reference_solution,
+                filename=sub.file_name or "submission.txt",
+                file_format=sub.file_name.split(".")[-1] if "." in (sub.file_name or "") else "text",
+                max_score=assign_max_score,
             )
-            # Resolve assignment title
-            assignment_title = assignment.title if assignment else f"Assignment {assignment_id}"
-            # Resolve assignment max score
-            assign_max_score = assignment.max_score if assignment and assignment.max_score else 100.0
 
-            # c. SHA-256 Content-Hash Cache Lookup (Speed Rule 1)
-            # Query Redis evaluation cache before invoking LLM
-            cached_eval = get_content_evaluation_cache(extracted_text, rubric_criteria_list)
-            # Check if cache hit
-            if cached_eval:
-                # Log cache hit
-                logger.info(f"Evaluation cache HIT (SHA-256) for submission {sub.id} ({sub.file_name}). Skipping LLM.")
-                # Load cached evaluation dictionary
-                eval_dict = cached_eval
-            # If cache miss, invoke Phase 5 Gemini autograding prompt with pure Python arithmetic
-            else:
-                # Log cache miss
-                logger.info(f"Evaluation cache MISS for submission {sub.id}. Invoking Phase 5 autograding prompt (temp 0).")
-                # Invoke Gemini Phase 5 autograding prompt
-                eval_dict = gemini_service.evaluate_with_phase5_prompt(
-                    submission_text=extracted_text,
-                    rubric_criteria=rubric_criteria_list,
-                    assignment_instructions=assignment.description or "",
-                    reference_solution=reference_solution,
-                    filename=sub.file_name or "submission.txt",
-                    file_format=sub.file_name.split(".")[-1] if "." in (sub.file_name or "") else "text",
-                    max_score=assign_max_score,
-                )
-                # Store evaluation result in SHA-256 content-hash cache
-                set_content_evaluation_cache(extracted_text, rubric_criteria_list, eval_dict)
+            # Check if Gemini grading failed or returned invalid JSON
+            if not eval_dict.get("success", True) or eval_dict.get("score") is None:
+                err_detail = eval_dict.get("error") or "Gemini model error or invalid JSON"
+                logger.error(f"[EVAL] Gemini grading failed for submission {sub.id}: {err_detail}")
+                sub.status = "grading_failed"
+                sub.similarity_score = sim_score
+                sub.ai_content_probability = None
+                sub.web_plagiarism_score = None
+                db.commit()
 
-            # Determine maximum peer similarity score between vector match and result
-            final_peer_score = highest_peer_sim
-            # Initialize flagged matches list
-            flagged_matches = []
-            # Check if peer IDs were matched by vector search
-            if matched_peer_ids:
-                # Add vector similarity notes to flagged matches list
-                flagged_matches.extend([f"Peer match with {pid} (Cosine > 0.75)" for pid in matched_peer_ids])
+                fail_msg = f"Grading failed: {err_detail}"
+                draft_payload = {
+                    "id": draft_id,
+                    "submission_id": sub.id,
+                    "final_score": None,
+                    "total_score": None,
+                    "max_score": assign_max_score,
+                    "suggested_score": None,
+                    "criteria_scores": [],
+                    "criteria_breakdown": [],
+                    "plagiarism_report": {
+                        "peer_to_peer_score": sim_score,
+                        "public_source_score": None,
+                        "ai_probability": None,
+                        "flagged_matches": ["Duplicate upload"] if is_dup else [],
+                        "routing_reasons": [fail_msg],
+                    },
+                    "feedback": fail_msg,
+                    "ai_feedback": fail_msg,
+                    "status": "grading_failed",
+                    "ai_model": settings.GEMINI_MODEL,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                try:
+                    supabase.table("draft_grades").upsert(draft_payload).execute()
+                except Exception:
+                    pass
 
-            # d. Upsert criteria scores, qualitative notes, and review queue routing
-            # Format criteria breakdown list for JSON persistence
+                existing_draft = db.query(DraftGrade).filter(DraftGrade.submission_id == sub.id).first()
+                if existing_draft:
+                    existing_draft.final_score = None
+                    existing_draft.total_score = None
+                    existing_draft.suggested_score = None
+                    existing_draft.status = "grading_failed"
+                    existing_draft.feedback = fail_msg
+                    existing_draft.criteria_scores = []
+                else:
+                    db.add(DraftGrade(**draft_payload))
+                db.commit()
+                evaluated_count += 1
+                continue
+
+            # STEP 2 Rule 4: Compute score in code as sum of criterion scores clamped to 0..max
+            calculated_score = float(eval_dict.get("score", 0.0))
+            overall_feedback = eval_dict.get("overall_feedback", "Evaluated against rubric specifications.")
+            requires_manual_review = eval_dict.get("requires_manual_review", False)
+            grade_status = "flagged" if requires_manual_review else "suggested"
+
             criteria_payload = [
                 {
                     "criterion_name": c.get("criterion_name"),
-                    "score": c.get("tier_points", 0.0),
-                    "max": c.get("tier_points", 4.0),
+                    "score": c.get("score", c.get("tier_points", 0.0)),
+                    "max": c.get("max", c.get("tier_points", 4.0)),
                     "rationale": c.get("justification", ""),
                     "tier_name": c.get("tier_name", ""),
                     "evidence": c.get("evidence", []),
@@ -948,138 +986,69 @@ def run_evaluation_batch_logic(
                 for c in eval_dict.get("criteria_evaluations", [])
             ]
 
-            # Construct plagiarism report dictionary payload
+            # Plagiarism and AI metrics: compute for real, or None (N/A)
             plagiarism_payload = {
-                "peer_to_peer_score": final_peer_score,
-                "public_source_score": 0.0,
-                "ai_probability": 15.0,
-                "flagged_matches": list(set(flagged_matches)),
+                "peer_to_peer_score": sim_score,
+                "public_source_score": None,
+                "ai_probability": None,
+                "flagged_matches": ["Duplicate upload"] if is_dup else ([] if sim_score is None or sim_score < 75.0 else [f"Peer match ({sim_score}%)"]),
                 "routing_reasons": eval_dict.get("routing_reasons", []),
             }
 
-            # Generate draft grade identifier
-            draft_id = f"draft_{sub.id}"
-            # Check if manual review is required (< 0.6 confidence, unreadable, prompt injection)
-            requires_manual_review = eval_dict.get("requires_manual_review", False)
-            # Route to flagged if manual review needed, suggested otherwise
-            grade_status = "flagged" if requires_manual_review else "suggested"
-            # Extract final calculated score strictly computed in Python
-            calculated_score = float(eval_dict.get("score", 0.0))
-            # Extract qualitative feedback
-            overall_feedback = eval_dict.get("overall_feedback", "Evaluated against rubric specifications.")
+            draft_payload = {
+                "id": draft_id,
+                "submission_id": sub.id,
+                "total_score": calculated_score,
+                "max_score": assign_max_score,
+                "suggested_score": calculated_score,
+                "criteria_scores": criteria_payload,
+                "criteria_breakdown": criteria_payload,
+                "plagiarism_report": plagiarism_payload,
+                "feedback": overall_feedback,
+                "ai_feedback": overall_feedback,
+                "status": grade_status,
+                "ai_model": settings.GEMINI_MODEL,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
 
-            # 1. Update draft_grades in Supabase
-            # Begin try block to upsert draft grade in Supabase
             try:
-                # Upsert draft grade record into Supabase table
-                supabase.table("draft_grades").upsert({
-                    "id": draft_id,
-                    "submission_id": sub.id,
-                    "total_score": calculated_score,
-                    "max_score": assign_max_score,
-                    "suggested_score": calculated_score,
-                    "criteria_scores": criteria_payload,
-                    "criteria_breakdown": criteria_payload,
-                    "plagiarism_report": plagiarism_payload,
-                    "feedback": overall_feedback,
-                    "ai_feedback": overall_feedback,
-                    "status": grade_status,
-                    "ai_model": "gemini-2.5-flash",
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }).execute()
-            # Handle Supabase draft grade upsert error
-            except Exception as sb_draft_err:
-                # Log error message for failed Supabase draft grade upsert
-                logger.error(f"Failed to upsert draft_grade in Supabase for {sub.id}: {sb_draft_err}")
+                supabase.table("draft_grades").upsert(draft_payload).execute()
+            except Exception as sb_err:
+                logger.warning(f"Supabase draft grade upsert notice: {sb_err}")
 
-            # 2. Update local DB draft_grades
-            # Query local database for existing DraftGrade entity
             existing_draft = db.query(DraftGrade).filter(DraftGrade.submission_id == sub.id).first()
-            # Check if existing draft grade record was found
             if existing_draft:
-                # Update total score on existing draft
                 existing_draft.total_score = calculated_score
-                # Update suggested score on existing draft
                 existing_draft.suggested_score = calculated_score
-                # Update max score on existing draft
                 existing_draft.max_score = assign_max_score
-                # Update criteria scores dictionary
                 existing_draft.criteria_scores = criteria_payload
-                # Update criteria breakdown list
                 existing_draft.criteria_breakdown = criteria_payload
-                # Update plagiarism report dictionary
                 existing_draft.plagiarism_report = plagiarism_payload
-                # Update qualitative feedback
                 existing_draft.feedback = overall_feedback
-                # Update AI feedback
                 existing_draft.ai_feedback = overall_feedback
-                # Update status
                 existing_draft.status = grade_status
-                # Update AI model identifier
-                existing_draft.ai_model = "gemini-2.5-flash"
-            # If draft grade record does not exist locally, instantiate a new one
+                existing_draft.ai_model = settings.GEMINI_MODEL
             else:
-                # Create new DraftGrade entity with evaluation results
-                new_draft = DraftGrade(
-                    id=draft_id,
-                    submission_id=sub.id,
-                    total_score=calculated_score,
-                    suggested_score=calculated_score,
-                    max_score=assign_max_score,
-                    criteria_scores=criteria_payload,
-                    criteria_breakdown=criteria_payload,
-                    plagiarism_report=plagiarism_payload,
-                    feedback=overall_feedback,
-                    ai_feedback=overall_feedback,
-                    status=grade_status,
-                    ai_model="gemini-2.5-flash",
-                )
-                # Add new draft grade to local database session
-                db.add(new_draft)
+                db.add(DraftGrade(**draft_payload))
 
-            # e. Insert the current submission vector into Qdrant collection submissions_{assignment_id}
-            #    so subsequent students in the batch are compared against it
-            # Insert or update embedding vector in Qdrant collection
-            vector_service.upsert_submission_vector(
-                submission_id=sub.id,
-                assignment_id=assignment_id,
-                vector=embedding_vector,
-                payload={
-                    "file_name": sub.file_name,
-                    "student_name": sub.student_name,
-                    "student_id": sub.student_id,
-                },
-            )
-
-            # g. Update submissions.status = 'completed' in Supabase and DB
-            # Set local submission status to completed
+            # Update submission record
             sub.status = "completed"
-            # Set similarity score on submission model
-            sub.similarity_score = final_peer_score
-            # Set AI content probability score on submission model
-            sub.ai_content_probability = 15.0
-            # Set public web source plagiarism score on submission model
-            sub.web_plagiarism_score = 0.0
-            # Commit submission updates to local database
+            sub.similarity_score = sim_score
+            sub.ai_content_probability = None
+            sub.web_plagiarism_score = None
             db.commit()
 
-            # Try updating submission record in Supabase
             try:
-                # Update submission row in Supabase table
                 supabase.table("submissions").update({
                     "status": "completed",
-                    "similarity_score": final_peer_score,
-                    "ai_content_probability": 15.0,
-                    "web_plagiarism_score": 0.0,
-                    "extracted_text": extracted_text[:10000],
-                    "content": extracted_text[:10000],
+                    "similarity_score": sim_score,
+                    "ai_content_probability": None,
+                    "web_plagiarism_score": None,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }).eq("id", sub.id).execute()
-            # Handle Supabase update failure gracefully
-            except Exception as sb_sub_err:
-                # Log warning for failed Supabase submission status update
-                logger.warning(f"Failed to update submission status in Supabase for {sub.id}: {sb_sub_err}")
+            except Exception as sb_err:
+                logger.warning(f"Supabase submission update notice: {sb_err}")
 
             # Increment evaluated submissions counter
             evaluated_count += 1

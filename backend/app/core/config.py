@@ -130,11 +130,11 @@ class Settings(BaseSettings):
     # Boolean toggle determining whether Supabase cloud integration is active
     USE_SUPABASE: bool = True
     # Supabase project URL endpoint
-    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "https://uljtqfbkxsqzmboilwvw.supabase.co")
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "https://uljtqfbkxsqzmboilwvw.supabase.co").strip()
     # Supabase anonymous public client key
-    SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "sb_publishable_g9AjaKnVX5oGdCZF-4MIFg_1BNjVB6Q")
+    SUPABASE_KEY: str = (os.getenv("SUPABASE_KEY") or os.getenv("SUPABASE_PUBLISHABLE_KEY") or "sb_publishable_g9AjaKnVX5oGdCZF-4MIFg_1BNjVB6Q").strip()
     # Supabase privileged service role secret key
-    SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    SUPABASE_SERVICE_ROLE_KEY: str = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SECRET_KEY") or "").strip()
 
     # Managed PostgreSQL Database via SQLAlchemy 2.x
     # Canonical fallback Supabase PostgreSQL connection string URI
@@ -267,9 +267,9 @@ class Settings(BaseSettings):
     # API key for Google Gemini GenAI services
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
     # Default LLM model identifier for grading and feedback evaluation
-    GEMINI_MODEL: str = "gemini-flash-latest"
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
     # Strong LLM model identifier for low-confidence re-evaluations
-    GEMINI_MODEL_STRONG: str = "gemini-2.5-pro"
+    GEMINI_MODEL_STRONG: str = os.getenv("GEMINI_MODEL_STRONG", "gemini-3.5-flash-lite")
     # Default text embedding model identifier for vector indexing
     GEMINI_EMBEDDING_MODEL: str = "gemini-embedding-001"
 

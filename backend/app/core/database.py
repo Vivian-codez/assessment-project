@@ -170,14 +170,16 @@ raw_db_url = settings.DATABASE_URL
 # Strip leading or trailing whitespace
 db_url = raw_db_url.strip() if raw_db_url else ""
 
-# Canonical fallback PostgreSQL connection URL for Supabase
+# Canonical fallback PostgreSQL connection URL for Supabase pooler (IPv4 compatible)
 FALLBACK_SUPABASE_PG_URL = (
-    "postgresql://postgres.uljtqfbkxsqzmboilwvw:Nainasaini%40252007@aws-1-ap-south-1.pooler.supabase.com:5432/postgres?sslmode=require"
+    settings.DATABASE_POOLER_TRANSACTION_URL
+    or "postgresql://postgres.uljtqfbkxsqzmboilwvw:Nainasaini%40252007@aws-1-ap-south-1.pooler.supabase.com:6543/postgres?sslmode=require"
 )
 
-# If db_url is empty, apply the canonical fallback Supabase PostgreSQL URL
-if not db_url:
-    # Set to fallback PostgreSQL URL
+# If db_url contains direct IPv6 Supabase host, prioritize the IPv4 connection pooler
+if "db.uljtqfbkxsqzmboilwvw.supabase.co" in db_url and settings.DATABASE_POOLER_TRANSACTION_URL:
+    db_url = settings.DATABASE_POOLER_TRANSACTION_URL
+elif not db_url:
     db_url = FALLBACK_SUPABASE_PG_URL
 
 # Check whether database URI targets SQLite

@@ -932,6 +932,8 @@ def cancel_assignment_grading(
 
 # HTTP POST route handler to re-grade a single submission
 @router.post("/assignments/{assignment_id}/regrade-submission/{submission_id}")
+@router.post("/assignments/{assignment_id}/submissions/{submission_id}/re-grade")
+@router.post("/assignments/{assignment_id}/submissions/{submission_id}/regrade")
 def regrade_single_submission(
     assignment_id: str,
     submission_id: str,
@@ -950,4 +952,26 @@ def regrade_single_submission(
         submission_ids=[submission_id],
     )
     return {"status": "completed", "submission_id": submission_id, "result": result}
+
+
+# HTTP POST route handler to re-grade all submissions in an assignment
+@router.post("/assignments/{assignment_id}/re-grade")
+@router.post("/assignments/{assignment_id}/re-grade-all")
+@router.post("/assignments/{assignment_id}/regrade-all")
+def regrade_all_submissions(
+    assignment_id: str,
+    db: Session = Depends(get_db),
+    current_instructor: Instructor = Depends(get_current_instructor),
+):
+    """Re-runs grading for all submissions in the assignment."""
+    assign = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assign:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    from app.workers.evaluation_tasks import run_evaluation_batch_logic
+    result = run_evaluation_batch_logic(
+        job_id=f"regrade_all_{assignment_id[:8]}",
+        assignment_id=assignment_id,
+    )
+    return {"status": "completed", "assignment_id": assignment_id, "result": result}
 
